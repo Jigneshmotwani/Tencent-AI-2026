@@ -109,6 +109,8 @@ def main():
             if values.get('MODEL_INPUT_PER_1M') and values.get('MODEL_OUTPUT_PER_1M'):
                 params['input_cost_per_token']=float(values['MODEL_INPUT_PER_1M'])/1e6
                 params['output_cost_per_token']=float(values['MODEL_OUTPUT_PER_1M'])/1e6
+            # Provider-specific request fields (JSON object), e.g. {"reasoning_effort":"none"} to disable hidden reasoning.
+            if values.get('MODEL_EXTRA_BODY'): params['extra_body']=json.loads(values['MODEL_EXTRA_BODY'])
             config['model_list']=[{'model_name':values['MODEL_ALIAS'],'litellm_params':params}]
         configfile=LOCAL/'litellm.yaml'; configfile.write_text(json.dumps(config)); os.chmod(configfile,0o600)
         env['LITELLM_DATABASE_URL']=pgurl.rsplit('/',1)[0]+'/litellm'

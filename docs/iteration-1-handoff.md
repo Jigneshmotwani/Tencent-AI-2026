@@ -70,3 +70,12 @@ Project renamed Tencent AI 2026; product name is a placeholder (`[Product Name]`
 
 - Confluence site is on the Free plan: page restrictions are unavailable (API returned 403 on `restrict` despite space-admin rights). The restricted Confluence page was created, could not be locked, and was deleted; only the shared page remains in `NSDEMO`. Restricted-access acceptance therefore relies on the Drive child folder with Limited access.
 - Source-identity mapping: the owner accounts act as `compliance` (can read the restricted Drive memo); `jigneshmotwani0055@gmail.com` accounts act as `operations`.
+
+### Live inference observations (12 October 2026, admin session; Drive = owner Google account, Confluence = second Atlassian account)
+
+- Real end-to-end answers: primary question and follow-up completed with evidence from Drive and Confluence, server-issued citations E1-E4, per-run usage and estimated cost (~$0.0004/run at the published ai& rates $0.30/$0.60 per 1M). Audit trail for a run: run.started → source.search (drive, confluence) → source.read ×4 → model.request → run.completed/failed. Four consecutive runs completed after the fixes below.
+- Defect found and fixed: the ai& DeepSeek model spends an unbounded number of hidden reasoning tokens, so answers hit the output cap (`output_truncated`, correctly shown as failed, never as complete). Fix: `MODEL_EXTRA_BODY={"reasoning_effort":"none"}` (provider-supported values none|high|max; verified 0 reasoning tokens on 3/3 direct and gateway calls), cap raised to the 2048 server maximum, assistant prompt 1.1 (brief, cite-only-supporting-IDs).
+- Defect found and fixed: cost stayed `unknown` because the spend-log row is written after the immediate lookup; the gateway now uses LiteLLM's streamed cost (same arithmetic as the spend row) when the row is not yet present.
+- One `provider_unavailable` run was observed during a stack restart; not reproduced.
+- Not yet verified: operations vs compliance separation (needs the second Google/Atlassian identities connected under the `operations` app user), active cancellation, UI operation/screenshots (Chrome extension was not connected in this session).
+

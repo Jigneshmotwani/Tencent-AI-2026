@@ -20,10 +20,13 @@ def bootstrap():
             created.append(f'{username}: {password}')
         cfg=settings()
         agent=db.get(AgentDefinition,AGENT_ID)
+        limits={'max_evidence':cfg.max_evidence,'max_output_tokens':cfg.max_output_tokens}
         if not agent:
             db.add(AgentDefinition(id=AGENT_ID,version=AGENT_VERSION,instructions=INSTRUCTIONS,
-                allowed_sources=['drive','confluence'],model_alias=cfg.model_alias,
-                limits={'max_evidence':cfg.max_evidence,'max_output_tokens':cfg.max_output_tokens}))
+                allowed_sources=['drive','confluence'],model_alias=cfg.model_alias,limits=limits))
+        else:
+            # The seeded assistant is code-defined; keep the stored row in step with the shipped prompt/limits.
+            agent.version=AGENT_VERSION; agent.instructions=INSTRUCTIONS; agent.model_alias=cfg.model_alias; agent.limits=limits
         db.commit()
     if created:
         folder=Path('.local'); folder.mkdir(exist_ok=True); os.chmod(folder,0o700)

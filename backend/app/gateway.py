@@ -15,7 +15,7 @@ class ModelGateway:
         payload = {'model':cfg.model_alias, 'messages':messages,'stream':True,
             'stream_options':{'include_usage':True}, 'max_tokens':cfg.max_output_tokens,
             'user':attribution['user_id'], 'metadata':attribution}
-        request_ref = None; started=time.monotonic(); tokens={}; provider_ref=None; truncated=False
+        request_ref = None; started=time.monotonic(); tokens={}; provider_ref=None; truncated=False; stream_cost=None; cost_sent=False
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(75, connect=5), trust_env=False) as client:
                 async with client.stream('POST', cfg.litellm_url+'/v1/chat/completions',headers=headers,json=payload) as response:
@@ -33,6 +33,8 @@ class ModelGateway:
                         usage = part.get('usage')
                         if usage:
                             tokens={k:usage.get(k) for k in ('prompt_tokens','completion_tokens','total_tokens')}
+                            # LiteLLM reports its computed cost in the final usage chunk; spend-log rows are written later in batches.
+                            if isinstance(usage.get('cost'),(int,float)) and usage['cost']>0: stream_cost=float(usage['cost'])
                             yield 'usage', {**tokens,'status':'finalized','cost':None,'currency':None,'cost_basis':None,
                                 'provider_request_ref':provider_ref,'gateway_request_ref':request_ref,'cost_status':'unknown',
                                 'model_provider':cfg.model_id.split('/',1)[0] if '/' in cfg.model_id else 'configured provider',
@@ -60,8 +62,12 @@ class ModelGateway:
                             match = next((r for r in rows if r.get('request_id') == accounting_ref), None)
                             # Unknown pricing can appear as zero in gateway accounting. Do not promote it.
                             if match and match.get('spend') is not None and float(match['spend'])>0:
+                                cost_sent=True
                                 yield 'cost', {'cost':float(match['spend']),'currency':'USD',
                                     'cost_status':'estimated','cost_basis':'configured provider-published per-1M rates via LiteLLM spend log' if cfg.model_input_per_1m and cfg.model_output_per_1m else 'LiteLLM 1.104.2 proxy spend log bundled pricing map'}
             except (httpx.HTTPError, ValueError, TypeError): pass
+        if stream_cost is not None and tokens and not cost_sent:
+            basis='configured provider-published per-1M rates via LiteLLM streamed usage' if cfg.model_input_per_1m and cfg.model_output_per_1m else 'LiteLLM proxy bundled pricing map via streamed usage'
+            yield 'cost', {'cost':stream_cost,'currency':'USD','cost_status':'estimated','cost_basis':basis}
         # A cut-off answer (token cap hit, e.g. by hidden reasoning) must not be presented as complete.
         if truncated: raise ModelError('output_truncated')
