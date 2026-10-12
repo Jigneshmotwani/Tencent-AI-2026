@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16.10
+    environment:
+      POSTGRES_USER: northstar
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?Run scripts/start.sh to initialize local configuration}
+      POSTGRES_DB: northstar
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U northstar -d northstar"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+volumes:
+  postgres-data:

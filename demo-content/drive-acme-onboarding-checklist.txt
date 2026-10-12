@@ -1,0 +1,8 @@
+SYNTHETIC DEMO — Northstar Pay / Acme Trading. No real customer data.
+Acme Trading onboarding checklist — approved operations record, 9 October 2026
+Owner: Olivia Operations. Case: NS-DEMO-104.
+Completed: application form, company registration certificate, director identity documents.
+Outstanding: company proof of operating address dated within the last three months.
+Status: onboarding blocked pending this company document. Do not activate processing until the approved onboarding gate is cleared.
+Next operational action: ask Acme Trading's fictional contact Maya Chen (maya@example.invalid) for the company address document. Upload it through the dedicated source workspace; the knowledge app itself is read-only.
+Contact the onboarding desk via onboarding@example.invalid for case coordination. Compliance clearance is separately owned by the compliance team; operations must not guess about private review findings.
