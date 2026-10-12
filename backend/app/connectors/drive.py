@@ -57,27 +57,35 @@ class DriveConnector:
                 continue
             if child_id not in parents:
                 parents.append(child_id)
-        membership = '(' + ' or '.join(f'{drive_literal(parent)} in parents' for parent in parents) + ')'
-        clauses = [membership, 'trashed = false',
-                   "mimeType != 'application/vnd.google-apps.folder'",
-                   "mimeType != 'application/vnd.google-apps.shortcut'"]
-        if terms:
-            clauses.append('(' + ' or '.join(f'fullText contains {drive_literal(term)}' for term in terms) + ')')
-        params = {'q': ' and '.join(clauses), 'fields': 'nextPageToken,files(id,name)',
-                  'pageSize': min(max(limit, 1), 25), 'spaces': 'drive',
-                  'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}
-        if cursor:
-            params['pageToken'] = checked_cursor(cursor)
-        result = await request_json(f'{BASE}/files', context, params)
-        hits = []
-        for item in result.get('files', [])[:min(max(limit, 1), 25)]:
-            if isinstance(item, dict):
-                try:
-                    identifier = checked_id(item.get('id', ''))
-                except SourceError:
-                    continue
-                hits.append(SearchHit(identifier, str(item.get('name', 'Untitled'))[:1000]))
-        return SearchPage(hits, checked_cursor(result.get('nextPageToken')))
+        size = min(max(limit, 1), 25)
+        # Query each parent separately: OR-ing in a limited-access child folder the delegated
+        # user cannot list makes Drive return nothing at all, hiding the root's readable files.
+        # A page cursor continues the selected root only.
+        hits, seen, next_cursor = [], set(), None
+        for parent in ([folder_id] if cursor else parents):
+            clauses = [f'{drive_literal(parent)} in parents', 'trashed = false',
+                       "mimeType != 'application/vnd.google-apps.folder'",
+                       "mimeType != 'application/vnd.google-apps.shortcut'"]
+            if terms:
+                clauses.append('(' + ' or '.join(f'fullText contains {drive_literal(term)}' for term in terms) + ')')
+            params = {'q': ' and '.join(clauses), 'fields': 'nextPageToken,files(id,name)',
+                      'pageSize': size, 'spaces': 'drive',
+                      'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}
+            if cursor:
+                params['pageToken'] = checked_cursor(cursor)
+            result = await request_json(f'{BASE}/files', context, params)
+            if parent == folder_id:
+                next_cursor = result.get('nextPageToken')
+            for item in result.get('files', [])[:size]:
+                if isinstance(item, dict):
+                    try:
+                        identifier = checked_id(item.get('id', ''))
+                    except SourceError:
+                        continue
+                    if identifier not in seen and len(hits) < size:
+                        seen.add(identifier)
+                        hits.append(SearchHit(identifier, str(item.get('name', 'Untitled'))[:1000]))
+        return SearchPage(hits, checked_cursor(next_cursor))
 
     @source_operation
     async def read(self, document_id: str, context: AccessContext):
