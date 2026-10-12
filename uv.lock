@@ -1459,7 +1459,7 @@ wheels = [
 ]
 
 [[package]]
-name = "northstar-knowledge"
+name = "tencent-ai-2026"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

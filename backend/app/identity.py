@@ -17,7 +17,7 @@ from .config import settings
 from .db import AuditEvent, OAuthState, Session, User, get_db, now
 
 router = APIRouter(prefix='/auth', tags=['authentication'])
-COOKIE = 'northstar_session'
+COOKIE = 'app_session'
 _hasher = PasswordHasher()
 _dummy_hash = _hasher.hash(secrets.token_urlsafe(32))
 _attempts: dict[str, deque] = defaultdict(deque)
@@ -55,7 +55,7 @@ def digest(value: str) -> str:
 
 
 def csrf_token(token: str) -> str:
-    return hmac.new(token.encode(), b'northstar-browser-csrf-v1', hashlib.sha256).hexdigest()
+    return hmac.new(token.encode(), b'app-browser-csrf-v1', hashlib.sha256).hexdigest()
 
 
 def _aware(value):

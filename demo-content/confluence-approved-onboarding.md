@@ -1,4 +1,4 @@
-# Northstar Pay approved onboarding procedure
+# Example Pay approved onboarding procedure
 SYNTHETIC DEMO — no real financial or customer data. Approved 9 October 2026.
 
 Acme Trading and other demonstration customers must provide the application, company registration, director identity evidence, and a company proof of operating address dated within three months. Missing address evidence blocks activation. An address typed in an application is insufficient.

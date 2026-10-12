@@ -1,4 +1,6 @@
-# Permission-aware Knowledge Foundation — iteration 1
+# Permission-aware Knowledge Foundation (Tencent AI 2026) — iteration 1
+
+Product name: **[Product Name]** (placeholder, to be chosen).
 
 Local React/TypeScript + FastAPI + PostgreSQL app. Real, read-only delegated adapters for Google Drive and Confluence; all assistant inference uses a local LiteLLM proxy. No simulated source or canned business answer. No inference credential is bundled. Studio and later connectors are unavailable.
 
@@ -10,7 +12,7 @@ Prerequisites: Python 3.11–3.13, uv, Node 20.19+ or 22.12+, PostgreSQL tools (
 ./scripts/start.sh
 ```
 
-Open **http://localhost:5173** (use `localhost`, consistently). The command installs locked workspace dependencies when necessary, bootstraps a local PostgreSQL cluster on `127.0.0.1:55432`, separate `northstar`/`litellm` databases, four named accounts, migrations, LiteLLM on `127.0.0.1:4000`, a local OTLP receiver on `127.0.0.1:4318`, and API on `127.0.0.1:8000`. Ctrl-C stops native services; data persists under ignored `.local/`. Run from a terminal that permits local sockets and network access for first-time package/Prisma downloads. `PG_BIN=/path/to/postgres/bin ./scripts/start.sh` selects installed PostgreSQL tools. This host's missing Homebrew share/lib prefix is accommodated through workspace-local executable copies/symlinks; no system files are changed.
+Open **http://localhost:5173** (use `localhost`, consistently). The command installs locked workspace dependencies when necessary, bootstraps a local PostgreSQL cluster on `127.0.0.1:55432`, separate `app`/`litellm` databases, four named accounts, migrations, LiteLLM on `127.0.0.1:4000`, a local OTLP receiver on `127.0.0.1:4318`, and API on `127.0.0.1:8000`. Ctrl-C stops native services; data persists under ignored `.local/`. Run from a terminal that permits local sockets and network access for first-time package/Prisma downloads. `PG_BIN=/path/to/postgres/bin ./scripts/start.sh` selects installed PostgreSQL tools. On Windows (Git Bash) there is usually no native PostgreSQL: use `./scripts/start.sh --services compose` with Docker running. Ports are configurable in `.env` (`LOCAL_PORT_APP`, `LOCAL_PORT_API`, `LOCAL_PORT_GATEWAY`, `LOCAL_PORT_COLLECTOR`, `LOCAL_PORT_DB`; defaults 5173/8000/4000/4318/55432); OAuth redirect URIs and `APP_ORIGIN`/`API_ORIGIN` follow the chosen API/app ports. This host's missing Homebrew share/lib prefix is accommodated through workspace-local executable copies/symlinks; no system files are changed.
 
 If Docker is running instead, use `./scripts/start.sh --services compose`; Compose starts only local PostgreSQL, with the API/proxy/collector/UI still supervised locally. Stop that supporting database with `docker compose down` (omit `-v` to retain data). Do not switch database profiles without preserving the chosen data directory/volume.
 

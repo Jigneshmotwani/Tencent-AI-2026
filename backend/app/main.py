@@ -26,7 +26,7 @@ async def lifespan(app):
     for rid in list(tasks): await cancel_run(rid)
     provider.shutdown()
 
-app=FastAPI(title='Northstar Knowledge', lifespan=lifespan, docs_url=None, redoc_url=None)
+app=FastAPI(title='Knowledge Assistant', lifespan=lifespan, docs_url=None, redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','[::1]'])
 app.add_middleware(CORSMiddleware,allow_origins=[settings().app_origin],allow_credentials=True,
     allow_methods=['GET','POST','DELETE'],allow_headers=['Content-Type','X-CSRF-Token'])
@@ -67,7 +67,7 @@ async def health():
     import httpx
     services={}
     async with httpx.AsyncClient(timeout=1,trust_env=False) as client:
-        for name,url in [('gateway',cfg.litellm_url+'/health/readiness'),('collector','http://127.0.0.1:4318/health')]:
+        for name,url in [('gateway',cfg.litellm_url+'/health/readiness'),('collector',cfg.otel_endpoint.rsplit('/v1/',1)[0]+'/health')]:
             try: services[name]='ready' if (await client.get(url,headers={'Authorization':f'Bearer {cfg.litellm_master_key}'} if name=='gateway' else {})).is_success else 'unavailable'
             except httpx.HTTPError: services[name]='unavailable'
     return {'status':'ready' if database=='ready' else 'degraded','database':database,**services,

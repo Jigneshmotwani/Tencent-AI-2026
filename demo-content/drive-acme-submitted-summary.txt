@@ -1,4 +1,4 @@
-SYNTHETIC DEMO — Northstar Pay / Acme Trading. No real customer data.
+SYNTHETIC DEMO — Example Pay / Acme Trading. No real customer data.
 Acme Trading submitted documents — summary, 9 October 2026
 Case NS-DEMO-104. Application received 7 October. Company registration received 8 October.
 Director identity documents received 8 October. Company operating address evidence has not been submitted.

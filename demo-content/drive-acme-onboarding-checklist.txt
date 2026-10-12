@@ -1,4 +1,4 @@
-SYNTHETIC DEMO — Northstar Pay / Acme Trading. No real customer data.
+SYNTHETIC DEMO — Example Pay / Acme Trading. No real customer data.
 Acme Trading onboarding checklist — approved operations record, 9 October 2026
 Owner: Olivia Operations. Case: NS-DEMO-104.
 Completed: application form, company registration certificate, director identity documents.

@@ -56,3 +56,12 @@ Schema migration 1 is an explicit idempotent bootstrap; future column changes ne
 Changed groups: `backend/app/` for API/identity/adapters/runner/gateway/telemetry/startup; `frontend/` for typed UI and locks; root `pyproject.toml`, `uv.lock`, `.env.example`, `.gitignore`, `compose.yaml`; `config/logging.json`, `scripts/start.sh`; five `demo-content/` documents; README, architecture, contracts and this handoff.
 
 Genuine CodeBuddy/WorkBuddy hackathon development evidence was unavailable. These GPT-agent conversations are not those tools' logs. User action: perform one real CodeBuddy/WorkBuddy connector-debugging interaction (for example inspect an OAuth scope or a denied restricted-page read in this implementation), then capture that actual development conversation with secrets redacted. No substitute evidence was fabricated.
+
+## Windows host addendum — 12 October 2026
+
+Project renamed Tencent AI 2026; product name is a placeholder (`[Product Name]`). The earlier verification above was on macOS; the stack was re-run on Windows 11 (Git Bash, Docker Desktop, no native PostgreSQL) with `./scripts/start.sh --services compose`.
+
+- Launcher fixes: venv `Scripts/` paths, `npm.cmd`, process-tree stop via `taskkill`, UTF-8 child output (LiteLLM banner crashed under cp1252), wait for a real PostgreSQL login (published container ports accept TCP before the DB is ready), `.gitattributes` keeps `start.sh` LF.
+- Ports are configurable (`LOCAL_PORT_*` in `.env`) because other local projects commonly hold 5173/4000/55432. Defaults are unchanged.
+- Re-observed on Windows (ports 5273/8100/4100/4418/55433): health shows database, gateway and collector ready; anonymous/bad-password 401; foreign Origin 403; missing CSRF 403; HttpOnly cookie; capabilities operations=[user], compliance=[builder,user], admin=[admin,builder,user], auditor=[auditor]; `/api/audit` denied to operations, allowed to admin/auditor; auditor denied consumer and connection routes; admin received 404 for operations' conversation, run, event stream, activity and evidence IDs and for cancelling that run; no-source question streamed run_started → retrieval_started → retrieval_completed → answer_delta → usage → run_completed with usage `not_requested`; oversize question 422; OAuth start 503 while unconfigured; logout invalidates the session. Frontend `npm run build` passes.
+- Still blocked (unchanged): live OAuth, two real source users, restricted-document exclusion, real model answer/metering, active cancellation, UI screenshots.

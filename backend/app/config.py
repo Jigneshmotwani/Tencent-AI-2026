@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
-    database_url: str = 'postgresql+psycopg://northstar@127.0.0.1:55432/northstar'
+    database_url: str = 'postgresql+psycopg://app@127.0.0.1:55432/app'
     app_origin: str = 'http://localhost:5173'
     api_origin: str = 'http://localhost:8000'
     encryption_key: str = ''

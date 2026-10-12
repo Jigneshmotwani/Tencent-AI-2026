@@ -7,11 +7,11 @@ from .config import settings
 from .db import AuditEvent
 
 def configure():
-    provider = TracerProvider(resource=Resource.create({'service.name':'northstar-api'}))
+    provider = TracerProvider(resource=Resource.create({'service.name':'api'}))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=settings().otel_endpoint, timeout=3)))
     trace.set_tracer_provider(provider)
     return provider
-tracer = trace.get_tracer('northstar.knowledge')
+tracer = trace.get_tracer('knowledge')
 def trace_id():
     ctx = trace.get_current_span().get_span_context()
     return format(ctx.trace_id, '032x') if ctx.is_valid else ''

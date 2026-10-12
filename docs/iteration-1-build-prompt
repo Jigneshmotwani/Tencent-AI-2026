@@ -1,7 +1,7 @@
 # Iteration 1: Permission-aware Knowledge Foundation
 ## Self-contained GPT 6.1 sol implementation prompt
 
-You are the lead engineer for a locally running fintech hackathon product inspired by K2. The user has approved the four-iteration roadmap and authorized you to implement iteration 1. Act as an implementation lead: use focused subagents, integrate their work, run the application, fix observed defects, and deliver a working iteration.
+You are the lead engineer for a locally running fintech hackathon product inspired by a reference product. The user has approved the four-iteration roadmap and authorized you to implement iteration 1. Act as an implementation lead: use focused subagents, integrate their work, run the application, fix observed defects, and deliver a working iteration.
 
 This file contains the product brief, build instructions and acceptance criteria. You do not need prior chats to execute it.
 
@@ -37,7 +37,7 @@ No full Agent Studio, policy editor, hard spending-budget product, tool registry
 
 ### 3. Inspect first and choose a practical stack
 
-Inspect the supplied workspace, repository instructions, git status, existing implementation, dependency locks and available runtime tools. Respect unrelated changes. Do not assume access to the proprietary K2 repository. Reuse suitable authorized code if already supplied; do not search personal directories for a different codebase.
+Inspect the supplied workspace, repository instructions, git status, existing implementation, dependency locks and available runtime tools. Respect unrelated changes. Do not assume access to any proprietary reference repository. Reuse suitable authorized code if already supplied; do not search personal directories for a different codebase.
 
 For an empty repository, use:
 - React + TypeScript + Vite for the local frontend, with a small reusable component layer.
@@ -464,7 +464,7 @@ A local demo-account selector is permitted only if it establishes the correspond
 
 ### 12. Synthetic business scenario and setup
 
-Create a small local demo-content folder and import instructions for a fictional company and customer, for example Northstar Pay and Acme Trading. Mark the content synthetic. Keep it small enough for manual setup.
+Create a small local demo-content folder and import instructions for a fictional company and customer, for example Example Pay and Acme Trading. Mark the content synthetic. Keep it small enough for manual setup.
 
 Source contents:
 - Confluence: approved onboarding procedure and escalation route, plus a restricted compliance procedure.
