@@ -65,3 +65,8 @@ Project renamed Tencent AI 2026; product name is a placeholder (`[Product Name]`
 - Ports are configurable (`LOCAL_PORT_*` in `.env`) because other local projects commonly hold 5173/4000/55432. Defaults are unchanged.
 - Re-observed on Windows (ports 5273/8100/4100/4418/55433): health shows database, gateway and collector ready; anonymous/bad-password 401; foreign Origin 403; missing CSRF 403; HttpOnly cookie; capabilities operations=[user], compliance=[builder,user], admin=[admin,builder,user], auditor=[auditor]; `/api/audit` denied to operations, allowed to admin/auditor; auditor denied consumer and connection routes; admin received 404 for operations' conversation, run, event stream, activity and evidence IDs and for cancelling that run; no-source question streamed run_started → retrieval_started → retrieval_completed → answer_delta → usage → run_completed with usage `not_requested`; oversize question 422; OAuth start 503 while unconfigured; logout invalidates the session. Frontend `npm run build` passes.
 - Still blocked (unchanged): live OAuth, two real source users, restricted-document exclusion, real model answer/metering, active cancellation, UI screenshots.
+
+### Source provisioning decisions (12 October 2026)
+
+- Confluence site is on the Free plan: page restrictions are unavailable (API returned 403 on `restrict` despite space-admin rights). The restricted Confluence page was created, could not be locked, and was deleted; only the shared page remains in `NSDEMO`. Restricted-access acceptance therefore relies on the Drive child folder with Limited access.
+- Source-identity mapping: the owner accounts act as `compliance` (can read the restricted Drive memo); `jigneshmotwani0055@gmail.com` accounts act as `operations`.

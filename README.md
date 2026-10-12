@@ -44,16 +44,16 @@ Model: set `MODEL_ID` to a provider/model identifier actually supported by your 
 
 ## Dedicated synthetic source setup
 
-All documents in `demo-content/` are **synthetic**. Manually import the shared `drive-*.txt` checklist and summary as UTF-8 text files or Google Docs into the configured root folder; put the restricted review memo into one direct child folder with Google limited access enabled; create the two `confluence-*.md` pages in the configured dedicated space. The app never uploads source content or edits remote permissions. Configure sharing/restrictions in those source systems using the chosen real accounts:
+All documents in `demo-content/` are **synthetic**. Manually import the shared `drive-*.txt` checklist and summary as UTF-8 text files or Google Docs into the configured root folder; put the restricted review memo into one direct child folder with Google limited access enabled; create the shared `confluence-approved-onboarding.md` page in the configured dedicated space. `confluence-restricted-compliance.md` needs native page restrictions, which Confluence Cloud's Free plan does not provide; create it only on a paid plan, otherwise the restricted-access demonstration runs through Drive only. The app never uploads source content or edits remote permissions. Configure sharing/restrictions in those source systems using the chosen real accounts:
 
 | Source material | Operations source identity | Compliance source identity | Platform Admin source identity |
 | --- | --- | --- | --- |
 | Drive checklist + submitted summary | Read | Read | Only if explicitly granted at source |
 | Confluence approved procedure | Read | Read | Only if explicitly granted at source |
 | Drive restricted review memo | No access | Read | No extra access from platform role |
-| Confluence restricted compliance procedure | No access | Read | No extra access from platform role |
+| Confluence restricted compliance procedure (paid plan only) | No access | Read | No extra access from platform role |
 
-Use a restricted child page/file with actual native sharing, not a title label alone. Share the Drive root with operations and compliance. Enable native limited access on the direct child folder containing the restricted memo, grant only compliance to that folder, and keep it within the first five visible child folders. Confirm operations cannot read that memo in Drive itself. Apply native page view restrictions to the restricted Confluence page; confirm operations cannot open it directly. Broad inherited sharing must not grant the restricted material. This matrix is external provisioning documentation, never platform ACLs.
+Use a restricted child page/file with actual native sharing, not a title label alone. Share the Drive root with operations and compliance. Enable native limited access on the direct child folder containing the restricted memo, grant only compliance to that folder, and keep it within the first five visible child folders. Confirm operations cannot read that memo in Drive itself. If using a paid Confluence plan, apply native page view restrictions to the restricted page and confirm operations cannot open it directly. Broad inherited sharing must not grant the restricted material. This matrix is external provisioning documentation, never platform ACLs.
 
 Demo: sign in as operations; connect own Drive and Confluence; ask **“Why is Acme Trading's onboarding blocked, and what should I do next?”**; follow up **“Which document supports that, and who should I contact?”**; open citations and Activity. Ask for the restricted review and confirm only accessible material is used. Repeat in the compliance profile with real native source grants. Admin starts without any connections.
 
