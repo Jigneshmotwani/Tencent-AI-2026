@@ -1,66 +1,161 @@
-# Permission-aware Knowledge Foundation (Tencent AI 2026) — iteration 1
+# Permission-aware Agent Studio (Tencent AI 2026): iteration 2
 
-Product name: **[Product Name]** (placeholder, to be chosen).
+Product name: **[Product Name]** (placeholder).
 
-Local React/TypeScript + FastAPI + PostgreSQL app. Real, read-only delegated adapters for Google Drive and Confluence; all assistant inference uses a local LiteLLM proxy. No simulated source or canned business answer. No inference credential is bundled. Studio and later connectors are unavailable.
+Local React/TypeScript + FastAPI + PostgreSQL app. It does two things:
 
-## Start on this Mac
+- **Workspace Q&A** across Google Drive, Confluence, Jira and Slack, using each user's own delegated access.
+- **Agent Studio**, a visual workflow builder. It has a React Flow canvas, typed nodes, a chat Copilot that edits the graph, live run overlay, human approvals, guardrails and budgets.
 
-Prerequisites: Python 3.11–3.13, uv, Node 20.19+ or 22.12+, PostgreSQL tools (already installed here). From this directory:
+The flagship template is **KYB Case Reviewer**. It runs on synthetic Northstar Pay / Acme Trading data:
+
+- reviews a Jira KYB case against SG KYB Policy v3;
+- calls a local synthetic `kyb-registry` MCP server;
+- drafts the RFI;
+- routes escalation behind a human approval;
+- writes the Jira comment and transition once, as the invoker.
+
+The rest of the stack:
+
+- **Audit:** tamper-evident (HMAC hash chain, append-only for the app role) and queryable by filters or natural language.
+- **Observability:** OTel Collector → Tempo/Prometheus → Grafana dashboards.
+
+No simulated connectors, canned answers, or Tencent inference claims. All business data is synthetic.
+
+## Start (Windows: Git Bash + Docker Desktop)
 
 ```sh
-./scripts/start.sh
+./scripts/start.sh --services compose
 ```
 
-Open **http://localhost:5173** (use `localhost`, consistently). The command installs locked workspace dependencies when necessary, bootstraps a local PostgreSQL cluster on `127.0.0.1:55432`, separate `app`/`litellm` databases, four named accounts, migrations, LiteLLM on `127.0.0.1:4000`, a local OTLP receiver on `127.0.0.1:4318`, and API on `127.0.0.1:8000`. Ctrl-C stops native services; data persists under ignored `.local/`. Run from a terminal that permits local sockets and network access for first-time package/Prisma downloads. `PG_BIN=/path/to/postgres/bin ./scripts/start.sh` selects installed PostgreSQL tools. On Windows (Git Bash) there is usually no native PostgreSQL: use `./scripts/start.sh --services compose` with Docker running. Ports are configurable in `.env` (`LOCAL_PORT_APP`, `LOCAL_PORT_API`, `LOCAL_PORT_GATEWAY`, `LOCAL_PORT_COLLECTOR`, `LOCAL_PORT_DB`; defaults 5173/8000/4000/4318/55432); OAuth redirect URIs and `APP_ORIGIN`/`API_ORIGIN` follow the chosen API/app ports. This host's missing Homebrew share/lib prefix is accommodated through workspace-local executable copies/symlinks; no system files are changed.
+The command installs locked dependencies and starts these, all bound to loopback:
 
-If Docker is running instead, use `./scripts/start.sh --services compose`; Compose starts only local PostgreSQL, with the API/proxy/collector/UI still supervised locally. Stop that supporting database with `docker compose down` (omit `-v` to retain data). Do not switch database profiles without preserving the chosen data directory/volume.
+- **Docker:** PostgreSQL, OTel Collector, Tempo, Prometheus and Grafana.
+- **Local processes:** LiteLLM, the API, the HTTPS OAuth callback shim and Vite.
+- **Migrations:** applied as the DB owner. The API itself connects as the non-owner `app_runtime` role.
 
-The launcher creates ignored mode-600 `.env` encryption/proxy/database secrets and mode-600 `.local/demo-accounts.txt` account credentials. Read that file privately; never paste credentials into chat. Account names: `operations` (User), `compliance` (Builder + User), `admin` (Admin + Builder + User), `auditor` (audit metadata only). Optional bootstrap password fields in `.env.example` apply only when creating a new account. There is no public signup. Losing `ENCRYPTION_KEY` requires reconnecting source accounts; keep it with the local data.
+Ctrl-C stops local processes. `docker compose stop` stops the containers (keep volumes).
 
-`npm --prefix frontend run build` runs TypeScript and frontend build. `GET http://localhost:8000/api/health` reports secret-free readiness. No test files or persistent verification scripts are supplied.
+Ports are set in `.env`. The table shows this host's values, with defaults in brackets.
 
-## Configuration and OAuth
+| Service | URL |
+|---|---|
+| App | http://localhost:5273 (5173) |
+| API health | http://localhost:8100/api/health (8000) |
+| HTTPS OAuth callback shim | https://localhost:8543 (8443), self-signed; accept the browser warning once |
+| Grafana (anonymous viewer) | http://localhost:3100 (3000) |
+| Tempo / Prometheus | http://localhost:3300 / http://localhost:9190 |
+| LiteLLM / collector / Postgres | 4100 / 4418 / 55433 |
 
-The launcher initially derives `.env` from `.env.example`; edit `.env` locally and restart. Never use `VITE_` for secrets. Browser cookies are HttpOnly, SameSite=Lax, server-expiring/revocable, with Origin + CSRF checks on mutations. `COOKIE_SECURE=false` is the documented localhost HTTP exception; use Secure cookies with HTTPS if operating outside this local demonstration. Services must remain on loopback. Use separate browser profiles for simultaneous user identities, or sign out/in explicitly.
+The launcher generates these secrets into ignored `.env` (mode 600):
 
-Google: create a Web application OAuth client in a dedicated Google project, enable Drive API, configure the consent screen and designated demo users. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_FOLDER_ID`. Exact authorized redirect URI:
+- encryption key
+- LiteLLM master key
+- DB, runtime-role and Grafana-role passwords
+- Grafana admin password
+- `AUDIT_HMAC_KEY`
 
-```text
-http://localhost:8000/api/connections/drive/callback
+Local account passwords go to `.local/demo-accounts.txt`. Never paste them into chat.
+
+Accounts (capabilities are additive):
+
+| Account | Capabilities |
+|---|---|
+| `operations` | User |
+| `compliance` | Builder + User |
+| `admin` | Admin + Builder + User |
+| `auditor` | Audit metadata only |
+
+On macOS without Docker, `./scripts/start.sh` (native profile) still works, but it has no Grafana/Tempo/Prometheus.
+
+`npm --prefix frontend run build` typechecks and builds the UI. No test files or persistent verification scripts are supplied.
+
+## OAuth setup (per user, delegated)
+
+**Google Drive** (unchanged from iteration 1):
+
+- Callback: `http://localhost:8100/api/connections/drive/callback`.
+- Scope: `drive.readonly` + `openid email`.
+- `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_FOLDER_ID`.
+
+**Atlassian (Confluence + Jira)**, one OAuth 2.0 (3LO) app:
+
+- Callbacks:
+  - `http://localhost:8100/api/connections/confluence/callback`
+  - `http://localhost:8100/api/connections/jira/callback`
+- Scopes:
+  - Confluence: `search:confluence read:page:confluence read:space:confluence read:confluence-user`
+  - Jira (classic): `read:jira-work write:jira-work read:jira-user`
+  - Plus `read:me offline_access`
+- `.env`: `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_CLOUD_ID`, `JIRA_PROJECT_KEYS=KYB`.
+- Jira project `KYB` (team-managed) needs these statuses: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
+- Each user connects Confluence and Jira separately in Connections.
+
+**Slack** (per-user **user tokens**, not a bot):
+
+- App redirect URL: `https://localhost:8543/api/connections/slack/callback`. Slack requires HTTPS; the local shim 303-redirects to the HTTP API callback, where state, session and owner checks run.
+- User Token Scopes: `search:read channels:history channels:read groups:history groups:read users:read chat:write`.
+- `.env`: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_TEAM_ID`, `SLACK_CHANNELS=kyb-ops,compliance-escalations`, `SLACK_WRITE_CHANNELS` (approved posts only go there).
+- A private channel is readable only by its members.
+
+**Model**:
+
+- `MODEL_ID`, `MODEL_API_KEY`, optional `MODEL_API_BASE`, `MODEL_EXTRA_BODY`, `MODEL_INPUT_PER_1M` / `MODEL_OUTPUT_PER_1M`.
+- Additional verified aliases via `EXTRA_MODELS`.
+- No Tencent model is configured or claimed.
+
+Restart after editing `.env`.
+
+## Synthetic demo content and seeding
+
+`demo-content/` holds the synthetic material:
+
+- Confluence pages: SG KYB Policy v3, RFI Templates, Payment-service Incident Runbook.
+- Drive: Acme's KYB submission (with a planted prompt-injection line and synthetic NRICs/phone/email for the PII guardrail) and a **restricted** EDD memo.
+- Jira cases KYB-101..103 plus incident follow-ups.
+- Slack threads: `#kyb-ops` public, including outdated advice that conflicts with policy v3; `#compliance-escalations` private.
+- The `kyb-registry` MCP data is in `mcp_servers/kyb_registry/data.json`.
+
+Seed with the authorizing user's own delegated credentials. It is idempotent and labels everything synthetic:
+
+```sh
+.venv/Scripts/python.exe -m backend.app.seed --as compliance --dry-run
+.venv/Scripts/python.exe -m backend.app.seed --as compliance [--only jira,slack,confluence,drive] [--atlassian-basic .local/atlassian-setup.env]
 ```
 
-Requested scopes: `https://www.googleapis.com/auth/drive.readonly`, `openid`, `https://www.googleapis.com/auth/userinfo.email`. Authorization code + S256 PKCE; offline consent. This read scope may require Google's verification or an appropriately configured restricted demo consent audience. Search includes the selected root and up to five delegated-visible direct child folders (ordered by name). Reads independently verify root or direct child-folder membership and permission. Deeper nesting and shortcuts are excluded. Google Docs export, UTF-8 text and text-based PDF reads are supported; OCR is unavailable. Link each app user's own source account in Knowledge.
+The Drive scope is read-only, so Drive steps are printed:
 
-Atlassian: create an OAuth 2.0 (3LO) integration in the developer console, enable Confluence scopes and identity access, set `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `CONFLUENCE_SPACE_KEY`, and preferably `CONFLUENCE_CLOUD_ID` (mandatory to resolve multiple eligible sites). Exact callback:
+- Upload `drive-acme-kyb-submission.txt` to the shared root folder.
+- Upload `drive-restricted-kyb-edd-memo.txt` to the limited-access child folder (compliance identity only).
 
-```text
-http://localhost:8000/api/connections/confluence/callback
+Confluence page restrictions need a paid plan.
+
+Freshness demo (append to a Confluence page, then re-run a query): `--update-page "Payment-service Incident Runbook" --append "<text>"`.
+
+## Using it
+
+- **Studio** (builder):
+  - Open a template or create from a description.
+  - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
+  - Run in the Test panel and watch nodes light up from real events. Publish to an audience.
+- **Workspace**: ask questions, or run published workflows from the catalog.
+- **Approvals**: the inbox shows the exact destination and payload. Approval re-authorizes, then executes once.
+- **Activity**: run history with an "Open trace in Grafana" link.
+- **Audit** (auditor): Verify integrity, filters, and natural-language queries (e.g. "everything operations accessed in the NSDEMO space in the last 30 days").
+- **Policies** (admin): allowed models/tools, approval-required actions, budgets.
+
+**Tamper demo** (as the DB owner; the app role cannot UPDATE/DELETE audit rows). Pick a seq; Verify integrity then reports that exact broken seq:
+
+```sh
+docker compose exec -T postgres psql -U app -d app -c "ALTER TABLE audit_events DISABLE TRIGGER audit_append_only; UPDATE audit_events SET reason='tampered' WHERE seq=42; ALTER TABLE audit_events ENABLE TRIGGER audit_append_only;"
 ```
 
-Requested scopes: `search:confluence`, `read:page:confluence`, `read:space:confluence`, `read:confluence-user`, `read:me`, `offline_access`. Confidential-client authorization code flow; Atlassian's current documented flow does not describe PKCE. Current CQL search and v2 page/space reads are used; dedicated `*.atlassian.net` sites supported. Provider permissions must allow the current user's content reads. State expires after ten minutes, is session/owner/provider bound and consumed atomically. Reconnect replaces that user's credentials; disconnect deletes local credentials/state and blocks new requests.
+## Limits
 
-Model: set `MODEL_ID` to a provider/model identifier actually supported by your authorized LiteLLM provider, `MODEL_API_KEY`, and `MODEL_API_BASE` only if that provider requires one. `MODEL_ALIAS` defaults to `knowledge-model`. No provider or model is silently substituted. No Tencent credential was found, and Tencent inference has **not** been verified. CodeBuddy/WorkBuddy credits are not proof of model API entitlement. The model must support Chat Completions streaming; final usage is recorded if returned. Proxy pricing estimates use the pinned LiteLLM package pricing map and are labelled estimated; absent usage/prices are unknown/null. Custom provider pricing remains unknown unless supplied/verified in a later accepted configuration. No hard budgets or autonomous loops.
+- **Retrieval:** query-time and federated (no index or source cache), bounded to 8 documents/run, 6,000 characters/document and 25 s/source. Drive traverses one child-folder level.
+- **Processes and runs:** one API process. Workflow runs persist; a paused approval survives restart, while running runs fail as `app_restarted`.
+- **Budgets:** in-flight model calls can overshoot a budget by at most one call.
+- **Grounding:** citation-based, with optional LLM entailment.
+- **Scope:** this is a local hackathon build with no production security or compliance claim.
 
-## Dedicated synthetic source setup
-
-All documents in `demo-content/` are **synthetic**. Manually import the shared `drive-*.txt` checklist and summary as UTF-8 text files or Google Docs into the configured root folder; put the restricted review memo into one direct child folder with Google limited access enabled; create the shared `confluence-approved-onboarding.md` page in the configured dedicated space. `confluence-restricted-compliance.md` needs native page restrictions, which Confluence Cloud's Free plan does not provide; create it only on a paid plan, otherwise the restricted-access demonstration runs through Drive only. The app never uploads source content or edits remote permissions. Configure sharing/restrictions in those source systems using the chosen real accounts:
-
-| Source material | Operations source identity | Compliance source identity | Platform Admin source identity |
-| --- | --- | --- | --- |
-| Drive checklist + submitted summary | Read | Read | Only if explicitly granted at source |
-| Confluence approved procedure | Read | Read | Only if explicitly granted at source |
-| Drive restricted review memo | No access | Read | No extra access from platform role |
-| Confluence restricted compliance procedure (paid plan only) | No access | Read | No extra access from platform role |
-
-Use a restricted child page/file with actual native sharing, not a title label alone. Share the Drive root with operations and compliance. Enable native limited access on the direct child folder containing the restricted memo, grant only compliance to that folder, and keep it within the first five visible child folders. Confirm operations cannot read that memo in Drive itself. If using a paid Confluence plan, apply native page view restrictions to the restricted page and confirm operations cannot open it directly. Broad inherited sharing must not grant the restricted material. This matrix is external provisioning documentation, never platform ACLs.
-
-Demo: sign in as operations; connect own Drive and Confluence; ask **“Why is Acme Trading's onboarding blocked, and what should I do next?”**; follow up **“Which document supports that, and who should I contact?”**; open citations and Activity. Ask for the restricted review and confirm only accessible material is used. Repeat in the compliance profile with real native source grants. Admin starts without any connections.
-
-## Limits and references
-
-No global content cache, embeddings, synchronization, OCR, source writes, public hosting, Agent Studio, policy/budget editor, MCP/Jira/Slack. Source excerpts live only in request memory and fresh source responses; conversations intentionally retain generated answers. Prior assistant answers/excerpts never become model context for a new run. Authorization cannot make already displayed information unseen. The source reader indicates a changed content hash. Retrieval is bounded to one page per enabled source, eight total documents, 6,000 characters/document, 2 MB/read, 25 seconds/source and 1,200 output tokens by default. One API process enforces four active runs and one active run/conversation; cancellation usage can be incomplete. This is a local hackathon build, without a production security/operations claim.
-
-Official references checked during implementation: [Google search](https://developers.google.com/workspace/drive/api/guides/search-files), [Google web OAuth](https://developers.google.com/identity/protocols/oauth2/web-server), [Atlassian 3LO](https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/), [Confluence v2 pages](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/), [LiteLLM spend tracking](https://docs.litellm.ai/docs/proxy/cost_tracking), [OTel sensitive data](https://opentelemetry.io/docs/security/handling-sensitive-data/).
-
-See [architecture](docs/architecture.md) and [iteration handoff](docs/iteration-1-handoff.md).
+See [architecture](docs/architecture.md), [contracts](docs/contracts.md) and the [iteration 2 handoff](docs/iteration-2-handoff.md).

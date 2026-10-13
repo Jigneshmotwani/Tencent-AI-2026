@@ -1,0 +1,750 @@
+{
+ "uid": "workflow-runs",
+ "title": "Workflow Runs",
+ "description": "Workflow run status, node durations and recent runs with Tempo trace links.",
+ "tags": [
+  "workflows"
+ ],
+ "timezone": "browser",
+ "editable": false,
+ "graphTooltip": 1,
+ "schemaVersion": 41,
+ "version": 1,
+ "refresh": "30s",
+ "time": {
+  "from": "now-7d",
+  "to": "now"
+ },
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ },
+ "links": [
+  {
+   "title": "AI Usage & Cost",
+   "type": "link",
+   "url": "/d/ai-usage-cost"
+  },
+  {
+   "title": "Governance",
+   "type": "link",
+   "url": "/d/governance"
+  },
+  {
+   "title": "Workflow Runs",
+   "type": "link",
+   "url": "/d/workflow-runs"
+  }
+ ],
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Workflow runs",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COUNT(*) AS runs FROM v_workflow_runs WHERE $__timeFilter(created_at)",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Completed",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COUNT(*) AS completed FROM v_workflow_runs WHERE $__timeFilter(created_at) AND status = 'completed'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Failed",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COUNT(*) AS failed FROM v_workflow_runs WHERE $__timeFilter(created_at) AND status = 'failed'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Paused (awaiting approval)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COUNT(*) AS paused FROM v_workflow_runs WHERE $__timeFilter(created_at) AND status = 'paused'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Blocked by budget",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COUNT(*) AS blocked FROM v_workflow_runs WHERE $__timeFilter(created_at) AND status = 'blocked_by_budget'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Workflow cost",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT COALESCE(SUM(cost_usd),0) AS cost FROM v_workflow_runs WHERE $__timeFilter(created_at)",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD",
+     "decimals": 4
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "auto"
+   }
+  },
+  {
+   "id": 7,
+   "type": "piechart",
+   "title": "Runs by status",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT status, COUNT(*) AS n FROM v_workflow_runs WHERE $__timeFilter(created_at) GROUP BY 1",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "pieType": "donut",
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "values": [
+      "value"
+     ]
+    },
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "values": true
+    }
+   }
+  },
+  {
+   "id": 8,
+   "type": "table",
+   "title": "Runs by workflow",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT workflow, COUNT(*) AS runs, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed, SUM(CASE WHEN status IN ('failed','blocked_by_budget') THEN 1 ELSE 0 END) AS failed_or_blocked, ROUND(AVG(latency_ms)::numeric,0) AS avg_latency_ms, COALESCE(SUM(cost_usd),0) AS cost_usd FROM v_workflow_runs WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY runs DESC",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 4,
+    "w": 16,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "cost_usd"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyUSD"
+       },
+       {
+        "id": "decimals",
+        "value": 5
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   }
+  },
+  {
+   "id": 9,
+   "type": "barchart",
+   "title": "Node duration by node type (avg / p95)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT n.node_type, ROUND(AVG(n.duration_ms)::numeric,0) AS avg_ms, ROUND((percentile_cont(0.95) WITHIN GROUP (ORDER BY n.duration_ms))::numeric,0) AS p95_ms FROM v_node_runs n JOIN v_workflow_runs w ON w.run_id = n.run_id WHERE $__timeFilter(w.created_at) AND n.duration_ms IS NOT NULL GROUP BY 1 ORDER BY p95_ms DESC",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 9
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "options": {
+    "orientation": "horizontal",
+    "showValue": "auto",
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "xTickLabelRotation": 0,
+    "xField": "node_type"
+   }
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Node duration p95 by node type (live histogram since API start)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le, node_type) (workflow_node_duration_milliseconds_bucket))",
+     "legendFormat": "{{node_type}}",
+     "range": true,
+     "instant": false
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 9
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "spanNulls": true,
+      "showPoints": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "timeFrom": "6h"
+  },
+  {
+   "id": 11,
+   "type": "table",
+   "title": "Node outcomes",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT n.node_type, n.status, COUNT(*) AS n, MAX(n.error_code) AS sample_error FROM v_node_runs n JOIN v_workflow_runs w ON w.run_id = n.run_id WHERE $__timeFilter(w.created_at) GROUP BY 1, 2 ORDER BY 1, 2",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 21,
+    "w": 8,
+    "h": 9
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   }
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Runs per hour by status",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), status AS metric, COUNT(*) AS value FROM v_workflow_runs WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1",
+     "format": "time_series",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 21,
+    "w": 16,
+    "h": 9
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "spanNulls": true,
+      "showPoints": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 13,
+   "type": "table",
+   "title": "Recent workflow runs (click trace_id to open in Tempo)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "appdb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "appdb"
+     },
+     "rawSql": "SELECT created_at, workflow, workflow_version AS version, username AS \"user\", status, trigger, steps_used, tokens_used, cost_usd, latency_ms, error_code, trace_id FROM v_workflow_runs WHERE $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 50",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 30,
+    "w": 24,
+    "h": 10
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "trace_id"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "Open trace in Tempo",
+          "url": "",
+          "internal": {
+           "datasourceUid": "tempo",
+           "datasourceName": "Tempo",
+           "query": {
+            "query": "${__value.raw}",
+            "queryType": "traceql"
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "cost_usd"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyUSD"
+       },
+       {
+        "id": "decimals",
+        "value": 5
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "latency_ms"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "ms"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   }
+  },
+  {
+   "id": 14,
+   "type": "table",
+   "title": "Recent API traces (Tempo)",
+   "description": "Spans carrying run.id from the API service. Only allowlisted attributes survive the collector redaction processor.",
+   "datasource": {
+    "type": "tempo",
+    "uid": "tempo"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "tempo",
+      "uid": "tempo"
+     },
+     "queryType": "traceql",
+     "query": "{ resource.service.name = \"api\" && span.run.id != nil }",
+     "limit": 20,
+     "tableType": "traces"
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 24,
+    "h": 9
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   }
+  }
+ ]
+}

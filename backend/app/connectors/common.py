@@ -91,6 +91,43 @@ async def request_json(url: str, context: AccessContext, params: dict | None = N
         raise SourceError('unavailable') from None
 
 
+async def request_api(method: str, url: str, context: AccessContext, params: dict | None = None,
+                      json_body: dict | None = None, max_bytes: int = 2_000_000) -> dict:
+    """Bounded JSON request for any verb (writes included). One bounded wait on HTTP 429, never a loop.
+    2xx with an empty body returns {}. 401/403/404/410 are 'denied' (indistinguishable)."""
+    headers = {'Authorization': f'Bearer {context.access_token}', 'Accept': 'application/json'}
+    try:
+        async with asyncio.timeout(settings().source_timeout):
+            async with httpx.AsyncClient(timeout=settings().source_timeout, follow_redirects=False,
+                                         trust_env=False) as client:
+                for attempt in (0, 1):
+                    response = await client.request(method, url, params=params, json=json_body, headers=headers)
+                    if response.status_code == 429 and attempt == 0:
+                        try:
+                            wait = float(response.headers.get('retry-after', '2'))
+                        except ValueError:
+                            wait = 2.0
+                        if wait > 5:
+                            raise SourceError('unavailable')
+                        await asyncio.sleep(max(wait, 0.5))
+                        continue
+                    break
+                if response.status_code in (401, 403, 404, 410):
+                    raise SourceError('denied')
+                if not 200 <= response.status_code < 300 or len(response.content) > max_bytes:
+                    raise SourceError('unavailable')
+                if not response.content:
+                    return {}
+                result = response.json()
+                if not isinstance(result, (dict, list)):
+                    raise ValueError()
+                return result
+    except SourceError:
+        raise
+    except (httpx.HTTPError, TimeoutError, ValueError, TypeError):
+        raise SourceError('unavailable') from None
+
+
 def document(document_id: str, title: str, text: str, canonical_url: str,
              location: str, version: str, modified_at: str | None) -> SourceDocument:
     # Bound normalized content too: source bytes and extraction can have different sizes.

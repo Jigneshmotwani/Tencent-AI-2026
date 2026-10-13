@@ -22,16 +22,37 @@ async def lifespan(app):
     with SessionLocal() as db:
         unfinished=list(db.scalars(select(Run.id).where(Run.status.not_in(TERMINAL))))
     for rid in unfinished: terminal(rid,'failed','app_restarted')
+    from .workflows import engine as workflow_engine
+    workflow_engine.recover_on_startup()
     yield
+    await workflow_engine.shutdown()
     for rid in list(tasks): await cancel_run(rid)
     provider.shutdown()
 
 app=FastAPI(title='Knowledge Assistant', lifespan=lifespan, docs_url=None, redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','[::1]'])
 app.add_middleware(CORSMiddleware,allow_origins=[settings().app_origin],allow_credentials=True,
-    allow_methods=['GET','POST','DELETE'],allow_headers=['Content-Type','X-CSRF-Token'])
+    allow_methods=['GET','POST','PUT','PATCH','DELETE'],allow_headers=['Content-Type','X-CSRF-Token'])
 app.include_router(identity.router,prefix='/api')
 app.include_router(connections.router,prefix='/api')
+# Iteration 2 routers (owners in docs/contracts.md).
+from .workflows.api import router as workflows_router
+from .copilot.api import router as copilot_router
+from .mcp.api import router as mcp_router
+from .audit.api import router as audit_router
+for _router in (workflows_router, copilot_router, mcp_router, audit_router): app.include_router(_router, prefix='/api')
+
+@app.get('/api/studio/registry')
+def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
+    """NodeRegistry + discovered MCP tools + allowed models/sources: what the canvas and Copilot may use."""
+    identity.require_capability(user,'user')
+    from .workflows.registry import public_registry
+    from .mcp.registry import list_tools
+    from .governance.policies import get_policy
+    from .gateway import model_aliases
+    policy=get_policy(db)
+    models=[m for m in model_aliases() if not policy.get('allowed_models') or m in policy['allowed_models']]
+    return {**public_registry(),'mcp_tools':list_tools(db),'models':models,'sources':['drive','confluence','jira','slack'],'policy':policy}
 
 @app.middleware('http')
 async def response_security(request, call_next):
@@ -50,7 +71,10 @@ def owned(db,model,id,user):
     return row
 
 def run_summary(run):
-    return {k:getattr(run,k) for k in ('id','conversation_id','agent_id','agent_version','trace_id','status','created_at','finished_at','model_alias','usage','providers','limitations','error_code','latency_ms')}
+    from .governance.links import grafana_trace_url
+    out={k:getattr(run,k) for k in ('id','conversation_id','agent_id','agent_version','trace_id','status','created_at','finished_at','model_alias','usage','providers','limitations','error_code','latency_ms')}
+    out['grafana_trace_url']=grafana_trace_url(run.trace_id) or None
+    return out
 def conv_summary(conv): return {k:getattr(conv,k) for k in ('id','title','created_at')}
 def audit_summary(row):
     return {k:getattr(row,k) for k in ('id','timestamp','actor_id','run_id','trace_id','operation','provider','outcome','reason')}
@@ -68,11 +92,16 @@ async def health():
     services={}
     async with httpx.AsyncClient(timeout=1,trust_env=False) as client:
         for name,url in [('gateway',cfg.litellm_url+'/health/readiness'),('collector',cfg.otel_endpoint.rsplit('/v1/',1)[0]+'/health')]:
-            try: services[name]='ready' if (await client.get(url,headers={'Authorization':f'Bearer {cfg.litellm_master_key}'} if name=='gateway' else {})).is_success else 'unavailable'
+            try:
+                response=await client.get(url,headers={'Authorization':f'Bearer {cfg.litellm_master_key}'} if name=='gateway' else {})
+                # The OTel collector container answers OTLP only; any HTTP reply on the port means it is listening.
+                services[name]='ready' if response.is_success or (name=='collector' and response.status_code<500) else 'unavailable'
             except httpx.HTTPError: services[name]='unavailable'
     return {'status':'ready' if database=='ready' else 'degraded','database':database,**services,
         'integrations':{'drive':bool(cfg.google_client_id and cfg.google_client_secret and cfg.google_folder_id),
         'confluence':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.confluence_space_key),
+        'jira':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.jira_projects),
+        'slack':bool(cfg.slack_client_id and cfg.slack_client_secret and cfg.slack_team_id),
         'model':bool(cfg.model_id and cfg.model_api_key)},'model_alias':cfg.model_alias,
         'inference_verified':inference_verified,'runtime':'local LiteLLM; provider configured by MODEL_ID'}
 class NewConversation(BaseModel): title:str=Field(default='New conversation',max_length=100)

@@ -1,4 +1,8 @@
-"""Per-user delegated OAuth accounts. No platform role widens source access."""
+"""Per-user delegated OAuth accounts. No platform role widens source access.
+
+Providers: drive (Google, PKCE), confluence + jira (Atlassian confidential 3LO, separate consents and
+connections), slack (OAuth v2 user token, HTTPS redirect via the local TLS shim, bound to SLACK_TEAM_ID).
+"""
 import asyncio
 import base64
 import hashlib
@@ -16,7 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as DBSession
 
 from .config import settings
-from .contracts import AccessContext, SourceError
+from .contracts import PROVIDERS, AccessContext, SourceError
 from .db import AuditEvent, Credential, OAuthState, SourceConnection, User, get_db, now
 from .identity import browser_session, current_user, digest, require_capability, require_mutation
 
@@ -25,6 +29,13 @@ DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
 CONFLUENCE_SCOPES = {'search:confluence', 'read:page:confluence', 'read:space:confluence'}
 GOOGLE_SCOPES = [DRIVE_SCOPE, 'openid', 'https://www.googleapis.com/auth/userinfo.email']
 ATLASSIAN_SCOPES = sorted(CONFLUENCE_SCOPES | {'read:confluence-user', 'read:me', 'offline_access'})
+# Classic Jira platform scopes (developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps).
+JIRA_SCOPES = {'read:jira-work', 'write:jira-work'}
+JIRA_REQUEST_SCOPES = sorted(set(ATLASSIAN_SCOPES) | JIRA_SCOPES | {'read:jira-user'})
+SLACK_USER_SCOPES = ['search:read', 'channels:history', 'channels:read', 'groups:history', 'groups:read', 'users:read', 'chat:write']
+REQUIRED_SCOPES = {'drive': {DRIVE_SCOPE}, 'confluence': CONFLUENCE_SCOPES, 'jira': JIRA_SCOPES, 'slack': set(SLACK_USER_SCOPES)}
+ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token'
+SLACK_TOKEN_URL = 'https://slack.com/api/oauth.v2.access'
 _locks: dict[str, asyncio.Lock] = {}
 
 
@@ -49,18 +60,28 @@ def _decrypt(value: str) -> dict:
         raise SourceError('unavailable') from None
 
 
+def _slack_channels() -> str:
+    return ','.join(dict.fromkeys(c.strip().lstrip('#').lower() for c in settings().slack_channels.split(',') if c.strip().lstrip('#')))
+
+
 def _collection(provider: str) -> str:
-    return settings().google_folder_id if provider == 'drive' else settings().confluence_space_key
+    cfg = settings()
+    return {'drive': cfg.google_folder_id, 'confluence': cfg.confluence_space_key,
+            'jira': ','.join(cfg.jira_projects), 'slack': _slack_channels()}.get(provider, '')
 
 
 def availability():
     cfg = settings()
+    atlassian = bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.encryption_key)
     return {'drive': {'configured': bool(cfg.google_client_id and cfg.google_client_secret and cfg.google_folder_id and cfg.encryption_key), 'collection': cfg.google_folder_id},
-            'confluence': {'configured': bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.confluence_space_key and cfg.encryption_key), 'collection': cfg.confluence_space_key}}
+            'confluence': {'configured': bool(atlassian and cfg.confluence_space_key), 'collection': cfg.confluence_space_key},
+            'jira': {'configured': bool(atlassian and cfg.jira_projects), 'collection': _collection('jira')},
+            'slack': {'configured': bool(cfg.slack_client_id and cfg.slack_client_secret and cfg.slack_team_id and _slack_channels() and cfg.encryption_key
+                                         and urlparse(cfg.api_tls_origin).scheme == 'https'), 'collection': _collection('slack')}}
 
 
 def _provider(provider: str):
-    if provider not in {'drive', 'confluence'}:
+    if provider not in PROVIDERS:
         raise HTTPException(404, 'source_unavailable')
 
 
@@ -71,16 +92,35 @@ def _own(db: DBSession, user: User, connection_id: str) -> SourceConnection:
     return connection
 
 
+def connection_for(db: DBSession, user: User, provider: str) -> SourceConnection | None:
+    """The user's own connected account for a provider (one per user/provider), else None."""
+    if provider not in PROVIDERS:
+        return None
+    return db.scalar(select(SourceConnection).where(SourceConnection.owner_id == user.id, SourceConnection.provider == provider,
+                                                    SourceConnection.status == 'connected').order_by(SourceConnection.checked_at.desc()).limit(1))
+
+
 def _public(connection: SourceConnection):
     return {key: getattr(connection, key) for key in ('id', 'provider', 'identity_label', 'provider_subject', 'tenant_id', 'collection', 'status', 'checked_at')}
 
 
-def _audit(db: DBSession, user: User, operation: str, provider: str, outcome: str, reason: str):
-    db.add(AuditEvent(actor_id=user.id, operation=operation, provider=provider, outcome=outcome, reason=reason))
+def _audit(db: DBSession, user: User, operation: str, provider: str, outcome: str, reason: str, container: str | None = None):
+    db.add(AuditEvent(actor_id=user.id, operation=operation, provider=provider, outcome=outcome, reason=reason, container=container))
 
 
 def _callback_url(provider: str):
-    return settings().api_origin.rstrip('/') + '/api/connections/' + provider + '/callback'
+    # Slack only accepts HTTPS redirect URLs; the local TLS shim 303-forwards to the HTTP API callback.
+    origin = settings().api_tls_origin if provider == 'slack' else settings().api_origin
+    return origin.rstrip('/') + '/api/connections/' + provider + '/callback'
+
+
+def _client_credentials(provider: str) -> tuple[str, str]:
+    cfg = settings()
+    if provider == 'drive':
+        return cfg.google_client_id, cfg.google_client_secret
+    if provider == 'slack':
+        return cfg.slack_client_id, cfg.slack_client_secret
+    return cfg.atlassian_client_id, cfg.atlassian_client_secret
 
 
 async def _json(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -95,7 +135,19 @@ async def _json(client: httpx.AsyncClient, method: str, url: str, **kwargs):
         raise SourceError('unavailable') from None
 
 
+async def _slack(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> dict:
+    """Slack answers HTTP 200 with ok=false on failure; map to safe codes without echoing provider text."""
+    result = await _json(client, method, url, **kwargs)
+    if not isinstance(result, dict):
+        raise SourceError('unavailable')
+    if not result.get('ok'):
+        error = str(result.get('error', ''))
+        raise SourceError('scope_missing' if error == 'missing_scope' else 'unavailable' if error in {'ratelimited', 'internal_error', 'fatal_error', 'service_unavailable', 'request_timeout'} else 'denied')
+    return result
+
+
 async def _provider_identity(client: httpx.AsyncClient, provider: str, token: str, expected_tenant: str | None = None):
+    """(subject, safe label, tenant id, site url, granted scopes|None). Fails closed."""
     headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json'}
     if provider == 'drive':
         account = await _json(client, 'GET', 'https://openidconnect.googleapis.com/v1/userinfo', headers=headers)
@@ -104,12 +156,24 @@ async def _provider_identity(client: httpx.AsyncClient, provider: str, token: st
             raise SourceError('denied')
         # Drive identities are individual principals; the configured folder bounds the collection.
         return str(subject), str(account.get('email') or subject), str(subject), '', None
+    if provider == 'slack':
+        auth = await _slack(client, 'POST', 'https://slack.com/api/auth.test', headers=headers)
+        team = settings().slack_team_id
+        if not auth.get('user_id') or not team or auth.get('team_id') != team or (expected_tenant and auth.get('team_id') != expected_tenant):
+            raise SourceError('denied')
+        site_url = str(auth.get('url', '')).rstrip('/')
+        parsed = urlparse(site_url)
+        if parsed.scheme != 'https' or not (parsed.hostname or '').endswith('.slack.com') or parsed.username or parsed.password:
+            site_url = ''
+        return str(auth['user_id']), f"{auth.get('user') or auth['user_id']} ({auth.get('team') or team})", str(auth['team_id']), site_url, None
     account = await _json(client, 'GET', 'https://api.atlassian.com/me', headers=headers)
     resources = await _json(client, 'GET', 'https://api.atlassian.com/oauth/token/accessible-resources', headers=headers)
     if not isinstance(resources, list) or not account.get('account_id'):
         raise SourceError('denied')
     tenant = expected_tenant or settings().confluence_cloud_id
-    choices = [r for r in resources if CONFLUENCE_SCOPES.issubset(set(r.get('scopes', []))) and (not tenant or r.get('id') == tenant)]
+    required = REQUIRED_SCOPES[provider]
+    # Jira and Confluence entries for one site share an id but list product-specific scopes.
+    choices = [r for r in resources if isinstance(r, dict) and required.issubset(set(r.get('scopes', []))) and (not tenant or r.get('id') == tenant)]
     if len(choices) != 1:
         raise SourceError('site_selection_required' if len(choices) > 1 else 'denied')
     resource = choices[0]
@@ -120,11 +184,122 @@ async def _provider_identity(client: httpx.AsyncClient, provider: str, token: st
     return str(account['account_id']), str(account.get('email') or account.get('name') or account['account_id']), str(resource['id']), site_url, list(resource['scopes'])
 
 
+def _expiry(expires_in) -> float:
+    """0 = non-expiring (Slack user tokens without rotation)."""
+    try:
+        seconds = int(expires_in or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return time.time() + seconds if seconds > 0 else 0.0
+
+
+async def _exchange_code(client: httpx.AsyncClient, provider: str, code: str, encrypted: str) -> tuple[dict, list | None]:
+    """Authorization code -> normalized stored token {access_token, refresh_token?, expires_at, token_type}."""
+    client_id, client_secret = _client_credentials(provider)
+    payload = {'code': code, 'redirect_uri': _callback_url(provider), 'client_id': client_id, 'client_secret': client_secret}
+    if provider == 'slack':
+        result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
+        authed = result.get('authed_user') or {}
+        team = (result.get('team') or {}).get('id')
+        # User token only; a bot token (if any) is discarded. Workspace must be the configured one.
+        if not isinstance(authed.get('access_token'), str) or str(authed.get('token_type', '')).lower() != 'user' or team != settings().slack_team_id:
+            raise SourceError('denied')
+        token = {'access_token': authed['access_token'], 'token_type': 'user', 'expires_at': _expiry(authed.get('expires_in'))}
+        if authed.get('refresh_token'):
+            token['refresh_token'] = authed['refresh_token']
+        return token, [s for s in str(authed.get('scope', '')).split(',') if s]
+    payload['grant_type'] = 'authorization_code'
+    if provider == 'drive':
+        payload['code_verifier'] = _decrypt(encrypted)['verifier']
+        token = await _json(client, 'POST', 'https://oauth2.googleapis.com/token', data=payload)
+    else:
+        token = await _json(client, 'POST', ATLASSIAN_TOKEN_URL, json=payload)
+    if not isinstance(token, dict) or not isinstance(token.get('access_token'), str) or str(token.get('token_type', '')).lower() != 'bearer':
+        raise SourceError('denied')
+    token['expires_at'] = _expiry(token.get('expires_in')) or time.time()
+    return token, (str(token.get('scope', '')).split() if provider == 'drive' else None)
+
+
+async def _refresh(client: httpx.AsyncClient, provider: str, token: dict) -> tuple[dict, list | None]:
+    if not token.get('refresh_token'):
+        raise SourceError('denied')
+    client_id, client_secret = _client_credentials(provider)
+    payload = {'grant_type': 'refresh_token', 'refresh_token': token['refresh_token'], 'client_id': client_id, 'client_secret': client_secret}
+    if provider == 'slack':
+        # Token rotation: refresh tokens are single-use; store the replacement every time.
+        result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
+        source = result.get('authed_user') if isinstance(result.get('authed_user'), dict) and result['authed_user'].get('access_token') else result
+        if not isinstance(source.get('access_token'), str) or not source.get('refresh_token'):
+            raise SourceError('denied')
+        fresh = {'access_token': source['access_token'], 'refresh_token': source['refresh_token'], 'token_type': 'user',
+                 'expires_at': _expiry(source.get('expires_in'))}
+        scopes = [s for s in str(source.get('scope', '')).split(',') if s] or None
+        return {**token, **fresh}, scopes
+    if provider == 'drive':
+        fresh = await _json(client, 'POST', 'https://oauth2.googleapis.com/token', data=payload)
+    else:
+        fresh = await _json(client, 'POST', ATLASSIAN_TOKEN_URL, json=payload)
+    if not isinstance(fresh, dict) or not fresh.get('access_token') or str(fresh.get('token_type', '')).lower() != 'bearer':
+        raise SourceError('denied')
+    merged = {**token, **fresh, 'expires_at': _expiry(fresh.get('expires_in')) or time.time()}
+    return merged, (str(fresh['scope']).split() if provider == 'drive' and 'scope' in fresh else None)
+
+
 @router.get('')
 def list_connections(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     require_capability(user, 'user')
     connections = db.scalars(select(SourceConnection).where(SourceConnection.owner_id == user.id).order_by(SourceConnection.provider)).all()
     return {'connections': [_public(connection) for connection in connections], 'availability': availability()}
+
+
+async def _gateway_health() -> str:
+    cfg = settings()
+    try:
+        async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
+            response = await client.get(cfg.litellm_url + '/health/readiness', headers={'Authorization': f'Bearer {cfg.litellm_master_key}'})
+            return 'ready' if response.is_success else 'unavailable'
+    except httpx.HTTPError:
+        return 'unavailable'
+
+
+@router.get('/hub')
+async def hub(user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    """T14: knowledge sources, MCP servers and models for the signed-in user. Never returns tokens or secrets."""
+    require_capability(user, 'user')
+    available = availability()
+    own = {c.provider: c for c in db.scalars(select(SourceConnection).where(SourceConnection.owner_id == user.id).order_by(SourceConnection.checked_at))}
+    sources = []
+    for provider in PROVIDERS:
+        connection = own.get(provider)
+        last_ok = db.scalar(select(AuditEvent.timestamp).where(AuditEvent.actor_id == user.id, AuditEvent.provider == provider,
+                                                               AuditEvent.operation == 'source.read', AuditEvent.outcome == 'allowed')
+                            .order_by(AuditEvent.timestamp.desc()).limit(1))
+        last_attempt = db.scalar(select(AuditEvent.timestamp).where(AuditEvent.actor_id == user.id, AuditEvent.provider == provider,
+                                                                    AuditEvent.operation.in_(('source.read', 'source.search')))
+                                 .order_by(AuditEvent.timestamp.desc()).limit(1))
+        entry = {'provider': provider, 'configured': available[provider]['configured'], 'configured_collection': available[provider]['collection'],
+                 'requested_scopes': sorted(REQUIRED_SCOPES[provider]), 'connection': None,
+                 'freshness': {'last_successful_fetch': last_ok, 'last_attempt': last_attempt}}
+        if connection is not None:
+            entry['connection'] = {**_public(connection), 'scopes': list(connection.scopes or []) if connection.status == 'connected' else [],
+                                   'site_url': connection.site_url if connection.status == 'connected' else ''}
+        sources.append(entry)
+    try:
+        from .mcp.registry import list_servers_public
+        servers = list_servers_public(db)
+    except Exception:
+        servers = []
+    from .gateway import model_aliases
+    aliases = model_aliases()
+    allowed = None
+    try:
+        from .governance.policies import get_policy
+        allowed = get_policy(db).get('allowed_models') or None
+    except Exception:
+        allowed = None
+    models = {'gateway': {'status': await _gateway_health(), 'checked_at': now()}, 'default_alias': settings().model_alias,
+              'aliases': [{'alias': alias, 'allowed': allowed is None or alias in allowed, 'default': alias == settings().model_alias} for alias in aliases]}
+    return {'sources': sources, 'mcp_servers': servers, 'models': models}
 
 
 @router.post('/{provider}/authorize')
@@ -142,18 +317,21 @@ def authorize(provider: str, request: Request, user: User = Depends(current_user
                       verifier_encrypted=_encrypt({'verifier': verifier}), expires_at=now() + timedelta(minutes=10)))
     _audit(db, user, 'connection.authorize', provider, 'allowed', 'authorization_started')
     db.commit()
-    cfg = settings()
-    params = {'client_id': cfg.google_client_id if provider == 'drive' else cfg.atlassian_client_id,
-              'redirect_uri': _callback_url(provider), 'response_type': 'code', 'state': state,
-              'scope': ' '.join(GOOGLE_SCOPES if provider == 'drive' else ATLASSIAN_SCOPES)}
+    client_id, _ = _client_credentials(provider)
+    params = {'client_id': client_id, 'redirect_uri': _callback_url(provider), 'state': state}
     if provider == 'drive':
-        params.update({'access_type': 'offline', 'prompt': 'consent select_account',
+        params.update({'response_type': 'code', 'scope': ' '.join(GOOGLE_SCOPES), 'access_type': 'offline', 'prompt': 'consent select_account',
                        'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='),
                        'code_challenge_method': 'S256'})
         endpoint = 'https://accounts.google.com/o/oauth2/v2/auth'
+    elif provider == 'slack':
+        # User-token scopes only (no bot); `team` pre-selects the configured workspace.
+        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id})
+        endpoint = 'https://slack.com/oauth/v2/authorize'
     else:
         # Atlassian documents confidential-client 3LO, not a PKCE public-client flow.
-        params.update({'audience': 'api.atlassian.com', 'prompt': 'consent'})
+        params.update({'response_type': 'code', 'scope': ' '.join(JIRA_REQUEST_SCOPES if provider == 'jira' else ATLASSIAN_SCOPES),
+                       'audience': 'api.atlassian.com', 'prompt': 'consent'})
         endpoint = 'https://auth.atlassian.com/authorize'
     return {'authorization_url': endpoint + '?' + urlencode(params)}
 
@@ -182,22 +360,12 @@ async def callback(provider: str, request: Request, user: User = Depends(current
         return RedirectResponse(settings().app_origin + '/?connection=consent_not_completed', status_code=303)
     try:
         cfg = settings()
-        payload = {'grant_type': 'authorization_code', 'code': codes[0], 'redirect_uri': _callback_url(provider),
-                   'client_id': cfg.google_client_id if provider == 'drive' else cfg.atlassian_client_id,
-                   'client_secret': cfg.google_client_secret if provider == 'drive' else cfg.atlassian_client_secret}
-        if provider == 'drive':
-            payload['code_verifier'] = _decrypt(encrypted)['verifier']
         async with httpx.AsyncClient(timeout=cfg.source_timeout, follow_redirects=False) as client:
-            token = await _json(client, 'POST', 'https://oauth2.googleapis.com/token' if provider == 'drive' else 'https://auth.atlassian.com/oauth/token',
-                                **({'data': payload} if provider == 'drive' else {'json': payload}))
-            if not isinstance(token.get('access_token'), str) or str(token.get('token_type', '')).lower() != 'bearer':
-                raise SourceError('denied')
+            token, token_scopes = await _exchange_code(client, provider, codes[0], encrypted)
             subject, label, tenant_id, site_url, resource_scopes = await _provider_identity(client, provider, token['access_token'])
-        scopes = str(token.get('scope', '')).split() if provider == 'drive' else resource_scopes
-        required = {DRIVE_SCOPE} if provider == 'drive' else CONFLUENCE_SCOPES
-        if not required.issubset(set(scopes or [])):
+        scopes = resource_scopes if resource_scopes is not None else token_scopes
+        if not REQUIRED_SCOPES[provider].issubset(set(scopes or [])):
             raise SourceError('scope_missing')
-        token['expires_at'] = time.time() + int(token.get('expires_in', 0))
         connection = db.scalar(select(SourceConnection).where(SourceConnection.owner_id == user.id, SourceConnection.provider == provider))
         if connection is None:
             connection = SourceConnection(owner_id=user.id, provider=provider)
@@ -220,7 +388,7 @@ async def callback(provider: str, request: Request, user: User = Depends(current
         connection.status = 'connected'
         connection.checked_at = now()
         db.add(connection)
-        _audit(db, user, 'connection.callback', provider, 'allowed', 'identity_linked')
+        _audit(db, user, 'connection.callback', provider, 'allowed', 'identity_linked', connection.collection)
         db.commit()
         return RedirectResponse(cfg.app_origin + '/?connection=connected', status_code=303)
     except (SourceError, httpx.HTTPError, KeyError, ValueError, TypeError) as error:
@@ -237,10 +405,11 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
     async with _locks.setdefault(connection_id, asyncio.Lock()):
         connection = _own(db, user, connection_id)
         db.refresh(connection)
-        if connection.status != 'connected' or not connection.credential_ref or not connection.collection or connection.collection != _collection(connection.provider):
+        if (connection.provider not in PROVIDERS or connection.status != 'connected' or not connection.credential_ref
+                or not connection.collection or connection.collection != _collection(connection.provider)):
             raise SourceError('unavailable')
-        required = {DRIVE_SCOPE} if connection.provider == 'drive' else CONFLUENCE_SCOPES
-        if not required.issubset(set(connection.scopes)):
+        required = REQUIRED_SCOPES[connection.provider]
+        if not required.issubset(set(connection.scopes or [])):
             raise SourceError('scope_missing')
         credential = db.get(Credential, connection.credential_ref)
         if credential is None:
@@ -249,30 +418,25 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
             token = _decrypt(credential.encrypted)
             cfg = settings()
             async with httpx.AsyncClient(timeout=cfg.source_timeout, follow_redirects=False) as client:
-                if float(token.get('expires_at', 0)) <= time.time() + 60:
-                    if not token.get('refresh_token'):
-                        raise SourceError('denied')
-                    payload = {'grant_type': 'refresh_token', 'refresh_token': token['refresh_token'],
-                               'client_id': cfg.google_client_id if connection.provider == 'drive' else cfg.atlassian_client_id,
-                               'client_secret': cfg.google_client_secret if connection.provider == 'drive' else cfg.atlassian_client_secret}
-                    fresh = await _json(client, 'POST', 'https://oauth2.googleapis.com/token' if connection.provider == 'drive' else 'https://auth.atlassian.com/oauth/token',
-                                        **({'data': payload} if connection.provider == 'drive' else {'json': payload}))
-                    if not fresh.get('access_token') or str(fresh.get('token_type', '')).lower() != 'bearer':
-                        raise SourceError('denied')
-                    token.update(fresh)
-                    token['expires_at'] = time.time() + int(fresh.get('expires_in', 0))
-                    if 'scope' in fresh and connection.provider == 'drive':
-                        connection.scopes = str(fresh['scope']).split()
+                expires_at = float(token.get('expires_at') or 0)
+                # Slack user tokens without rotation never expire (expires_at 0).
+                if (connection.provider != 'slack' or expires_at) and expires_at <= time.time() + 60:
+                    token, refreshed_scopes = await _refresh(client, connection.provider, token)
+                    if refreshed_scopes is not None:
+                        connection.scopes = refreshed_scopes
                         if not required.issubset(set(connection.scopes)):
                             raise SourceError('scope_missing')
                     credential.encrypted = _encrypt(token)
+                    # Persist a rotated refresh token immediately: the previous one is single-use.
+                    db.commit()
                     _audit(db, user, 'connection.refresh', connection.provider, 'allowed', 'token_refreshed')
-                if connection.provider == 'confluence':
-                    # Grants and accessible sites can change; recheck before each request.
+                if connection.provider in ('confluence', 'jira', 'slack'):
+                    # Grants, accessible sites and workspace membership can change; recheck before each request.
                     subject, _, tenant, _, scopes = await _provider_identity(client, connection.provider, token['access_token'], connection.tenant_id)
                     if subject != connection.provider_subject or tenant != connection.tenant_id:
                         raise SourceError('denied')
-                    connection.scopes = scopes
+                    if scopes is not None:
+                        connection.scopes = scopes
             connection.checked_at = now()
             db.commit()
             return AccessContext(connection.id, user.id, connection.provider, connection.provider_subject,
@@ -285,6 +449,15 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
             _audit(db, user, 'connection.access', connection.provider, 'denied' if code in {'denied', 'scope_missing'} else 'error', code)
             db.commit()
             raise SourceError(code) from None
+
+
+def stored_token(db: DBSession, user: User, connection_id: str) -> dict:
+    """Decrypted credential for the owner's own connection (seeding CLI only; never logged or returned)."""
+    connection = _own(db, user, connection_id)
+    credential = db.get(Credential, connection.credential_ref) if connection.credential_ref else None
+    if credential is None:
+        raise SourceError('unavailable')
+    return _decrypt(credential.encrypted)
 
 
 @router.post('/{connection_id}/health')
@@ -301,7 +474,7 @@ async def health(connection_id: str, request: Request, user: User = Depends(curr
         await registry[context.provider].health(context)
         connection.identity_label = label
         connection.checked_at = now()
-        _audit(db, user, 'connection.health', connection.provider, 'allowed', 'identity_checked')
+        _audit(db, user, 'connection.health', connection.provider, 'allowed', 'identity_checked', connection.collection)
         db.commit()
         return _public(connection)
     except (SourceError, httpx.HTTPError):

@@ -18,6 +18,28 @@ def port_open(port):
     with socket.socket() as sock:
         sock.settimeout(.3); return sock.connect_ex(('127.0.0.1',port))==0
 
+def ensure_tls():
+    """Self-signed loopback certificate for the HTTPS OAuth callback shim (Slack requires HTTPS redirect URLs).
+    Browsers warn once; accept it for https://localhost:<LOCAL_PORT_API_TLS> or install an mkcert cert at the same paths."""
+    import datetime, ipaddress
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    folder=LOCAL/'tls'; folder.mkdir(exist_ok=True); cert,key=folder/'localhost.pem',folder/'localhost-key.pem'
+    if cert.exists() and key.exists(): return cert,key
+    private=ec.generate_private_key(ec.SECP256R1())
+    name=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'localhost')])
+    start=datetime.datetime.now(datetime.timezone.utc)
+    certificate=(x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(private.public_key())
+        .serial_number(x509.random_serial_number()).not_valid_before(start).not_valid_after(start+datetime.timedelta(days=825))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName('localhost'),x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]),critical=False)
+        .add_extension(x509.BasicConstraints(ca=False,path_length=None),critical=True)
+        .sign(private,hashes.SHA256()))
+    key.write_bytes(private.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption())); os.chmod(key,0o600)
+    cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    return cert,key
+
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--services',choices=['native','compose'],default='native'); args=parser.parse_args()
     os.chdir(ROOT); LOCAL.mkdir(exist_ok=True); os.chmod(LOCAL,0o700)
@@ -25,14 +47,19 @@ def main():
     values.update({k:os.environ[k] for k in values if k in os.environ})
     # Ports are configurable so the stack can coexist with other local projects; endpoint URLs derive from them.
     ports={name:int(values.get(key) or default) for name,key,default in (('db','LOCAL_PORT_DB',55432),('api','LOCAL_PORT_API',8000),
-        ('app','LOCAL_PORT_APP',5173),('gateway','LOCAL_PORT_GATEWAY',4000),('collector','LOCAL_PORT_COLLECTOR',4318))}
+        ('app','LOCAL_PORT_APP',5173),('gateway','LOCAL_PORT_GATEWAY',4000),('collector','LOCAL_PORT_COLLECTOR',4318),
+        ('api_tls','LOCAL_PORT_API_TLS',8443),('grafana','LOCAL_PORT_GRAFANA',3000),('tempo','LOCAL_PORT_TEMPO',3200),('prometheus','LOCAL_PORT_PROMETHEUS',9090))}
     values.update({'APP_ORIGIN':f"http://localhost:{ports['app']}",'API_ORIGIN':f"http://localhost:{ports['api']}",
+        'API_TLS_ORIGIN':f"https://localhost:{ports['api_tls']}",'GRAFANA_URL':f"http://localhost:{ports['grafana']}",
         'LITELLM_URL':f"http://127.0.0.1:{ports['gateway']}",'OTEL_ENDPOINT':f"http://127.0.0.1:{ports['collector']}/v1/traces"})
     if not values.get('ENCRYPTION_KEY'): values['ENCRYPTION_KEY']=Fernet.generate_key().decode()
     if not values.get('LITELLM_MASTER_KEY'): values['LITELLM_MASTER_KEY']='sk-'+secrets.token_urlsafe(36)
     # Native credentials are generated once, host bindings stay loopback only.
-    if not values.get('LOCAL_DB_PASSWORD'): values['LOCAL_DB_PASSWORD']=secrets.token_urlsafe(30)
+    for key in ('LOCAL_DB_PASSWORD','APP_RUNTIME_DB_PASSWORD','GRAFANA_DB_PASSWORD','GRAFANA_ADMIN_PASSWORD','AUDIT_HMAC_KEY'):
+        if not values.get(key): values[key]=secrets.token_urlsafe(30)
     values['DATABASE_URL']=f"postgresql+psycopg://app:{values['LOCAL_DB_PASSWORD']}@127.0.0.1:{ports['db']}/app"
+    # The API connects as the non-owner runtime role: audit rows are append-only for it (migration 2).
+    values['APP_DATABASE_URL']=f"postgresql+psycopg://app_runtime:{values['APP_RUNTIME_DB_PASSWORD']}@127.0.0.1:{ports['db']}/app"
     envfile=ROOT/'.env'
     with envfile.open('w') as out:
         os.chmod(envfile,0o600)
@@ -45,13 +72,17 @@ def main():
         env['DYLD_FALLBACK_LIBRARY_PATH']='/opt/homebrew/opt/libpq/lib'+(':'+env['DYLD_FALLBACK_LIBRARY_PATH'] if env.get('DYLD_FALLBACK_LIBRARY_PATH') else '')
     env['TZ']='GMT'
     env.update({'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'})  # Windows redirects child stdout to cp1252 otherwise (LiteLLM banner)
-    for name in ('api','app','gateway','collector'):
+    compose=args.services=='compose'
+    for name in ('api','app','gateway','collector','api_tls'):
+        if compose and name=='collector': continue  # the collector container is managed by docker compose
         if port_open(ports[name]): raise SystemExit(f"Port {ports[name]} is already in use. Stop that process or set LOCAL_PORT_{name.upper()} in .env.")
+    tls_cert,tls_key=ensure_tls()
     pg_started=False; pg_bin=None; pg_data=LOCAL/'postgres'
     children=[]; files=[]
     try:
-        if args.services=='compose':
-            run(['docker','compose','up','-d','postgres'],env=env)
+        if compose:
+            # PostgreSQL + observability stack (collector, Tempo, Prometheus, Grafana); all loopback-bound.
+            run(['docker','compose','up','-d','postgres','tempo','otel-collector','prometheus','grafana'],env=env)
         elif not port_open(ports['db']):
             explicit=os.environ.get('PG_BIN')
             candidates=[Path(explicit)] if explicit else []
@@ -103,6 +134,8 @@ def main():
             'store_prompts_in_spend_logs':False},
             'litellm_settings':{'telemetry':False,'set_verbose':False,'turn_off_message_logging':True,
                 'num_retries':0,'request_timeout':75},'router_settings':{'num_retries':0}}
+        # LiteLLM's open-source OTel callback (messages are not logged: turn_off_message_logging). Prometheus is Enterprise-only.
+        if compose: config['litellm_settings']['callbacks']=['otel']
         if values.get('MODEL_ID') and values.get('MODEL_API_KEY'):
             params={'model':'os.environ/MODEL_ID','api_key':'os.environ/MODEL_API_KEY'}
             if values.get('MODEL_API_BASE'): params['api_base']='os.environ/MODEL_API_BASE'
@@ -125,11 +158,16 @@ def main():
         commands=[('collector',[sys.executable,'-m','uvicorn','backend.app.collector:app','--host','127.0.0.1','--port',str(ports['collector']),'--no-access-log']),
             ('litellm',[venv_exe('litellm'),'--config',str(configfile),'--host','127.0.0.1','--port',str(ports['gateway']),'--log_config',str(ROOT/'config/logging.json')]),
             ('api',[sys.executable,'-m','uvicorn','backend.app.main:app','--host','127.0.0.1','--port',str(ports['api']),'--no-access-log']),
+            ('callback-tls',[sys.executable,'-m','uvicorn','backend.app.tls_callback:app','--host','127.0.0.1','--port',str(ports['api_tls']),
+                '--ssl-certfile',str(tls_cert),'--ssl-keyfile',str(tls_key),'--no-access-log']),
             ('frontend',['npm.cmd' if WINDOWS else 'npm','run','dev','--','--strictPort'])]
+        if compose: commands=[c for c in commands if c[0]!='collector']
         for name,command in commands:
             log=(LOCAL/(name+'.log')).open('a'); os.chmod(LOCAL/(name+'.log'),0o600); files.append(log)
             childenv=env.copy()
-            if name=='litellm': childenv['DATABASE_URL']=env['LITELLM_DATABASE_URL']
+            if name=='litellm':
+                childenv['DATABASE_URL']=env['LITELLM_DATABASE_URL']
+                childenv.update({'OTEL_EXPORTER':'otlp_http','OTEL_SERVICE_NAME':'litellm'})
             children.append((name,subprocess.Popen(command,env=childenv,cwd=ROOT/'frontend' if name=='frontend' else ROOT,stdout=log,stderr=log)))
         print(f"Starting at {values['APP_ORIGIN']}. API: {values['API_ORIGIN']}/api/health",flush=True)
         print('Accounts: .local/demo-accounts.txt; safe local logs: .local/*.log. Ctrl-C stops native services.',flush=True)

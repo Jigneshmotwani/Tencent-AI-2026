@@ -1,0 +1,11 @@
+# W5-owned. Dashboards: AI Usage & Cost (uid ai-usage-cost), Governance (uid governance), Workflow Runs (uid workflow-runs).
+apiVersion: 1
+providers:
+  - name: app
+    folder: App
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

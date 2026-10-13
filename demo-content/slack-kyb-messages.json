@@ -1,0 +1,38 @@
+{
+  "_note": "SYNTHETIC DEMO: Northstar Pay (fictional). Posted by `python -m backend.app.seed` with the authorizing user's own Slack user token. Threads are posted as the seeding user; 'speaker' is shown as a prefix because one identity seeds.",
+  "channels": [
+    {
+      "name": "kyb-ops",
+      "private": false,
+      "threads": [
+        {
+          "root": "[SYNTHETIC] Olivia (KYB Ops): Picking up KYB-101 Acme Trading. Customer is pushing hard for activation this week; payroll dependency.",
+          "replies": [
+            "[SYNTHETIC] Ben (KYB Ops): Heads up: their shareholder register shows a corporate shareholder, Bluewater Holdings Ltd at 40%. We'll need the look-through per policy.",
+            "[SYNTHETIC] Olivia (KYB Ops): Noted. Also the registry extract they sent lists 3 directors but we only got IDs for 2. Will check before the RFI."
+          ]
+        },
+        {
+          "root": "[SYNTHETIC] Ben (KYB Ops), March 2026: Reminder: proof of address up to 6 months old is fine for SG business accounts, don't bounce those.",
+          "replies": []
+        },
+        {
+          "root": "[SYNTHETIC] Priya (Payments SRE): Payment outage on 2 Oct (INC-2026-1002) is resolved. Root cause was the expired TLS client cert to the card processor. Follow-ups are in Jira.",
+          "replies": []
+        }
+      ]
+    },
+    {
+      "name": "compliance-escalations",
+      "private": true,
+      "threads": [
+        {
+          "root": "[SYNTHETIC] Casey (Compliance): Any SG case with Bluewater Holdings Ltd in the ownership chain comes to me for EDD, no exceptions. There's history (see restricted memo).",
+          "replies": [
+            "[SYNTHETIC] Casey (Compliance): For KYB-103 Orion Freight, the Viktor Branko screening hit looks like a strong name match. Hold until I review."
+          ]
+        }
+      ]
+    }
+  ]
+}

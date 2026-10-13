@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
-Provider = Literal['drive', 'confluence']
+Provider = Literal['drive', 'confluence', 'jira', 'slack']
+PROVIDERS = ('drive', 'confluence', 'jira', 'slack')
 class SourceError(Exception):
     def __init__(self, code: str = 'unavailable'):
         self.code = code
@@ -35,7 +36,15 @@ class SourceDocument:
     modified_at: str | None
     content_hash: str
     fetched_at: datetime
+    # Iteration 2: provider container for audit (Drive folder id, Confluence space key, Jira project key, Slack channel id).
+    container: str = ''
+    # Optional structured, non-secret fields (e.g. Jira status/labels/"Key: Value" facts) for workflow templates.
+    fields: dict | None = None
 class Connector(Protocol):
     async def health(self, context: AccessContext) -> dict: ...
     async def search(self, query: str, context: AccessContext, cursor: str | None = None, limit: int = 8) -> SearchPage: ...
     async def read(self, document_id: str, context: AccessContext) -> SourceDocument: ...
+class ActionConnector(Protocol):
+    """Writes. Only called by the approval executor with the invoker's context and a stable idempotency key.
+    Must be idempotent: a retry with the same key never duplicates the remote effect. Returns remote ids only."""
+    async def execute(self, action: str, params: dict, context: AccessContext, idempotency_key: str) -> dict: ...
