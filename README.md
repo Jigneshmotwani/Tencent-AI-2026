@@ -22,42 +22,66 @@ The rest of the stack:
 
 No simulated connectors, canned answers, or Tencent inference claims. All business data is synthetic.
 
-## Start (Windows: Git Bash + Docker Desktop)
+## Run it
+
+The same launcher works on macOS and Windows. The recommended **Compose profile** runs PostgreSQL and the observability stack (OTel Collector, Tempo, Prometheus, Grafana) in Docker, and runs LiteLLM, the API, the HTTPS OAuth callback shim and the Vite UI as local processes. Everything binds to loopback only.
+
+### Prerequisites (both platforms)
+
+- **Docker Desktop**, running.
+- **uv** (https://docs.astral.sh/uv/getting-started/installation/). It installs the pinned Python 3.11–3.13 environment from `uv.lock`.
+- **Node.js** 20.19+ or 22.12+ (includes npm).
+- The first run downloads Python, npm and Prisma packages and Docker images, so it needs network access.
+
+### macOS
 
 ```sh
+cd tencent-ai-2026
 ./scripts/start.sh --services compose
 ```
 
-The command installs locked dependencies and starts these, all bound to loopback:
+- Open the app at the printed URL (default **http://localhost:5173**). Always use `localhost`, not `127.0.0.1`.
+- **Without Docker:** `./scripts/start.sh` (native profile) uses a locally installed PostgreSQL (Homebrew `postgresql@14`/`@16`, or set `PG_BIN=/path/to/bin`). It keeps the iteration 1 local trace file and has **no Grafana/Tempo/Prometheus**.
 
-- **Docker:** PostgreSQL, OTel Collector, Tempo, Prometheus and Grafana.
-- **Local processes:** LiteLLM, the API, the HTTPS OAuth callback shim and Vite.
-- **Migrations:** applied as the DB owner. The API itself connects as the non-owner `app_runtime` role.
+### Windows 11
 
-Ctrl-C stops local processes. `docker compose stop` stops the containers (keep volumes).
+Use **Git Bash** (installed with Git for Windows), not PowerShell or cmd, because the launcher is a POSIX shell script:
 
-Ports are set in `.env`. The table shows this host's values, with defaults in brackets.
+```sh
+cd /c/path/to/tencent-ai-2026
+./scripts/start.sh --services compose
+```
 
-| Service | URL |
-|---|---|
-| App | http://localhost:5273 (5173) |
-| API health | http://localhost:8100/api/health (8000) |
-| HTTPS OAuth callback shim | https://localhost:8543 (8443), self-signed; accept the browser warning once |
-| Grafana (anonymous viewer) | http://localhost:3100 (3000) |
-| Tempo / Prometheus | http://localhost:3300 / http://localhost:9190 |
-| LiteLLM / collector / Postgres | 4100 / 4418 / 55433 |
+- Windows has no native PostgreSQL profile, so `--services compose` is required.
+- `.gitattributes` keeps `scripts/start.sh` LF-only. If you see `bad interpreter`, re-checkout the file.
+- The launcher handles the `Scripts/` venv layout, `npm.cmd`, UTF-8 child output and process-tree shutdown.
 
-The launcher generates these secrets into ignored `.env` (mode 600):
+### Stop, restart, ports
 
-- encryption key
-- LiteLLM master key
-- DB, runtime-role and Grafana-role passwords
-- Grafana admin password
-- `AUDIT_HMAC_KEY`
+- **Ctrl-C** stops the local processes.
+- `docker compose stop` stops the containers and keeps their data. `docker compose down -v` deletes all local data (DB, traces, metrics, dashboards state).
+- Restart with the same command. Migrations are versioned and idempotent; they run as the DB owner, while the API connects as the non-owner `app_runtime` role.
+- If a port is taken, set the `LOCAL_PORT_*` keys in `.env`; OAuth redirect URIs follow `LOCAL_PORT_API` / `LOCAL_PORT_API_TLS`.
 
-Local account passwords go to `.local/demo-accounts.txt`. Never paste them into chat.
+| Service | Default | This dev host |
+|---|---|---|
+| App (UI) | http://localhost:5173 | 5273 |
+| API health | http://localhost:8000/api/health | 8100 |
+| HTTPS OAuth callback shim (self-signed; open it once and accept the warning) | https://localhost:8443 | 8543 |
+| Grafana (anonymous viewer) | http://localhost:3000 | 3100 |
+| Tempo / Prometheus | 3200 / 9090 | 3300 / 9190 |
+| LiteLLM / OTLP collector / PostgreSQL | 4000 / 4318 / 55432 | 4100 / 4418 / 55433 |
 
-Accounts (capabilities are additive):
+### First run
+
+The launcher creates ignored `.env` (mode 600) from `.env.example` and generates these local secrets:
+
+- encryption key and LiteLLM master key;
+- DB, runtime-role and Grafana-role passwords;
+- Grafana admin password;
+- `AUDIT_HMAC_KEY`.
+
+It also creates four local accounts. Their passwords go to `.local/demo-accounts.txt`; read it privately and never paste it into chat.
 
 | Account | Capabilities |
 |---|---|
@@ -66,7 +90,7 @@ Accounts (capabilities are additive):
 | `admin` | Admin + Builder + User |
 | `auditor` | Audit metadata only |
 
-On macOS without Docker, `./scripts/start.sh` (native profile) still works, but it has no Grafana/Tempo/Prometheus.
+Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser profiles to act as two users at once.
 
 `npm --prefix frontend run build` typechecks and builds the UI. No test files or persistent verification scripts are supplied.
 
@@ -88,10 +112,10 @@ On macOS without Docker, `./scripts/start.sh` (native profile) still works, but 
   - Jira (classic): `read:jira-work write:jira-work read:jira-user`
   - Plus `read:me offline_access`
 - `.env`: `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_CLOUD_ID`, `JIRA_PROJECT_KEYS=KYB`.
-- Jira project `KYB` (team-managed) needs these statuses: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
+- Jira must be installed on the **same Atlassian site** as Confluence (`CONFLUENCE_CLOUD_ID`). Project `KYB` needs these statuses: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
 - Each user connects Confluence and Jira separately in Connections.
 
-**Slack** (per-user **user tokens**, not a bot):
+**Slack** (optional; per-user **user tokens**, not a bot). Slack stays **hidden** everywhere (Connections, Studio sources/tools, templates) until `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_TEAM_ID` are set:
 
 - App redirect URL: `https://localhost:8543/api/connections/slack/callback`. Slack requires HTTPS; the local shim 303-redirects to the HTTP API callback, where state, session and owner checks run.
 - User Token Scopes: `search:read channels:history channels:read groups:history groups:read users:read chat:write`.
@@ -110,27 +134,25 @@ Restart after editing `.env`.
 
 `demo-content/` holds the synthetic material:
 
-- Confluence pages: SG KYB Policy v3, RFI Templates, Payment-service Incident Runbook.
+- Confluence pages: SG KYB Policy v3, RFI Templates, Payment-service Incident Runbook, and a **restricted** Compliance EDD Playbook.
 - Drive: Acme's KYB submission (with a planted prompt-injection line and synthetic NRICs/phone/email for the PII guardrail) and a **restricted** EDD memo.
 - Jira cases KYB-101..103 plus incident follow-ups.
-- Slack threads: `#kyb-ops` public, including outdated advice that conflicts with policy v3; `#compliance-escalations` private.
+- Slack threads (optional): `#kyb-ops` public, including outdated advice that conflicts with policy v3; `#compliance-escalations` private.
 - The `kyb-registry` MCP data is in `mcp_servers/kyb_registry/data.json`.
 
-Seed with the authorizing user's own delegated credentials. It is idempotent and labels everything synthetic:
+Seed with the authorizing user's own delegated credentials. It is idempotent and labels everything synthetic. `uv run` works the same on macOS and Windows:
 
 ```sh
-.venv/Scripts/python.exe -m backend.app.seed --as compliance --dry-run
-.venv/Scripts/python.exe -m backend.app.seed --as compliance [--only jira,slack,confluence,drive] [--atlassian-basic .local/atlassian-setup.env]
+uv run --frozen python -m backend.app.seed --as compliance --dry-run
+uv run --frozen python -m backend.app.seed --as compliance [--only jira,slack,confluence] [--atlassian-basic .local/atlassian-setup.env]
 ```
 
-The Drive scope is read-only, so Drive steps are printed:
-
-- Upload `drive-acme-kyb-submission.txt` to the shared root folder.
-- Upload `drive-restricted-kyb-edd-memo.txt` to the limited-access child folder (compliance identity only).
-
-Confluence page restrictions need a paid plan.
-
-Freshness demo (append to a Confluence page, then re-run a query): `--update-page "Payment-service Incident Runbook" --append "<text>"`.
+- `--atlassian-basic` uses an Atlassian API token file (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`) only for Confluence pages, because the OAuth app is read-only for Confluence.
+- The Drive scope is read-only, so upload these by hand:
+  - `drive-acme-kyb-submission.txt` into the shared root folder;
+  - `drive-restricted-kyb-edd-memo.txt` into the limited-access child folder (compliance identity only).
+- `confluence-restricted-kyb-edd-playbook.md` needs a Confluence page restriction (Standard plan or trial) so that only the compliance identity can view it.
+- Freshness demo (append to a page, then re-ask): `--update-page "Payment-service Incident Runbook" --append "<text>"`.
 
 ## Using it
 
@@ -138,7 +160,7 @@ Freshness demo (append to a Confluence page, then re-run a query): `--update-pag
   - Open a template or create from a description.
   - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
   - Run in the Test panel and watch nodes light up from real events. Publish to an audience.
-- **Workspace**: ask questions, or run published workflows from the catalog.
+- **Workspace**: ask questions, pick **Answer with → Workflow: …** to invoke a published one-input workflow from chat, or run any published workflow from the Catalog tab.
 - **Approvals**: the inbox shows the exact destination and payload. Approval re-authorizes, then executes once.
 - **Activity**: run history with an "Open trace in Grafana" link.
 - **Audit** (auditor): Verify integrity, filters, and natural-language queries (e.g. "everything operations accessed in the NSDEMO space in the last 30 days").

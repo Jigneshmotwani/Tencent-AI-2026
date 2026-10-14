@@ -40,7 +40,7 @@ CONTENT = ROOT / 'demo-content'
 CONFLUENCE_FILES = ['confluence-sg-kyb-policy-v3.md', 'confluence-rfi-templates.md', 'confluence-payment-incident-runbook.md']
 DRIVE_FILES = {'drive-acme-kyb-submission.txt': 'the selected Drive folder (GOOGLE_FOLDER_ID root)',
                'drive-restricted-kyb-edd-memo.txt': 'the existing limited-access child folder inside the selected Drive folder'}
-ALL = ('jira', 'slack', 'confluence', 'drive')
+ALL = ('jira', 'slack', 'confluence', 'drive') if settings().slack_enabled else ('jira', 'confluence', 'drive')  # Slack only once configured
 
 
 def out(message: str = ''):

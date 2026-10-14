@@ -271,6 +271,8 @@ async def hub(user: User = Depends(current_user), db: DBSession = Depends(get_db
     sources = []
     for provider in PROVIDERS:
         connection = own.get(provider)
+        if provider not in settings().enabled_sources and connection is None:
+            continue  # hidden until configured (Slack)
         last_ok = db.scalar(select(AuditEvent.timestamp).where(AuditEvent.actor_id == user.id, AuditEvent.provider == provider,
                                                                AuditEvent.operation == 'source.read', AuditEvent.outcome == 'allowed')
                             .order_by(AuditEvent.timestamp.desc()).limit(1))

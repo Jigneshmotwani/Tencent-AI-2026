@@ -66,3 +66,5 @@
 [hidden]{display:none!important}
 .run-citations h4{margin:12px 0 0;font-size:12px}.run-citations .citations{margin-top:8px;padding-top:0;border-top:0}.citation.selected{border-color:#83b0bc;box-shadow:0 0 0 2px #cfe5ea}
 .citation-detail{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:9px;background:#fff;font-size:12px}.citation-detail .source-excerpt{margin:4px 0;max-height:220px;overflow:auto;font-size:12px;line-height:1.6;padding:10px}
+
+.answer-with{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}.answer-with select{font:inherit;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}

@@ -253,7 +253,8 @@ async def agent(ctx: RunCtx, node):
     warnings = []
     allowed = [t for t in cfg.get('allowed_tools') or []
                if (t in AGENT_READ_TOOLS or t.startswith('mcp:')) and not (t.startswith('builtin:') and t[8:] in WRITE_TOOLS)
-               and (t == 'knowledge.search' or tool_allowed(t, ctx.eff))]
+               and (t == 'knowledge.search' or tool_allowed(t, ctx.eff))
+               and not (t.startswith('builtin:jira.') and 'jira' not in ctx.eff['allowed_sources'])]
     specs = _agent_tool_specs(ctx, allowed)
     goal = ctx.render(cfg.get('goal', ''), warnings)
     max_steps = int(cfg.get('max_steps') or 6)
@@ -388,6 +389,8 @@ def _scoped_jql(jql: str) -> str:
 
 async def _jira_search(ctx: RunCtx, node, jql: str, limit: int) -> dict:
     from ..contracts import SourceError
+    if 'jira' not in ctx.eff['allowed_sources']:
+        raise NodeFailure('source_not_allowed')
     adapter, access = await _access(ctx, 'jira')
     if not hasattr(adapter, 'search_jql'):
         raise NodeFailure('connector_unavailable')
@@ -395,7 +398,9 @@ async def _jira_search(ctx: RunCtx, node, jql: str, limit: int) -> dict:
         async with asyncio.timeout(settings().source_timeout):
             page = await adapter.search_jql(_scoped_jql(jql[:1000]), access, limit=min(limit, 5))
     except (SourceError, TimeoutError):
+        _audit(ctx, 'source.search', 'error', 'source_not_available', node_id=node['id'], provider='jira')
         raise NodeFailure('source_not_available') from None
+    _audit(ctx, 'source.search', node_id=node['id'], provider='jira', container=access.collection, details={'hit_count': len(page.hits)})
     issues = []
     for hit in page.hits[:min(limit, 5)]:
         try:

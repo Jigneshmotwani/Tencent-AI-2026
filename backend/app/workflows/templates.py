@@ -9,12 +9,22 @@ import copy
 
 from sqlalchemy import select
 
-TEMPLATE_VERSION = 'v2'
-SOURCES = ['drive', 'confluence', 'jira', 'slack']
-KYB_TOOLS = ['builtin:jira.get_issue', 'builtin:slack.draft', 'builtin:jira.comment', 'builtin:jira.transition',
+from ..config import settings
+
+# Slack is optional: templates include Slack retrieval/drafts only when the Slack app is configured.
+SLACK = settings().slack_enabled
+TEMPLATE_VERSION = 'v3' + ('-slack' if SLACK else '')
+SOURCES = settings().enabled_sources
+
+
+def src(*names):
+    return [n for n in names if n in SOURCES]
+
+
+KYB_TOOLS = ['builtin:jira.get_issue'] + (['builtin:slack.draft'] if SLACK else []) + ['builtin:jira.comment', 'builtin:jira.transition',
              'builtin:jira.create_issue', 'mcp:kyb-registry/lookup_company', 'mcp:kyb-registry/screen_names',
              'mcp:kyb-registry/get_risk_rules']
-WRITES = ['jira.comment', 'jira.transition', 'jira.create_issue', 'slack.post']
+WRITES = ['jira.comment', 'jira.transition', 'jira.create_issue'] + (['slack.post'] if SLACK else [])
 
 
 def node(id, type, label, config, x=0, y=0):
@@ -83,7 +93,7 @@ def kyb_case_reviewer(starter=False):
         node('get_case', 'tool.builtin', 'Get Jira case', {'tool': 'jira.get_issue', 'params': {'issue_key': '{{inputs.case_key}}'}}, 260, 220),
         node('retrieve', 'knowledge.retrieve', 'Policy, docs & chatter', {
             'query': '{{nodes.get_case.output.fields.facts.Company}} KYB policy RFI shareholder director address',
-            'sources': ['confluence', 'drive', 'slack'], 'max_documents': 8}, 520, 220),
+            'sources': src('confluence', 'drive', 'slack'), 'max_documents': 8}, 520, 220),
         node('guard_in', 'guardrail.input', 'PII mask + injection screen', {
             'pii': ['nric', 'iban', 'card', 'phone', 'email'], 'injection': True, 'on_injection': 'quarantine'}, 780, 220),
         node('lookup', 'tool.mcp', 'Registry lookup', {'server': 'kyb-registry', 'tool': 'lookup_company',
@@ -122,6 +132,9 @@ def kyb_case_reviewer(starter=False):
              edge('route', 'rfi_draft', 'rfi'), edge('rfi_draft', 'slack_note'), edge('slack_note', 'approve_rfi'),
              edge('approve_rfi', 'rfi_comment'), edge('rfi_comment', 'rfi_status'), edge('rfi_status', 'output'),
              edge('route', 'approve_ok', 'approve'), edge('approve_ok', 'ok_status'), edge('ok_status', 'output')]
+    if not SLACK:  # no Slack draft step until Slack is configured
+        nodes = [n for n in nodes if n['id'] != 'slack_note']
+        edges = [e for e in edges if 'slack_note' not in (e['source'], e['target'])] + [edge('rfi_draft', 'approve_rfi')]
     if starter:
         # Copilot demo starting point: no screening, escalations only reported (no approval-gated actions yet).
         nodes = [n for n in nodes if n['id'] != 'screen']
@@ -142,7 +155,7 @@ def kyb_case_reviewer(starter=False):
     return {
         'name': 'KYB Quick Check (starter)' if starter else 'KYB Case Reviewer',
         'description': ('Starter KYB review without screening or escalation actions; use the Studio Copilot to extend it.' if starter else
-                        'Reviews a Jira KYB case against SG KYB Policy v3 using the invoker\'s own Jira, Confluence, Drive and Slack access plus '
+                        'Reviews a Jira KYB case against SG KYB Policy v3 using the invoker\'s own Jira, Confluence and Drive (plus Slack, when configured) access and '
                         'the synthetic kyb-registry MCP server; drafts the RFI and routes escalation behind human approval.'),
         'icon': 'shield-check', 'trigger': {'type': 'manual', 'config': {}},
         'inputs': [{'name': 'case_key', 'type': 'string', 'required': True, 'description': 'Jira KYB case key, e.g. KYB-101'}],
@@ -161,12 +174,12 @@ say what is missing. Question: {{inputs.question}}'''
 def policy_qa():
     return {
         'name': 'Policy Q&A Assistant', 'icon': 'book-open',
-        'description': 'Answers KYB/AML policy questions from Confluence, Slack and Drive with citations and conflict flagging.',
+        'description': 'Answers KYB/AML policy questions from Confluence and Drive (and Slack, when configured) with citations and conflict flagging.',
         'trigger': {'type': 'chat', 'config': {}},
         'inputs': [{'name': 'question', 'type': 'string', 'required': True, 'description': 'Policy question'}],
         'nodes': [
             node('trigger', 'trigger.chat', 'Question', {}, 0, 100),
-            node('retrieve', 'knowledge.retrieve', 'Search policy sources', {'query': '{{inputs.question}}', 'sources': ['confluence', 'slack', 'drive'], 'max_documents': 6}, 260, 100),
+            node('retrieve', 'knowledge.retrieve', 'Search policy sources', {'query': '{{inputs.question}}', 'sources': src('confluence', 'slack', 'drive'), 'max_documents': 6}, 260, 100),
             node('guard_in', 'guardrail.input', 'PII + injection screen', {'injection': True}, 520, 100),
             node('answer', 'llm.generate', 'Answer with citations', {'prompt': QA_PROMPT, 'include_evidence': True, 'max_tokens': 900}, 780, 100),
             node('guard_out', 'guardrail.output', 'Grounding check', {'target': 'answer', 'grounding': True, 'on_fail': 'strip'}, 1040, 100),
@@ -186,13 +199,13 @@ Give the root cause, impact, resolution and every follow-up ticket (key, summary
 def incident_assistant():
     return {
         'name': 'Incident Assistant', 'icon': 'siren',
-        'description': 'Answers questions about payment incidents from the Confluence runbook, Slack and Jira follow-up tickets.',
+        'description': 'Answers questions about payment incidents from the Confluence runbook and Jira follow-up tickets (and Slack, when configured).',
         'trigger': {'type': 'manual', 'config': {}},
         'inputs': [{'name': 'question', 'type': 'string', 'required': True,
                     'description': 'e.g. What was the root cause of the payment outage and what are the follow-up tickets?'}],
         'nodes': [
             node('trigger', 'trigger.manual', 'Question', {}, 0, 100),
-            node('retrieve', 'knowledge.retrieve', 'Runbook + chatter', {'query': 'payment outage incident root cause {{inputs.question}}', 'sources': ['confluence', 'slack'], 'max_documents': 5}, 260, 100),
+            node('retrieve', 'knowledge.retrieve', 'Runbook + chatter', {'query': 'payment outage incident root cause {{inputs.question}}', 'sources': src('confluence', 'slack'), 'max_documents': 5}, 260, 100),
             node('tickets', 'tool.builtin', 'Follow-up tickets', {'tool': 'jira.search', 'params': {'jql': 'labels = "incident-followup" ORDER BY created DESC', 'max_results': 5}}, 520, 100),
             node('guard_in', 'guardrail.input', 'PII + injection screen', {'injection': True}, 780, 100),
             node('answer', 'llm.generate', 'Incident answer', {'prompt': INCIDENT_PROMPT, 'include_evidence': True, 'max_tokens': 900}, 1040, 100),

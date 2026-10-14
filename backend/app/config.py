@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     mcp_stdio_dir: str = 'mcp_servers'  # stdio MCP commands must run modules/scripts under this repo directory
 
     @property
+    def slack_enabled(self) -> bool:
+        # Slack stays hidden (Connections, Studio palette/sources, templates) until its app credentials are configured.
+        return bool(self.slack_client_id and self.slack_client_secret and self.slack_team_id)
+
+    @property
+    def enabled_sources(self) -> list[str]:
+        return ['drive', 'confluence', 'jira'] + (['slack'] if self.slack_enabled else [])
+
+    @property
     def jira_projects(self) -> list[str]:
         return [p.strip().upper() for p in self.jira_project_keys.split(',') if p.strip()]
 

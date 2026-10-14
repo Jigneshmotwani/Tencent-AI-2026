@@ -52,7 +52,10 @@ def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depend
     from .gateway import model_aliases
     policy=get_policy(db)
     models=[m for m in model_aliases() if not policy.get('allowed_models') or m in policy['allowed_models']]
-    return {**public_registry(),'mcp_tools':list_tools(db),'models':models,'sources':['drive','confluence','jira','slack'],'policy':policy}
+    reg=public_registry(); cfg=settings()
+    if not cfg.slack_enabled:  # hide Slack tools until Slack is configured
+        reg={**reg,'builtin_tools':[t for t in reg['builtin_tools'] if not t.startswith('slack.')],'write_tools':[t for t in reg['write_tools'] if not t.startswith('slack.')]}
+    return {**reg,'mcp_tools':list_tools(db),'models':models,'sources':cfg.enabled_sources,'policy':policy}
 
 @app.middleware('http')
 async def response_security(request, call_next):

@@ -59,7 +59,7 @@ def interpreter() -> str:
 def validate_url(url: str) -> str:
     url = (url or '').strip()
     parsed = urlparse(url)
-    if len(url) > 500 or parsed.username or parsed.password or not parsed.hostname or parsed.fragment:
+    if len(url) > 500 or parsed.username or parsed.password or not parsed.hostname or parsed.fragment or parsed.query:
         raise McpError('mcp_url_not_allowed')
     if parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in LOOPBACK):
         return url

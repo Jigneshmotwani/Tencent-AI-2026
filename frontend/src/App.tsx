@@ -4,11 +4,12 @@ import type { WorkflowRun } from './contracts'
 import ApprovalsPage from './approvals/ApprovalsPage'
 import AuditPage from './audit/AuditPage'
 import CatalogPanel from './catalog/CatalogPanel'
+import { AnswerWith, WorkflowAnswer, useChatWorkflows } from './catalog/ChatWorkflow'
 import ConnectionsPage from './connections/ConnectionsPage'
 import PoliciesPage from './policies/PoliciesPage'
 import { RunCitations, runCitations, splitOutput } from './studio/RunView'
 import { Badge, Button, Empty, JsonBlock, Markdown, Notice, StatusChip, hasCap, isNotFound, money, providerName, safeLocalUrl, safeUrl } from './studio/ui'
-import type { RunDetail } from './studio/useRunStream'
+import { useRunStream, type RunDetail } from './studio/useRunStream'
 
 const StudioPage = lazy(() => import('./studio/StudioPage'))
 type Page = 'Workspace' | 'Studio' | 'Approvals' | 'Connections' | 'Activity' | 'Audit' | 'Policies' | 'Settings'
@@ -85,6 +86,8 @@ function Workspace({ visible, onSource, onConnections, onOpenRun }: { visible: b
 }
 
 function Assistant({ visible, onSource, onConnections }: { visible: boolean; onSource: (id: string, run: string) => void; onConnections: () => void }) {
+  const chatWorkflows = useChatWorkflows(visible), wfStream = useRunStream()
+  const [answerWith, setAnswerWith] = useState(''), [wfQuestion, setWfQuestion] = useState(''), [wfName, setWfName] = useState('')
   const [conversations, setConversations] = useState<Conversation[]>([]), [conversation, setConversation] = useState<Conversation | null>(null)
   const [question, setQuestion] = useState(''), [error, setError] = useState(''), [loading, setLoading] = useState(false), [submitting, setSubmitting] = useState(false)
   const [runId, setRunId] = useState<string | null>(null), [status, setStatus] = useState(''), [streamText, setStreamText] = useState(''), [citations, setCitations] = useState<CitationView[]>([]), [usage, setUsage] = useState<Usage | null>(null), [limitations, setLimitations] = useState<string[]>([])
@@ -99,6 +102,8 @@ function Assistant({ visible, onSource, onConnections }: { visible: boolean; onS
   const resetStream = () => { setRunId(null); setStatus(''); setStreamText(''); setCitations([]); setUsage(null); setLimitations([]); lastEvent.current = 0 }
   const select = async (id: string) => { if (runId && !terminal.has(status)) return; resetStream(); const value = await loadConversation(id); const previousRun = [...(value?.messages ?? [])].reverse().find(message => message.run_id)?.run_id; if (previousRun) { try { const run = await api<Run>(`/runs/${previousRun}`); setStatus(run.status); setUsage(run.usage); setLimitations(run.limitations); setRunId(run.id); if (run.error_code) setError(safeError(new ApiError(run.error_code, 503))) } catch (failure) { setError(safeError(failure)) } } }
   const start = async (text: string) => {
+    const workflow = answerWith ? chatWorkflows.find(item => item.id === answerWith) : undefined
+    if (workflow && text.trim()) { setWfQuestion(text.trim()); setWfName(workflow.name); setQuestion(''); void wfStream.start(workflow.id, { [workflow.input]: text.trim() }, 'published'); return }
     if (!text.trim() || submitting || (runId && !terminal.has(status))) return
     setSubmitting(true); setError(''); resetStream()
     try {
@@ -150,8 +155,9 @@ function Assistant({ visible, onSource, onConnections }: { visible: boolean; onS
       <div className="messages" aria-busy={busy}>{loading && <p className="muted">Loading conversation…</p>}{!conversation && !loading && <div className="welcome"><Badge>Evidence first</Badge><h2>What do you need to know?</h2><p>Ask a business question. The assistant reads fresh evidence through your linked accounts before answering.</p><button className="suggestion" onClick={() => setQuestion("Why is Acme Trading's onboarding blocked, and what should I do next?")}>Why is Acme Trading's onboarding blocked, and what should I do next? <span>↗</span></button><p className="small muted">Connect your sources in Connections before using the synthetic demo.</p></div>}
         {messages.filter(message => !(message.role === 'assistant' && message.run_id === runId && !terminal.has(message.status))).map(message => <MessageCard key={message.id} message={message} onSource={onSource} />)}
         {runId && !persistedActive && <article className="message assistant"><div className="message-heading"><strong>Knowledge assistant</strong><Badge>{status}</Badge></div>{streamText ? <Markdown className="answer-md" text={streamText} /> : <div className="answer-text">{status === 'retrieving' ? 'Looking for accessible evidence…' : status === 'cancelled' ? 'This response was stopped.' : status === 'failed' ? 'The response could not complete.' : 'Starting your request…'}</div>}{citations.length > 0 && <CitationList citations={citations} run={runId} onSource={onSource} />}{status === 'cancelled' && <p className="small muted">Partial text may be incomplete. Usage after cancellation may be unknown.</p>}</article>}
+        {wfStream.runId && <WorkflowAnswer question={wfQuestion} name={wfName} stream={wfStream} />}{!wfStream.runId && wfStream.error && <Notice tone="error">{wfStream.error}</Notice>}
         {limitations.length > 0 && <Notice>{limitations.join(' · ')}</Notice>}{usage && <p className="usage-line">{usageLabel(usage)}</p>}{error && <Notice tone="error">{error}</Notice>}<div ref={bottom} />
-      </div><form className="composer" onSubmit={event => { event.preventDefault(); void start(question) }}><label className="sr-only" htmlFor="question">Business question</label><textarea id="question" placeholder="Ask a question using your accessible knowledge…" value={question} onChange={event => setQuestion(event.target.value)} disabled={busy} maxLength={4000} rows={3} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void start(question) } }} /><div className="composer-actions"><small>Enter to send · Shift + Enter for a new line</small><div>{lastQuestion && !busy && <Button className="subtle" type="button" onClick={() => void start(lastQuestion)}>Retry last question</Button>}{busy ? <Button type="button" onClick={() => void stop()} disabled={!runId}>Stop</Button> : <Button className="primary" disabled={!question.trim()} type="submit">Ask assistant <span aria-hidden="true">↑</span></Button>}</div></div></form>
+      </div><form className="composer" onSubmit={event => { event.preventDefault(); void start(question) }}><label className="sr-only" htmlFor="question">Business question</label><textarea id="question" placeholder="Ask a question using your accessible knowledge…" value={question} onChange={event => setQuestion(event.target.value)} disabled={busy} maxLength={4000} rows={3} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void start(question) } }} /><div className="composer-actions"><small>Enter to send · Shift + Enter for a new line</small><AnswerWith workflows={chatWorkflows} value={answerWith} onChange={setAnswerWith} disabled={busy} /><div>{lastQuestion && !busy && <Button className="subtle" type="button" onClick={() => void start(lastQuestion)}>Retry last question</Button>}{busy ? <Button type="button" onClick={() => void stop()} disabled={!runId}>Stop</Button> : <Button className="primary" disabled={!question.trim()} type="submit">Ask assistant <span aria-hidden="true">↑</span></Button>}</div></div></form>
     </section></div>
 }
 
