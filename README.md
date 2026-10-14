@@ -112,7 +112,7 @@ Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser 
   - Jira (classic): `read:jira-work write:jira-work read:jira-user`
   - Plus `read:me offline_access`
 - `.env`: `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_CLOUD_ID`, `JIRA_PROJECT_KEYS=KYB`.
-- Jira must be installed on the **same Atlassian site** as Confluence (`CONFLUENCE_CLOUD_ID`). Project `KYB` needs these statuses: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
+- Jira must be installed on the **same Atlassian site** as Confluence (`CONFLUENCE_CLOUD_ID`). Project key `KYB` (a team-managed Kanban project; rename the default key in Project settings if needed) needs these statuses, each reachable from any status: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
 - Each user connects Confluence and Jira separately in Connections.
 
 **Slack** (optional; per-user **user tokens**, not a bot). Slack stays **hidden** everywhere (Connections, Studio sources/tools, templates) until `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_TEAM_ID` are set:

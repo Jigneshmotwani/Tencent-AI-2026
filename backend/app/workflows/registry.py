@@ -126,7 +126,7 @@ NODE_TYPES: dict[str, dict] = {
                        '(destination + payload). Resumes on decision; rejected => downstream actions are skipped.',
         'config_schema': {'type': 'object', 'additionalProperties': False, 'properties': {
             'title': {**TEMPLATE_STR, 'maxLength': 200},
-            'approver_roles': {'type': 'array', 'items': {'enum': ['builder', 'admin']}, 'default': ['builder'], 'description': 'Roles that may approve runs started by other users; the invoker approves their own run only if allow_requester'},
+            'approver_roles': {'type': 'array', 'items': {'enum': ['user', 'builder', 'admin']}, 'default': ['builder'], 'description': 'Roles that may approve runs started by other users (platform floor: only builder/admin ever approve others; "user" is accepted for older specs and ignored); the invoker approves their own run only if allow_requester'},
             'allow_requester': {'type': 'boolean', 'default': True, 'description': 'Invoker may approve their own run'}}},
         'inputs': [{'name': 'in', 'type': 'any'}], 'outputs': [{'name': 'decision', 'type': 'context'}], 'side_effect': False,
     },
