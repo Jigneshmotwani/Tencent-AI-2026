@@ -13,7 +13,7 @@ from ..config import settings
 
 # Slack is optional: templates include Slack retrieval/drafts only when the Slack app is configured.
 SLACK = settings().slack_enabled
-TEMPLATE_VERSION = 'v3' + ('-slack' if SLACK else '')
+TEMPLATE_VERSION = 'v4' + ('-slack' if SLACK else '')
 SOURCES = settings().enabled_sources
 
 
@@ -168,7 +168,7 @@ def kyb_case_reviewer(starter=False):
 
 QA_PROMPT = '''Answer the question using only the evidence. Cite [E#] after every factual sentence. If the approved Confluence policy
 and an older Slack message disagree, say so explicitly, follow the approved policy and cite both. If the evidence is insufficient,
-say what is missing. Question: {{inputs.question}}'''
+say what is missing. Be concise: at most about 250 words, short bullets. Question: {{inputs.question}}'''
 
 
 def policy_qa():
@@ -181,7 +181,7 @@ def policy_qa():
             node('trigger', 'trigger.chat', 'Question', {}, 0, 100),
             node('retrieve', 'knowledge.retrieve', 'Search policy sources', {'query': '{{inputs.question}}', 'sources': src('confluence', 'slack', 'drive'), 'max_documents': 6}, 260, 100),
             node('guard_in', 'guardrail.input', 'PII + injection screen', {'injection': True}, 520, 100),
-            node('answer', 'llm.generate', 'Answer with citations', {'prompt': QA_PROMPT, 'include_evidence': True, 'max_tokens': 900}, 780, 100),
+            node('answer', 'llm.generate', 'Answer with citations', {'prompt': QA_PROMPT, 'include_evidence': True, 'max_tokens': 1800}, 780, 100),
             node('guard_out', 'guardrail.output', 'Grounding check', {'target': 'answer', 'grounding': True, 'on_fail': 'strip'}, 1040, 100),
             node('output', 'output', 'Answer', {'template': '{{nodes.guard_out.output.result.text}}'}, 1300, 100),
         ],
@@ -193,7 +193,7 @@ def policy_qa():
 
 
 INCIDENT_PROMPT = '''Using only the evidence, answer: {{inputs.question}}
-Give the root cause, impact, resolution and every follow-up ticket (key, summary, status). Cite [E#] after every factual sentence.'''
+Give the root cause, impact, resolution and every follow-up ticket (key, summary, status). Cite [E#] after every factual sentence. At most about 250 words.'''
 
 
 def incident_assistant():
@@ -208,7 +208,7 @@ def incident_assistant():
             node('retrieve', 'knowledge.retrieve', 'Runbook + chatter', {'query': 'payment outage incident root cause {{inputs.question}}', 'sources': src('confluence', 'slack'), 'max_documents': 5}, 260, 100),
             node('tickets', 'tool.builtin', 'Follow-up tickets', {'tool': 'jira.search', 'params': {'jql': 'labels = "incident-followup" ORDER BY created DESC', 'max_results': 5}}, 520, 100),
             node('guard_in', 'guardrail.input', 'PII + injection screen', {'injection': True}, 780, 100),
-            node('answer', 'llm.generate', 'Incident answer', {'prompt': INCIDENT_PROMPT, 'include_evidence': True, 'max_tokens': 900}, 1040, 100),
+            node('answer', 'llm.generate', 'Incident answer', {'prompt': INCIDENT_PROMPT, 'include_evidence': True, 'max_tokens': 1800}, 1040, 100),
             node('guard_out', 'guardrail.output', 'Grounding check', {'target': 'answer', 'grounding': True, 'on_fail': 'strip'}, 1300, 100),
             node('output', 'output', 'Answer', {'template': '{{nodes.guard_out.output.result.text}}'}, 1560, 100),
         ],
