@@ -614,6 +614,8 @@ def reset_demo(db, log=print) -> None:
             log(f'  archived "{ae.name}" ({ae.id}) to restart its review')
     db.flush()
     ensure_templates(db)
+    from ..seed_defaults import ensure_budget_defaults
+    ensure_budget_defaults(db)
     db.commit()
     ti = db.scalar(select(Workflow).where(Workflow.template_key == 'transaction_investigator', Workflow.status != 'archived'))
     ae = db.scalar(select(Workflow).where(Workflow.template_key == 'audit_explorer', Workflow.status != 'archived'))

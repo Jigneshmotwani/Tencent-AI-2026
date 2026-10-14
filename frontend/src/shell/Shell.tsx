@@ -112,6 +112,9 @@ function useApprovalsCount(enabled: boolean) {
   return n
 }
 
+/** "Compliance lead (admin)"; just "Auditor" when the title already is the role. */
+const demoSub = (u: DemoUser) => u.title.toLowerCase() === u.role_label.toLowerCase() ? u.title : `${u.title} (${u.role_label.toLowerCase()})`
+
 function UserMenu({ user }: { user: SessionUser }) {
   const { setUser, logout } = useSession()
   const [open, setOpen] = useState(false)
@@ -132,7 +135,7 @@ function UserMenu({ user }: { user: SessionUser }) {
       setUser(next)
       navigate('/workspace', { replace: true })
       window.dispatchEvent(new Event('chats-changed'))
-      toast(`Switched to ${u.name} · ${u.title} (${u.role_label.toLowerCase()})`)
+      toast(`Switched to ${u.name} · ${demoSub(u)}`)
     } catch { toast('Switching demo users is not available right now.') }
   }
   return <div className="uwrap">
@@ -147,7 +150,7 @@ function UserMenu({ user }: { user: SessionUser }) {
         {sub && <div className="usub">{(demo ?? []).map(u => {
           const me = u.name === user.name
           return <button key={u.key} type="button" className="uopt" role="menuitemradio" aria-checked={me} onClick={() => { if (!me) void switchTo(u) }}>
-            <Avatar name={u.name} /><span className="t">{u.name}<i>{u.title} ({u.role_label.toLowerCase()})</i></span>{me && <span className="ck"><Icon name="check" small /></span>}
+            <Avatar name={u.name} /><span className="t">{u.name}<i>{demoSub(u)}</i></span>{me && <span className="ck"><Icon name="check" small /></span>}
           </button>
         })}{demo && !demo.length && <div className="muted" style={{ padding: '6px 8px' }}>No demo users available.</div>}</div>}
       </>}

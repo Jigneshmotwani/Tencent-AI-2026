@@ -42,6 +42,10 @@ def ensure_directory_defaults(db) -> None:
             u.email = email
         if not u.status:
             u.status = 'active'
+        if username == 'auditor' and 'user' not in (u.capabilities or []):
+            # The approved design gives auditors Workspace and Connections; 'user' lets them ask questions with their own
+            # (delegated) access. It never approves others' runs and never widens source access.
+            u.capabilities = [*(u.capabilities or []), 'user']
     groups = {g.name: g for g in db.scalars(select(Group))}
     for name, description, used_for in GROUPS:
         if name in groups:

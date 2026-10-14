@@ -7,6 +7,7 @@ import { Button, Dot, Notice, Tile, Tooltip, fmtWhen } from '../ui/kit'
 import { navigate } from '../ui/router'
 import { Icon } from '../ui/icons'
 import { SourceTile } from '../ui/kit'
+import { maskEmail } from '../tools/shared'
 import './connections.css'
 
 // Shapes of GET /api/connections/hub (backend/app/connections.py). Never contains tokens or secrets.
@@ -70,9 +71,9 @@ export default function ConnectionsPage() {
           {sources.map(s => {
             const c = s.connection, linked = !!c && c.status !== 'disconnected' && c.status !== 'revoked'
             const fetched = s.freshness.last_successful_fetch ?? (linked ? c?.checked_at : null)
-            const coll = s.provider !== 'drive' && s.configured_collection ? `${COLLECTION[s.provider]} ${s.configured_collection}` : ''
-            const sub = linked ? c?.identity_label || 'Linked account' : s.configured ? 'No account linked yet' : 'Needs local configuration before it can be connected'
-            const sub2 = linked ? [coll, fetched ? `Last fetched ${fmtWhen(fetched)}` : 'Not fetched yet'].filter(Boolean).join(' · ') : ''
+            const coll = s.provider !== 'drive' && s.configured_collection ? `${COLLECTION[s.provider]} ${s.configured_collection.split(',').map(x => x.trim()).filter(Boolean).join(', ')}` : ''
+            const sub = linked ? [maskEmail(c?.identity_label || '') || 'Linked account', coll].filter(Boolean).join(' · ') : s.configured ? 'No account linked yet' : 'Needs local configuration before it can be connected'
+            const sub2 = linked ? (fetched ? `Last fetched ${fmtWhen(fetched)}` : 'Not fetched yet') : ''
             return <div className="lrow" key={s.provider}>
               <SourceTile provider={s.provider} />
               <div className="grow">{NAMES[s.provider]}<small>{sub}</small>{sub2 && <small>{sub2}</small>}</div>

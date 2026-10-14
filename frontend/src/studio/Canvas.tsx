@@ -3,7 +3,7 @@
 // Run states come from the SSE overlay only; the Copilot preview paints added/changed/removed nodes and edges.
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Background, BackgroundVariant, EdgeLabelRenderer, Handle, Position, ReactFlow, applyNodeChanges, useReactFlow, useStore,
+  EdgeLabelRenderer, Handle, Position, ReactFlow, applyNodeChanges, useReactFlow, useStore,
   type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/base.css'
@@ -16,7 +16,7 @@ import { edgeTaken, type RunOverlay } from './useRunStream'
 export type CardState = '' | 'running' | 'waiting' | 'done' | 'failed' | 'skipped'
 type DiffKind = 'add' | 'chg' | 'rem' | null
 interface StepData extends Record<string, unknown> {
-  node: WfNode; cat: Cat; sub: string; state: CardState; diff: DiffKind; sel: boolean; handles: string[] | null; hasIn: boolean; hasOut: boolean; locked: boolean
+  node: WfNode; cat: Cat; sub: string; state: CardState; diff: DiffKind; sel: boolean; handles: string[] | null; freeHandle: string | null; hasIn: boolean; hasOut: boolean; locked: boolean
 }
 type StepNode = Node<StepData, 'step'>
 interface FlowData extends Record<string, unknown> { cls: string; label?: string; side?: 'L' | 'R'; labelTaken?: boolean; edge: WfEdge; onInsert?: (e: WfEdge) => void }
@@ -33,7 +33,10 @@ const StepCard = memo(function StepCard({ data }: NodeProps<StepNode>) {
     <span className="ntext"><b>{title}</b><i>{sub}</i></span>
     <span className="sdot" />
     {hasOut && (handles
-      ? handles.map((h, i) => <Handle key={h} id={h} type="source" position={Position.Bottom} className="handle" isConnectable={!locked} title={humanCase(h)} style={{ left: `calc(50% + ${(i - (handles.length - 1) / 2) * 14}px)` }} />)
+      // Router: one visible handle at the bottom centre (prototype); every branch leaves from it. The visible one is the
+      // first branch without a step yet, so dragging from it connects that branch.
+      ? [...handles].sort((a, b) => Number(a === data.freeHandle) - Number(b === data.freeHandle)).map(h => <Handle key={h} id={h} type="source" position={Position.Bottom}
+          className={cx('handle', h !== data.freeHandle && 'ghost')} isConnectable={!locked && h === data.freeHandle} title={h === data.freeHandle ? humanCase(h) : undefined} />)
       : <Handle type="source" position={Position.Bottom} className="handle" isConnectable={!locked} />)}
   </div>
 })
@@ -62,6 +65,13 @@ function FlowEdge({ sourceX, sourceY, targetX, targetY, data }: EdgeProps<FlowEd
   </>
 }
 
+/** The prototype's `.grid`: 20px lines in --grid under 100px lines in --grid2, moving and scaling with the canvas. */
+function GridBg() {
+  const [x, y, z] = useStore(s => s.transform)
+  const big = 100 * z, small = 20 * z
+  return <div className="st-grid" style={{ backgroundSize: `${big}px ${big}px,${big}px ${big}px,${small}px ${small}px,${small}px ${small}px`, backgroundPosition: `${x}px ${y}px` }} />
+}
+
 const nodeTypes = { step: StepCard }
 const edgeTypes = { flow: FlowEdge }
 
@@ -87,9 +97,12 @@ export default function Canvas({ spec, base, diff, registry, overlay, selectedId
     const stateOf = (id: string): CardState => overlay ? STATE[overlay.nodeStates[id] ?? ''] ?? '' : ''
     const card = (node: WfNode, from: WorkflowSpec, dk: DiffKind): StepNode => {
       const def = registry.node_types[node.type]
+      const handles = isRouter(registry, node) ? routerHandles(node) : null
+      const used = new Set(from.edges.filter(e => e.source === node.id).map(e => e.sourceHandle))
+      const freeHandle = handles ? handles.find(h => !used.has(h)) ?? handles[0] ?? null : null
       return {
         id: node.id, type: 'step', position: node.position ?? { x: 0, y: 0 }, width: NODE_W, height: NODE_H, draggable: !locked && dk !== 'rem', selectable: false,
-        data: { node, cat: catOf(node.type), sub: subtitle(node, from), state: stateOf(node.id), diff: dk, sel: node.id === selectedId, handles: isRouter(registry, node) ? routerHandles(node) : null,
+        data: { node, cat: catOf(node.type), sub: subtitle(node, from), state: stateOf(node.id), diff: dk, sel: node.id === selectedId, handles, freeHandle,
           hasIn: !def || def.inputs.length > 0, hasOut: !def || def.outputs.length > 0, locked },
       }
     }
@@ -131,8 +144,7 @@ export default function Canvas({ spec, base, diff, registry, overlay, selectedId
       selectionKeyCode={null} multiSelectionKeyCode={null} nodeDragThreshold={4} connectionRadius={28}
       minZoom={0.4} maxZoom={2} panOnScroll zoomOnScroll={false} zoomOnPinch zoomActivationKeyCode={['Control', 'Meta']} panActivationKeyCode="Space" zoomOnDoubleClick={false}
       connectionLineStyle={{ stroke: 'var(--ink)', strokeWidth: 1.5 }} proOptions={{ hideAttribution: true }} defaultViewport={{ x: 0, y: 0, zoom: 1 }}>
-      <Background id="g20" variant={BackgroundVariant.Lines} gap={20} color="var(--grid)" lineWidth={1} />
-      <Background id="g100" variant={BackgroundVariant.Lines} gap={100} color="var(--grid2)" lineWidth={1} />
+      <GridBg />
     </ReactFlow>
   </div>
 }

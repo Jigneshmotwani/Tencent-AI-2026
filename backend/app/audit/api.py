@@ -102,14 +102,14 @@ def audit_run(run_id: str, user: User = Depends(identity.current_user), db: DBSe
     """Reconstruct one run (question, per-resource decisions, answer). Audited as audit.view."""
     _auditor(user)
     runs = reconstruct(db, [run_id])
-    from .labels import JIRA_KEY, PROVIDER, load_labels
+    from .labels import JIRA_KEY, PROVIDER, container_label, load_labels
     labels = load_labels(db)
     for run in runs:
         for res in run['resources']:
             rid = str(res['resource_id'])
             prov = PROVIDER.get(res.get('provider') or '', res.get('provider') or '')
             res['label'] = labels['resources'].get(rid) or (rid if JIRA_KEY.match(rid) else f'{prov} document' if prov else rid[:40])
-            res['container_label'] = labels['containers'].get(res.get('container') or '', res.get('container') or '')
+            res['container_label'] = container_label(res.get('container'), labels)
     audit(db, user.id, 'audit.view', 'allowed' if runs else 'denied', 'run_viewed' if runs else 'not_found', run_id=run_id if runs else None,
           details={'viewed_run_id': run_id})
     if not runs:

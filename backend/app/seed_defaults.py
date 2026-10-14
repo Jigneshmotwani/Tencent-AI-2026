@@ -57,6 +57,32 @@ def ensure_audit_labels(db) -> None:
     db.flush()
 
 
+# Demo budget limits (USD per month) created only where none is set, so admin edits survive. Per-run caps for agents.
+ORG_BUDGET = (200.0, 80)
+GROUP_BUDGETS = {'Compliance': 40.0, 'Compliance leads': 20.0, 'Operations': 10.0, 'Onboarding': 30.0, 'Audit': 20.0}
+AGENT_BUDGETS = {'Transaction Investigator': (40.0, 20, 60000), 'Policy Expert': (10.0, 8, 20000),
+                 'KYB Case Reviewer': (15.0, 15, 40000), 'Incident Assistant': (10.0, 10, 30000), 'Audit Explorer': (20.0, 10, 30000)}
+USER_BUDGETS = {'compliance': 30.0, 'admin': 30.0, 'operations': 10.0, 'auditor': 20.0}
+
+
+def ensure_budget_defaults(db) -> None:
+    from sqlalchemy import select
+    from .db import BudgetLimit, Group, User, Workflow
+
+    def ensure(scope_type, scope_id, limit, threshold=None, steps=None, tokens=None):
+        if db.scalar(select(BudgetLimit).where(BudgetLimit.scope_type == scope_type, BudgetLimit.scope_id == scope_id)) is None:
+            db.add(BudgetLimit(scope_type=scope_type, scope_id=scope_id, limit_usd=limit, threshold_pct=threshold, max_steps=steps, max_tokens=tokens))
+    ensure('org', '', ORG_BUDGET[0], ORG_BUDGET[1])
+    for g in db.scalars(select(Group).where(Group.name.in_(list(GROUP_BUDGETS)))):
+        ensure('group', g.id, GROUP_BUDGETS[g.name])
+    for u in db.scalars(select(User).where(User.username.in_(list(USER_BUDGETS)))):
+        ensure('user', u.id, USER_BUDGETS[u.username])
+    for w in db.scalars(select(Workflow).where(Workflow.status != 'archived', Workflow.name.in_(list(AGENT_BUDGETS)))):
+        limit, steps, tokens = AGENT_BUDGETS[w.name]
+        ensure('workflow', w.id, limit, None, steps, tokens)
+    db.flush()
+
+
 def seed_defaults(db):
     from .governance.policies import ensure_default_policy
     from .mcp.registry import ensure_default_servers
@@ -71,4 +97,5 @@ def seed_defaults(db):
         pass
     ensure_templates(db)
     ensure_audit_labels(db)
+    ensure_budget_defaults(db)
     db.commit()

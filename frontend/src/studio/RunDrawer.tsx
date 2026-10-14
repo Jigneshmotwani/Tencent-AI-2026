@@ -95,9 +95,23 @@ export function RunDrawer({ spec, stream, selected, onSelect, collapsed, onColla
   const sum: [string, string] = status === 'paused' ? ['amb', 'Waiting for approval'] : status === 'completed' ? ['green', 'Completed']
     : status === 'failed' ? ['red', failed ? `Failed at ${failed.name}` : 'Failed'] : status === 'blocked_by_budget' ? ['red', 'Blocked by budget']
     : status === 'cancelled' ? ['', 'Cancelled'] : ['cob', 'Running']
-  const durMs = run?.latency_ms ?? (rows.reduce((a, r) => a + (r.state === 'done' || r.state === 'fail' ? r.dur ?? 0 : 0), 0) || null)
-  const tokens = (run?.tokens_used || null) ?? stream.overlay.tokens ?? rows.reduce((a, r) => a + (r.usage ? (r.usage.prompt_tokens ?? 0) + (r.usage.completion_tokens ?? 0) : 0), 0)
-  const cost = (run?.cost_usd || null) ?? stream.overlay.cost ?? rows.reduce((a, r) => a + (r.usage?.cost_usd ?? 0), 0)
+  // Elapsed time ticks while the run is running; afterwards the recorded latency (or the steps' total).
+  const running = !!runId && !TERMINAL_RUN.has(status) && status !== 'paused'
+  const startedAt = run?.created_at ?? stream.events[0]?.timestamp ?? null
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running) return
+    const t = setInterval(() => setNow(Date.now()), 100)
+    return () => clearInterval(t)
+  }, [running])
+  const stepsMs = rows.reduce((a, r) => a + (r.state === 'done' || r.state === 'fail' ? r.dur ?? 0 : 0), 0) || null
+  const durMs = running && startedAt ? Math.max(0, now - new Date(startedAt).getTime())
+    : run?.latency_ms ?? (TERMINAL_RUN.has(status) && run?.finished_at && startedAt ? new Date(run.finished_at).getTime() - new Date(startedAt).getTime() : stepsMs)
+  // Tokens and cost: the largest (freshest) of the steps' own usage, the live stream totals and the run record.
+  const stepTokens = rows.reduce((a, r) => a + (r.usage ? (r.usage.prompt_tokens ?? 0) + (r.usage.completion_tokens ?? 0) : 0), 0)
+  const stepCost = rows.reduce((a, r) => a + (r.usage?.cost_usd ?? 0), 0)
+  const tokens = Math.max(stepTokens, stream.overlay.tokens ?? 0, run?.tokens_used ?? 0)
+  const cost = Math.max(stepCost, stream.overlay.cost ?? 0, run?.cost_usd ?? 0)
   const trace = safeLocalUrl(run?.grafana_trace_url)
 
   const grip = (e: React.PointerEvent) => {

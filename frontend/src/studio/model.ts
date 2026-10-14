@@ -15,7 +15,9 @@ const JIRA_LABEL: Record<string, string> = {
 
 export const catOf = (type: string): Cat => nodeCat(type)
 /** "low_or_medium" → "Low or medium". */
-export const humanCase = (value: string) => { const s = value.replace(/[_-]+/g, ' ').trim(); return s ? s[0].toUpperCase() + s.slice(1) : s }
+// Router case ids to labels; risk-level pairs read as alternatives ('low_medium' -> 'Low or medium', like the prototype).
+const LEVELS = new Set(['low', 'medium', 'high', 'critical'])
+export const humanCase = (value: string) => { const parts = value.split(/[_-]+/).filter(Boolean); const s = parts.length > 1 && parts.every(p => LEVELS.has(p.toLowerCase())) ? parts.join(' or ') : parts.join(' '); return s ? s[0].toUpperCase() + s.slice(1) : s }
 const str = (v: unknown) => (typeof v === 'string' ? v : '')
 const stripTemplates = (s: string) => s.replace(/\{\{[^}]*\}\}/g, '…').replace(/\s+/g, ' ').trim()
 
@@ -135,7 +137,21 @@ export function needsLayout(spec: WorkflowSpec): boolean {
   }
   const xs = n.map(x => x.position?.x ?? 0), ys = n.map(x => x.position?.y ?? 0)
   const w = Math.max(...xs) - Math.min(...xs) + NODE_W, h = Math.max(...ys) - Math.min(...ys) + NODE_H
-  return n.length >= 3 && w > h
+  if (n.length >= 3 && w > h) return true
+  // A branch row (several children side by side on one line) closer to its parent than the prototype's 112px leaves no
+  // room for the branch labels; those older stored layouts are laid out again.
+  const at = new Map(n.map(x => [x.id, x.position ?? { x: 0, y: 0 }]))
+  for (const node of n) {
+    const kids = [...new Set(spec.edges.filter(e => e.source === node.id).map(e => e.target))].map(id => at.get(id)).filter((p): p is { x: number; y: number } => !!p)
+    if (kids.length > 1 && kids.every(k => k.y === kids[0].y) && kids[0].y - at.get(node.id)!.y < PITCH + BRANCH_EXTRA) return true
+    // Router branches in a row but not in case order (the first case belongs on the left).
+    if (node.type === 'logic.router' && node.config) {
+      const hs = routerHandles(node)
+      const row = spec.edges.filter(e => e.source === node.id && e.sourceHandle && hs.includes(e.sourceHandle)).sort((a, b) => hs.indexOf(a.sourceHandle!) - hs.indexOf(b.sourceHandle!)).map(e => at.get(e.target)).filter((p): p is { x: number; y: number } => !!p)
+      if (row.length > 1 && row.every(p => p.y === row[0].y) && row.some((p, i) => i > 0 && p.x < row[i - 1].x)) return true
+    }
+  }
+  return false
 }
 
 /** Vertical auto-layout: dagre TB, 88px pitch, branches 280px apart with extra room under routers for the branch labels. */
@@ -157,6 +173,20 @@ export function layoutSpec(spec: WorkflowSpec, registry?: StudioRegistry): Workf
   const branching = spec.nodes.filter(node => (registry ? isRouter(registry, node) : node.type === 'logic.router') || new Set(edges.filter(e => e.source === node.id).map(e => e.target)).size > 1)
     .map(node => pos.get(node.id)!.y).sort((a, b) => a - b)
   for (const [id, p] of pos) pos.set(id, { x: p.x, y: p.y + branching.filter(y => y < p.y).length * BRANCH_EXTRA })
+  // Branches left to right in case order ("High" first, as in the prototype): swap whole branch columns if dagre didn't.
+  for (const node of spec.nodes) {
+    if (!node.config || !(registry ? isRouter(registry, node) : node.type === 'logic.router')) continue
+    const kids = [...new Set(edges.filter(e => e.source === node.id).sort((a, b) => order(a) - order(b)).map(e => e.target))]
+    if (kids.length < 2) continue
+    const slots = kids.map(k => pos.get(k)!.x).sort((a, b) => a - b)
+    kids.forEach((k, i) => {
+      const dx = slots[i] - pos.get(k)!.x
+      if (!dx) return
+      const seen = new Set([k]), queue = [k]
+      while (queue.length) { const id = queue.shift()!; edges.filter(e => e.source === id && !seen.has(e.target) && !kids.includes(e.target)).forEach(e => { seen.add(e.target); queue.push(e.target) }) }
+      seen.forEach(id => { const p = pos.get(id)!; pos.set(id, { x: p.x + dx, y: p.y }) })
+    })
+  }
   // Centre the first node on x=0 like the prototype.
   const first = spec.nodes.find(n => n.type.startsWith('trigger')) ?? spec.nodes[0]
   const dx = -NODE_W / 2 - pos.get(first.id)!.x, dy = -pos.get(first.id)!.y

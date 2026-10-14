@@ -17,3 +17,4 @@
 .link:hover{text-decoration:underline}
 .au-tbl td{max-width:260px;overflow:hidden;text-overflow:ellipsis}
 .integ.broken b{color:var(--danger)}
+@media (max-width:700px){.umenu{max-height:calc(100vh - 72px);overflow:auto}}

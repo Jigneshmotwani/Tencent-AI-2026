@@ -8,6 +8,8 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -115,6 +117,8 @@ async def servers_add(body: AddServer, request: Request, user: User = Depends(id
                         approved_by=user.id if _is_admin(user) else None)
         if body.transport == 'http':
             row.url = registry.validate_url(body.url or '')
+            if not _is_admin(user) and (urlparse(row.url).hostname or '') in registry.LOOPBACK:
+                raise McpError('mcp_url_not_allowed')  # only admins may register local HTTP servers
         else:
             row.command = registry.validate_command(body.command or [])
         if body.auth_token:

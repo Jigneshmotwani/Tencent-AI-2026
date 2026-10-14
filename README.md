@@ -92,11 +92,11 @@ It also creates four local accounts. Their passwords go to `.local/demo-accounts
 | `compliance` | Priya Raman | Compliance | Builder | Compliance, Onboarding |
 | `operations` | Daniel Koh | Operations | User | Operations, Onboarding |
 | `admin` | Wei Ming Tan | Compliance lead | Admin | Compliance, Compliance leads |
-| `auditor` | Aisha Rahman | Auditor | Auditor (audit metadata only) | Audit |
+| `auditor` | Aisha Rahman | Auditor | Auditor (+ User: Workspace with her own access) | Audit |
 
 Roles and groups decide which pages and agents a person can use, who reviews and approves, tool allowlists and budget scopes. **They never grant document access**: every source read still uses that person's own delegated identity.
 
-**Demo mode** (`DEMO_MODE=true` in `.env`, the default for this local build): the user menu offers *Switch demo user*, which ends the current session and signs in as another demo user through a real server session. It answers only on loopback and is audited (`session.demo_switch`); with `DEMO_MODE=false` the endpoints return 404.
+**Demo mode** (`DEMO_MODE=true` in your local `.env`; `.env.example` ships it off): the user menu offers *Switch demo user*, which ends the current session and signs in as another demo user through a real server session. It answers only on loopback and is audited (`session.demo_switch`); with `DEMO_MODE=false` the endpoints return 404.
 
 Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser profiles to act as two users at once.
 

@@ -59,12 +59,19 @@ export function StepSheet({ node, spec, registry, groups, readOnly, onSave, onDe
   let body: React.ReactNode
   if (type === 'llm.generate') {
     const inputs = arr(cfg.include_nodes)
+    // Inputs the instructions actually reference: {{inputs.alert_id}} → alert_id, {{nodes.<id>…}} → that step's name.
+    const refs: string[] = []
+    for (const m of s(cfg.prompt).matchAll(/\{\{\s*(inputs|nodes)\.([A-Za-z0-9_-]+)[^}]*\}\}/g)) {
+      const r = m[1] === 'inputs' ? m[2] : m[2] === node.id ? '' : nameOf(m[2])
+      if (r && !refs.includes(r) && !inputs.some(i => nameOf(i) === r)) refs.push(r)
+    }
     const addable = others.filter(n => !inputs.includes(n.id) && !n.type.startsWith('trigger') && n.type !== 'output')
     body = <>{name}{model}
       <Field label="Instructions" htmlFor={id('instr')}><Textarea id={id('instr')} rows={6} value={s(cfg.prompt)} maxLength={8000} disabled={dis} onChange={e => set({ prompt: e.target.value })} /></Field>
       <Field label="Inputs"><div className="ms">
         {inputs.map(i => <span className="chip" key={i}>{nameOf(i)}{!dis && <button type="button" aria-label={`Remove ${nameOf(i)}`} onClick={() => set({ include_nodes: inputs.filter(x => x !== i).length ? inputs.filter(x => x !== i) : undefined })}><Icon name="x" small /></button>}</span>)}
-        {!inputs.length && <span className="muted" style={{ fontSize: 13 }}>No inputs yet</span>}
+        {refs.map(r => <span className="chip" key={'ref:' + r} title="Used in the instructions">{r}</span>)}
+        {!inputs.length && !refs.length && <span className="muted" style={{ fontSize: 13 }}>No inputs yet</span>}
         {!dis && addable.length > 0 && <select className="select" aria-label="Add an input" value="" onChange={e => { if (e.target.value) set({ include_nodes: [...inputs, e.target.value] }) }}>
           <option value="">Add…</option>{addable.map(n => <option key={n.id} value={n.id}>{n.label || n.id}</option>)}</select>}
       </div></Field>
@@ -125,7 +132,7 @@ export function StepSheet({ node, spec, registry, groups, readOnly, onSave, onDe
   return <Sheet open narrow onClose={onClose} title="Step settings" label="Step settings"
     footer={readOnly ? undefined : <>{canDelete ? <Button variant="text" size="sm" danger onClick={onDelete}>Delete step</Button> : <span />}<Button variant="primary" size="sm" onClick={save}>Save</Button></>}>
     {body}
-    {def && Object.keys((def.config_schema?.properties ?? {}) as object).length > 0 && <details className="dd-d" style={{ marginTop: 4 }}>
+    {def && Object.keys((def.config_schema?.properties ?? {}) as object).length > 0 && <details className="ss-adv">
       <summary>Advanced</summary>
       <textarea className="textarea mono" style={{ marginTop: 8, fontSize: 12 }} rows={8} spellCheck={false} disabled={dis} aria-label="Advanced settings (JSON)"
         value={raw ?? JSON.stringify(cfg, null, 2)} onChange={e => { setRaw(e.target.value); setRawErr('') }} />

@@ -91,6 +91,20 @@ ACTIONS = {
 PREFIXES = (('access.', 'Access denied'), ('admin.', 'Changed users or groups'), ('budget.', 'Changed budget'), ('policy.', 'Changed policy'))
 
 
+PAGES = {'workspace': 'Workspace', 'studio': 'Studio', 'approvals': 'Approvals', 'tools': 'Tools', 'audit': 'Audit', 'budgets': 'Budgets',
+         'policies': 'Policies', 'users': 'Users & groups', 'connections': 'Connections', 'settings': 'Settings'}
+SHORT_KEY = re.compile(r'^[A-Z][A-Z0-9_]{1,15}$')
+
+
+def container_label(container: str | None, labels: dict) -> str:
+    """Admin label, or a short space/project key (NSDEMO, KYB). Opaque ids (Drive folder ids) are not shown."""
+    if not container:
+        return ''
+    if container in labels['containers']:
+        return labels['containers'][container]
+    return container if SHORT_KEY.match(container) else ''
+
+
 def load_labels(db) -> dict:
     row = db.get(PlatformPolicy, 'audit_labels')
     value = dict(row.value or {}) if row else {}
@@ -112,17 +126,20 @@ def resource_label(row, labels: dict, workflows: dict[str, str], run_inputs: dic
     """(label, is_identifier) for the Resource column."""
     rids = [str(r) for r in (row.resource_ids or [])]
     provider = PROVIDER.get(row.provider or '', row.provider or '')
-    container = labels['containers'].get(row.container or '', row.container or '')
+    container = container_label(row.container, labels)
+    details = row.details or {}
+    if row.operation.startswith('access.') and isinstance(details.get('page'), str):
+        return PAGES.get(details['page'], details['page'].capitalize()) + ' page', False
     if rids:
         if len(rids) > 1:
-            return f'{len(rids)} documents · {provider}' if provider else f'{len(rids)} items', False
+            return f'{len(rids)} documents · {provider}' if provider else f'{len(rids)} documents', False
         rid = rids[0]
         if rid in labels['resources']:
             return labels['resources'][rid], False
         if JIRA_KEY.match(rid):
             return rid, True
         if provider:
-            return f'{provider} · {container}' if container and len(container) <= 40 else f'{provider} document', False
+            return f'{provider} · {container}' if container else f'{provider} document', False
         return rid[:40], True
     if row.workflow_id and row.workflow_id in workflows:
         name = workflows[row.workflow_id]
@@ -131,7 +148,7 @@ def resource_label(row, labels: dict, workflows: dict[str, str], run_inputs: dic
     if row.operation.startswith(('run.',)) and row.run_id:
         return 'Chat', False
     if provider and container:
-        return f'{provider} · {container}' if len(container) <= 40 else provider, False
+        return f'{provider} · {container}', False
     if provider:
         return provider, False
     details = row.details or {}

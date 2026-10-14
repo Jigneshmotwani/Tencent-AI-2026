@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { safeError } from '../api'
 import type { StudioRegistry } from '../contracts'
 import { api } from '../api'
-import { Button, Menu, StatusPill, Tile, fmtDay, toast, type Cat, CAT_ICON } from '../ui/kit'
+import { Button, Menu, StatusPill, Tile, fmtDay, toast, type Cat } from '../ui/kit'
+import { agentLook } from '../workspace/api'
 import type { IconName } from '../ui/icons'
 import { navigate, useRoute } from '../ui/router'
 import { type TemplateInfo, type WorkflowRow, createBlank, createFromTemplate, listTemplates, listWorkflows } from './api'
@@ -25,13 +26,6 @@ function EditorRoute({ id }: { id: string }) {
   return <StudioEditor workflowId={id} registry={registry} />
 }
 
-const REG_CAT: Record<string, Cat> = { trigger: 'trigger', knowledge: 'know', ai: 'ai', tool: 'data', logic: 'route', guardrail: 'guard', governance: 'appr', output: 'act' }
-const ICON_CAT: Record<string, [Cat, IconName]> = { book: ['know', 'book'], spark: ['ai', 'spark'], usercheck: ['appr', 'usercheck'], search: ['act', 'search'] }
-function tileOf(icon?: string, category?: string): [Cat, IconName | undefined] {
-  if (icon && ICON_CAT[icon]) return ICON_CAT[icon]
-  if (!category) return ['ai', undefined]
-  return [(category in CAT_ICON ? category as Cat : REG_CAT[category]) ?? 'ai', undefined]
-}
 const TPL_ICON: Record<string, [Cat, IconName]> = {
   'shield-check': ['appr', 'usercheck'], 'book-open': ['know', 'book'], book: ['know', 'book'], siren: ['act', 'ticket'], search: ['act', 'search'],
   alert: ['ai', 'spark'], spark: ['ai', 'spark'], file: ['know', 'file'],
@@ -74,7 +68,7 @@ function StudioHome() {
           const status = r.display_status ?? (r.status === 'published' && r.published_version != null && r.draft_version !== r.published_version ? 'draft' : r.status)
           const live = r.live_version ?? r.published_version
           const ver = status === 'published' && live ? live : r.draft_version
-          const [cat, icon] = tileOf(r.icon, r.category)
+          const { cat, icon } = agentLook(r)
           const open = () => navigate('/studio/' + encodeURIComponent(r.id))
           return <tr key={r.id} tabIndex={0} onClick={open} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}>
             <td><span className="nm"><Tile cat={cat} icon={icon} />{r.name}</span></td>

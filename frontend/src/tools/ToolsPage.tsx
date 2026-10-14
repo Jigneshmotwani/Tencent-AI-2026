@@ -91,10 +91,20 @@ function ToolSheet({ server, onClose, onChanged }: { server: ToolServer | null; 
           {rwPill(x.read_only)}
           <Switch checked={local[x.name] ?? x.enabled} label={`Enable ${x.name}`} disabled={!isAdmin} onChange={v => void toggle(x.name, v)} />
         </div>
-        {isOpen && <div className="tl-b">{x.description && <p>{x.description}</p>}<pre className="json" style={{ margin: 0 }}>{schemaText(x.input_schema)}</pre></div>}
+        {isOpen && <div className="tl-b">{x.description && <ClampText text={x.description} />}<pre className="json" style={{ margin: 0 }}>{schemaText(x.input_schema)}</pre></div>}
       </div>
     })}
   </Sheet>
+}
+
+/** A tool description clamped to two lines, with a small toggle when it runs longer. */
+function ClampText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const [long, setLong] = useState(false)
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => { const el = ref.current; if (el && !open) setLong(el.scrollHeight > el.clientHeight + 1) }, [text, open])
+  return <div className="tl-desc"><p ref={ref} className={open ? undefined : 'clamp2'}>{text}</p>
+    {(long || open) && <button type="button" className="link" onClick={() => setOpen(o => !o)}>{open ? 'Show less' : 'Show more'}</button>}</div>
 }
 
 type Found = { name: string; read_only: boolean; on: boolean }

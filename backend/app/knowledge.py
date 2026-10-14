@@ -5,6 +5,8 @@ from .db import SessionLocal, SourceConnection, EvidenceRecord
 from .contracts import SourceError, PROVIDERS
 from .telemetry import tracer, audit, record_access
 
+PER_SOURCE_READS = 6  # top hits read per source (in parallel); ranking then keeps the best 8 overall
+
 def search_topic(text, prior):
     # Preserve customer/company terms from the recent user turns without trusting them as evidence.
     words = re.findall(r'[\w-]+', ' '.join(prior[-2:])+' '+text)
@@ -42,18 +44,20 @@ async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, lim
                     page = await adapter.search(query, context, limit=cap)
                     with SessionLocal() as db: audit(db,user.id,'source.search',provider=provider,run_id=run_id,container=context.collection,
                         details={'hit_count':len(page.hits)},**ctx)
-                # Bounded first page; adapter supports cursor for explicit UI/source expansion.
-                for hit in page.hits[:cap]:
+            # Bounded first page; reads run concurrently (PER_SOURCE_READS per source), each re-authorized and audited.
+            gate = asyncio.Semaphore(PER_SOURCE_READS)
+            async def read_one(hit):
+                async with gate:
                     with tracer.start_as_current_span('source.read', attributes={'source.provider':provider}, record_exception=False, set_status_on_exception=False) as span:
                         try:
                             # Revalidate active connection before every provider read.
                             with SessionLocal() as db: fresh = await access_context(db,user,connection_id)
                             doc = await adapter.read(hit.document_id,fresh)
                             if not doc.container: doc = dataclasses.replace(doc, container=fresh.collection)
-                            if doc.text.strip(): local_docs.append((connection_id,provider,doc))
                             span.set_attribute('source.outcome','allowed'); record_access(provider=provider, decision='allowed', workflow=ctx.get('workflow_id',''))
                             with SessionLocal() as db: audit(db,user.id,'source.read',provider=provider,run_id=run_id,container=doc.container,
                                 resource_ids=[doc.document_id],decision={doc.document_id:'allowed'},**ctx)
+                            return (connection_id,provider,doc) if doc.text.strip() else None
                         except SourceError as exc:
                             outcome = 'denied' if exc.code=='denied' else 'error'
                             span.set_attribute('source.outcome',outcome); record_access(provider=provider, decision=outcome, workflow=ctx.get('workflow_id',''))
@@ -64,6 +68,15 @@ async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, lim
                             span.set_attribute('source.outcome','error'); record_access(provider=provider, decision='error', workflow=ctx.get('workflow_id',''))
                             with SessionLocal() as db: audit(db,user.id,'source.read','error','unavailable',provider,run_id,container=context.collection,
                                 resource_ids=[hit.document_id],decision={hit.document_id:'error'},**ctx)
+                        return None
+            # Reads get their own deadline; whatever finished in time is kept (slow documents are skipped, not fatal).
+            tasks = [asyncio.create_task(read_one(hit)) for hit in page.hits[:min(cap, PER_SOURCE_READS)]]
+            if tasks:
+                done, pending = await asyncio.wait(tasks, timeout=cfg.source_timeout)
+                for task in pending: task.cancel()
+                local_docs.extend(t.result() for t in done if not t.cancelled() and t.exception() is None and t.result())
+                if pending:
+                    return local_docs, f'{provider}: some documents took too long and were skipped.'
         except (SourceError, TimeoutError) as exc:
             code = exc.code if isinstance(exc,SourceError) else 'timeout'
             with SessionLocal() as db: audit(db,user.id,'source.search','error',code,provider,run_id,**ctx)

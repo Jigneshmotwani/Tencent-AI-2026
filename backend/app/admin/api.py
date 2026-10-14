@@ -537,14 +537,14 @@ class LimitBody(BaseModel):
 
 @router.get('/budgets/overview')
 def budgets_overview(user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
-    identity.require_capability(user, 'user')
+    identity.require_capability(user, 'admin')
     from ..governance import budgets
     return budgets.overview(db)
 
 
 @router.get('/budgets/{kind}')
 def budgets_scope(kind: Literal['groups', 'agents', 'users'], user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
-    identity.require_capability(user, 'user')
+    identity.require_capability(user, 'admin')
     from ..governance import budgets
     return budgets.scope_rows(db, kind)
 

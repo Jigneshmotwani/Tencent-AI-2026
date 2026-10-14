@@ -323,7 +323,7 @@ def workflow_publish(wf_id: str, request: Request, user: User = Depends(identity
     if not result['ok']:
         audit(db, user.id, 'workflow.publish', 'denied', 'validation_failed', workflow_id=wf.id, workflow_version=row.version)
         raise HTTPException(422, {'code': 'validation_failed', 'validation': result})
-    if R.needs_review(row.spec) and row.status != 'published':
+    if R.needs_review(row.spec) and not (row.status == 'published' and row.version == wf.published_version):
         # Iteration 3: shared audiences go through POST /workflows/{id}/submit (publish review); never self-published.
         audit(db, user.id, 'workflow.publish', 'denied', 'review_required', workflow_id=wf.id, workflow_version=row.version)
         raise HTTPException(409, 'review_required')

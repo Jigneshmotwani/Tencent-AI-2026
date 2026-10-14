@@ -185,7 +185,7 @@ function PublishCard({ a, onDone }: { a: Approval; onDone: (id: string) => void 
         : <div className="muted ap-v">No step changes</div>) : <div className="ap-v">First version</div>}</>}
       {'test_run' in p && <><span>Test run</span>
       <div className="ap-test">{test ? <><Pill tone={passed(test.status) ? 'ok' : test.status === 'failed' || test.status === 'cancelled' ? 'red' : 'warn'}>{passed(test.status) ? 'Passed' : test.status === 'failed' ? 'Failed' : cap(test.status ?? 'Unknown')}</Pill>
-        <span className="mono">{[test.latency_ms != null ? fmtSecs(test.latency_ms) : '', test.cost_usd != null ? usdSmall(test.cost_usd) : ''].filter(Boolean).join(' · ')}</span></> : <span className="muted">No test run yet</span>}</div></>}
+        <span className="mono">{[test.latency_ms != null ? fmtSecs(test.latency_ms) : '', test.cost_usd != null ? usdSmall(test.cost_usd) : ''].filter(Boolean).join(' · ')}</span></> : <span style={{ color: 'var(--ink2)' }}>No test run yet</span>}</div></>}
       {chips.length > 0 && <><span>Sources and tools</span><div className="chips">{chips.map((c, i) => <span key={i} className="chip">{c}</span>)}</div></>}
       {aud && <><span>Audience</span><div>{aud}</div></>}
     </div>}

@@ -1,17 +1,17 @@
 // Workspace: new-chat state with "Agents for you", conversations with streamed cited answers, the source sheet, the
 // "Answer with" selector / "@" mention, inline agent forms and run cards, and chat history.
 // Routes: /workspace (new chat), /workspace/c/<id> (conversation), /workspace/history (all chats).
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, Conversation, Message, Run, StreamEvent, Usage, api, safeError } from '../api'
 import { useRecentChats } from '../shell/Shell'
 import { chatsChanged, hasCap, useMe } from '../shell/session'
 import { Icon } from '../ui/icons'
 import { Button, EmptyState, Popover, Sheet, SourceTile, Spinner, Tile, cx, fmtTokens, fmtWhen, toast, usdSmall } from '../ui/kit'
 import { navigate, useRoute } from '../ui/router'
-import { Agent, CiteRef, Look, TERMINAL_CHAT, agentLook, citesOf, invocationText, invokeAgent, providerName } from './api'
+import { Agent, CiteRef, Look, TERMINAL_CHAT, agentLook, citesOf, invocationText, invokeAgent } from './api'
 import { Answer, citedOrder, claimBefore } from './Answer'
 import { Composer } from './Composer'
-import { DraftView, RunCard } from './RunCard'
+import { DraftView, Invocation, RunCard } from './RunCard'
 import { SourceSheet, SourceTarget } from './SourceSheet'
 import './workspace.css'
 
@@ -129,6 +129,15 @@ export default function WorkspacePage() {
   }, [convId])
   useEffect(() => { const el = scroller.current; if (el) { el.scrollTop = el.scrollHeight; atBottom.current = true } }, [convId, msgCount])
   useEffect(() => { const el = scroller.current; if (el && atBottom.current) el.scrollTop = el.scrollHeight }, [live?.text])
+  // Run cards, sources and footers mount after the messages: stay pinned to the bottom while they grow.
+  const convoRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = scroller.current, inner = convoRef.current
+    if (!el || !inner || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => { if (atBottom.current) el.scrollTop = el.scrollHeight })
+    ro.observe(inner); ro.observe(el)
+    return () => ro.disconnect()
+  }, [convId])
 
   // ---------------------------------------------------------------- actions
   const ensureConv = async (title: string) => {
@@ -169,7 +178,7 @@ export default function WorkspacePage() {
   }
   const openCite = (runId: string, cites: CiteRef[]) => (label: string, claim: string) => {
     const c = cites.find(x => x.label === label)
-    if (c) setSheet({ kind: 'source', target: { kind: 'chat', evidenceId: c.evidence_id, runId, claim } })
+    if (c) setSheet({ kind: 'source', target: { kind: 'chat', evidenceId: c.evidence_id, runId, claim, provider: c.provider, title: knownTitle(runId, c.evidence_id) } })
   }
   const openRunCite = (runId: string, label: string, claim: string) => setSheet({ kind: 'source', target: { kind: 'run', runId, label, claim } })
   const pickAgent = (a: Agent | null) => { setSelected(a); requestAnimationFrame(() => textarea.current?.focus({ preventScroll: true })) }
@@ -205,15 +214,18 @@ export default function WorkspacePage() {
       {titleRow}
       <div className="ws-body">
         <div className="page gut ws-page" ref={scroller}><div className="wrap">
-          <div className="convo">
+          <div className="convo" ref={convoRef}>
             {loadError && <p className="muted ws-calm">{loadError}</p>}
             {messages.map((m, i) => {
-              const next = messages[i + 1]
+              const next = messages[i + 1], prev = messages[i - 1]
               if (m.role === 'user') {
-                const isInvocation = m.text.startsWith('@') && (next?.status === 'agent_run' || !next)
+                // The run card renders its own invocation pill (from the run's real inputs).
+                if (m.text.startsWith('@') && next?.status === 'agent_run' && next.run_id) return null
+                const isInvocation = m.text.startsWith('@') && !next
                 return isInvocation ? <div key={m.id} className="invk"><Invocation text={m.text} /></div> : <div key={m.id} className="ubub">{m.text}</div>
               }
-              if (m.status === 'agent_run' && m.run_id) return <RunCard key={m.id} runId={m.run_id} agents={agents} onCite={openRunCite} onDraft={d => setSheet({ kind: 'draft', draft: d })} />
+              if (m.status === 'agent_run' && m.run_id) return <RunCard key={m.id} runId={m.run_id} agents={agents} onCite={openRunCite} onDraft={d => setSheet({ kind: 'draft', draft: d })}
+                invocation={prev?.role === 'user' && prev.text.startsWith('@') ? prev.text : undefined} />
               if (liveHere && m.run_id === liveHere.runId && !TERMINAL_CHAT.has(liveHere.status)) return <LiveAnswer key={m.id} live={liveHere} onCite={openCite(liveHere.runId, liveHere.cites)} />
               return <AnswerBlock key={m.id} message={m} failedNote={liveHere && m.run_id === liveHere.runId ? liveHere.error : ''} onCite={m.run_id ? openCite(m.run_id, citesOf(m)) : () => undefined}
                 onRetry={i > 0 && messages[i - 1].role === 'user' && !liveId && (m.status === 'failed' || m.status === 'cancelled') ? () => void ask(messages[i - 1].text) : undefined} />
@@ -247,13 +259,6 @@ export default function WorkspacePage() {
   </section>
 }
 
-/** "@Transaction Investigator · alert ALR-2291" with the values in mono. */
-function Invocation({ text }: { text: string }) {
-  const [head, ...rest] = text.split(' · ')
-  const tail = rest.join(' · ')
-  return <>{head}{tail && <> · {tail.split(/(\s[A-Z0-9][A-Z0-9-]{2,})/).map((p, i) => /^\s[A-Z0-9][A-Z0-9-]{2,}$/.test(p) ? <Fragment key={i}> <span className="mono">{p.trim()}</span></Fragment> : p)}</>}</>
-}
-
 function LiveAnswer({ live, onCite }: { live: Live; onCite: (label: string, claim: string) => void }) {
   const labels = citedOrder(live.text).filter(l => live.cites.some(c => c.label === l))
   return <div className="ans-turn" aria-live="polite" aria-busy="true">
@@ -267,48 +272,92 @@ function AnswerBlock({ message, onCite, failedNote, onRetry }: { message: Messag
   const order = citedOrder(message.text).filter(l => cites.some(c => c.label === l))
   const sources = order.map(l => cites.find(c => c.label === l)!).filter(Boolean)
   const titles = useSourceTitles(message.run_id, message.status === 'completed' && sources.length > 0)
-  const nameOf = (s: CiteRef, i: number) => titles[s.evidence_id] || sourceFallback(s, sources, i)
-  const tips = Object.fromEntries(sources.map((s, i) => [s.label, nameOf(s, i)]))
+  // Only sources the endpoint returned (re-authorized just now) are listed; the rest are dropped, never renamed.
+  const shown = titles.state === 'done' ? sources.filter(s => titles.map[s.evidence_id]) : []
+  const tips = Object.fromEntries(shown.map(s => [s.label, titles.map[s.evidence_id]]))
   const stopped = message.status === 'cancelled', failed = message.status === 'failed'
   return <div className="ans-turn">
     {message.text && <Answer className="ans" text={tidy(message.text)} labels={order} titles={tips} onCite={onCite} />}
     {(stopped || failed) && <p className="ws-calm">
       {stopped ? (message.text ? 'Stopped. The answer above may be incomplete.' : 'Stopped before an answer was written.') : failedNote || 'This answer couldn’t be completed.'}
       {onRetry && <> <button type="button" className="link" onClick={onRetry}>Try again</button></>}</p>}
-    {sources.length > 0 && <div className="srcs"><span>Sources</span>
-      {sources.map((s, i) => <button key={s.evidence_id} type="button" className="src" onClick={() => onCite(s.label, claimBefore(message.text, s.label))}>
-        <SourceTile provider={s.provider} />{nameOf(s, i)}</button>)}</div>}
-    {message.run_id && message.status === 'completed' && <FootLine runId={message.run_id} sources={sources.length} />}
+    {sources.length > 0 && titles.state === 'loading' && <div className="srcs" aria-busy="true" aria-label="Loading sources"><span>Sources</span>
+      {sources.slice(0, SRC_MAX).map(s => <span key={s.evidence_id} className="src sk" aria-hidden="true"><SourceTile provider={s.provider} /><span className="skl" /></span>)}</div>}
+    {shown.length > 0 && <SourcesRow sources={shown} titles={titles.map} onOpen={s => onCite(s.label, claimBefore(message.text, s.label))} />}
+    {message.run_id && message.status === 'completed' && <FootLine runId={message.run_id} sources={titles.state === 'done' ? shown.length : sources.length} />}
+  </div>
+}
+
+const SRC_MAX = 4, SRC_CHIP_MAX = 180
+let measureCtx: CanvasRenderingContext2D | null = null
+function textWidth(text: string, font: string) {
+  measureCtx ??= document.createElement('canvas').getContext('2d')
+  if (!measureCtx) return text.length * 7
+  measureCtx.font = font
+  return measureCtx.measureText(text).width
+}
+/** Sources row: up to four chips, then "+N more" (prototype `.srcs`). */
+function SourcesRow({ sources, titles, onOpen }: { sources: CiteRef[]; titles: Record<string, string>; onOpen: (s: CiteRef) => void }) {
+  const [all, setAll] = useState(false)
+  const row = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = row.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el); setWidth(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+  // As many chips as fit on one line at their natural width (at most four); the rest go behind "+N more".
+  const fit = useMemo(() => {
+    const el = row.current
+    if (!el || !width) return Math.min(SRC_MAX, sources.length)
+    const font = getComputedStyle(el).fontFamily
+    const chipW = (s: CiteRef) => Math.min(SRC_CHIP_MAX, Math.ceil(textWidth(titles[s.evidence_id] ?? '', `500 13px ${font}`)) + 52)
+    let used = textWidth('Sources', `13px ${font}`) + 12, k = 0
+    for (const s of sources.slice(0, SRC_MAX)) {
+      const rest = sources.length - (k + 1)
+      const need = used + 8 + chipW(s) + (rest > 0 ? 8 + textWidth(`+${rest} more`, `500 13px ${font}`) + 28 : 0)
+      if (k > 0 && need > width) break
+      used += 8 + chipW(s); k++
+    }
+    return Math.max(1, k)
+  }, [width, sources, titles])
+  const list = all ? sources : sources.slice(0, fit)
+  return <div ref={row} className={cx('srcs', all && 'all')}><span>Sources</span>
+    {list.map(s => <button key={s.evidence_id} type="button" className="src" title={titles[s.evidence_id]} onClick={() => onOpen(s)}>
+      <SourceTile provider={s.provider} /><span className="src-t">{titles[s.evidence_id]}</span></button>)}
+    {!all && sources.length > fit && <button type="button" className="src more" onClick={() => setAll(true)}>+{sources.length - fit} more</button>}
   </div>
 }
 
 /**
  * Source titles for a finished answer: GET /runs/{id}/sources re-authorizes each source with the owner's current
- * identity (titles are never stored). Fetched once per run and kept in memory; unavailable sources are omitted.
+ * identity (titles are never stored). Fetched once per run and kept for the session; unavailable sources are omitted.
  */
+type Titles = { state: 'loading' | 'done' | 'error'; map: Record<string, string> }
 const sourceTitles = new Map<string, Promise<Record<string, string>>>()
-function useSourceTitles(runId: string | null, enabled: boolean): Record<string, string> {
-  const [titles, setTitles] = useState<Record<string, string>>({})
+const titlesKnown = new Map<string, Record<string, string>>()
+function knownTitle(runId: string, evidenceId: string) { return titlesKnown.get(runId)?.[evidenceId] }
+function useSourceTitles(runId: string | null, enabled: boolean): Titles {
+  const cached = runId ? titlesKnown.get(runId) : undefined
+  const [titles, setTitles] = useState<Titles>(cached ? { state: 'done', map: cached } : { state: 'loading', map: {} })
   useEffect(() => {
     if (!runId || !enabled) return
+    const known = titlesKnown.get(runId)
+    if (known) { setTitles({ state: 'done', map: known }); return }
     let alive = true
     let p = sourceTitles.get(runId)
     if (!p) {
       p = api<{ evidence_id: string; title: string }[]>(`/runs/${encodeURIComponent(runId)}/sources`)
-        .then(list => Object.fromEntries(list.filter(x => x.title).map(x => [x.evidence_id, x.title])))
+        .then(list => { const m = Object.fromEntries(list.filter(x => x.title).map(x => [x.evidence_id, x.title])); titlesKnown.set(runId, m); return m })
       sourceTitles.set(runId, p)
       p.catch(() => sourceTitles.delete(runId))
     }
-    p.then(t => { if (alive) setTitles(t) }).catch(() => undefined)
+    p.then(map => { if (alive) setTitles({ state: 'done', map }) }).catch(() => { if (alive) setTitles({ state: 'error', map: {} }) })
     return () => { alive = false }
   }, [runId, enabled])
   return titles
-}
-
-/** While titles load, or for a source that is no longer available: the provider name, numbered when it repeats. */
-function sourceFallback(s: CiteRef, all: CiteRef[], i: number) {
-  const same = all.filter(x => x.provider === s.provider)
-  return same.length > 1 ? `${providerName(s.provider)} ${same.indexOf(all[i]) + 1}` : providerName(s.provider)
 }
 
 function FootLine({ runId, sources }: { runId: string; sources: number }) {

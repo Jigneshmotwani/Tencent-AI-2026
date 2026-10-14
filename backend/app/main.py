@@ -1,4 +1,4 @@
-import asyncio, json
+import asyncio, json, time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +37,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+_page_denials: dict = {}
 def _page_denied(path, method, token):
     from .admin.directory import page_for, pages_for
     page = page_for(path, method)
@@ -48,7 +49,10 @@ def _page_denied(path, method, token):
         user = db.get(User, session.user_id) if session is not None else None
         if user is None or page in pages_for(user):
             return None
-        audit(db, user.id, 'access.page', 'denied', 'page_forbidden', details={'page': page, 'method': method})
+        key = (user.id, page)
+        if time.monotonic() - _page_denials.get(key, -1e9) > 600:  # one record per user+page per 10 minutes
+            _page_denials[key] = time.monotonic()
+            audit(db, user.id, 'access.page', 'denied', 'page_forbidden', details={'page': page, 'method': method})
         return page
 
 async def page_access_guard(request, call_next):

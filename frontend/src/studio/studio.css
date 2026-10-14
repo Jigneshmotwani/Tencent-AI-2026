@@ -48,3 +48,17 @@
 .cop .cop-f{margin-bottom:14px}
 .cop .send:disabled{cursor:default}
 .rtoast a{cursor:pointer}
+
+/* prototype grid (exact --grid / --grid2 colours) behind the flow; moves and scales with the canvas */
+.st-grid{position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(to right,var(--grid2) 1px,transparent 1px),linear-gradient(to bottom,var(--grid2) 1px,transparent 1px),linear-gradient(to right,var(--grid) 1px,transparent 1px),linear-gradient(to bottom,var(--grid) 1px,transparent 1px)}
+/* router: a single visible output handle at the bottom centre; branch handles sit under it */
+.st-flow .react-flow__handle.handle{left:50%}
+.st-flow .react-flow__handle.handle.ghost{opacity:0;pointer-events:none}
+/* step sheet: the raw-config disclosure is a small text button at the bottom */
+.ss-adv{margin-top:8px}
+.ss-adv>summary{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;color:var(--ink2);cursor:pointer;list-style:none;border-radius:6px;padding:2px 0}
+.ss-adv>summary::-webkit-details-marker{display:none}
+.ss-adv>summary::after{content:'›';display:inline-block;transition:transform .12s}
+.ss-adv[open]>summary::after{transform:rotate(90deg)}
+.ss-adv>summary:hover{color:var(--ink)}

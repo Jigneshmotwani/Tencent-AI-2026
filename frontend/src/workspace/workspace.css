@@ -1,7 +1,7 @@
 /* Workspace additions on top of the prototype classes in ui/app.css (tokens only). */
 .ans-turn{margin-bottom:32px}
 .ans-turn:last-child{margin-bottom:0}
-.ans h2,.ans h3,.ans h4{font:600 13px/1.4 var(--f-ui);color:var(--ink2);margin:20px 0 8px}
+.ans .ans-h,.draft-txt .ans-h{font-weight:500;color:var(--ink);margin:0 0 8px}
 .ans>:first-child{margin-top:0}
 .ans ul,.ans ol{margin:0 0 16px;padding-left:20px}
 .ans li{font-size:15px;line-height:1.65;margin:0 0 4px}
@@ -19,7 +19,8 @@
 
 /* composer */
 .send[aria-disabled=true]{cursor:default}
-.ag .d{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ag>span:last-child{min-width:0;flex:1}
+.ag .d{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .aform{flex-wrap:wrap;row-gap:8px}
 .aform .af{display:inline-flex;align-items:center;gap:8px;min-width:0}
 .aform .input{max-width:100%}
@@ -47,3 +48,27 @@
 .draft-txt strong{font-weight:500}
 .draft-txt ul,.draft-txt ol{margin:0 0 10px;padding-left:18px}
 .ws .sheet-f a.btn{text-decoration:none;color:var(--ink)}
+
+/* sources row: one line where possible (max four chips + "+N more"); quiet placeholders while titles load */
+.ans-turn .srcs{flex-wrap:nowrap}
+.srcs>span{flex:none}
+.srcs .src{max-width:180px;min-width:0;flex:none}
+.srcs .src .tile{flex:none}
+.srcs .src.more{flex:none;min-width:0}
+.ans-turn .srcs.all{flex-wrap:wrap}
+.srcs .src .src-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.srcs .src.more{padding:0 12px;color:var(--ink2)}
+.srcs .src.sk{cursor:default;pointer-events:none}
+.srcs .src.sk .tile{opacity:.5}
+.skl{display:block;height:10px;border-radius:5px;background:var(--soft);box-shadow:inset 0 0 0 1px var(--line)}
+.srcs .src.sk .skl{width:88px;height:8px}
+.src-load{display:grid;gap:10px}
+.src-load .skl.t{height:16px;width:60%;margin-bottom:8px}
+.src-load .skl.s{width:45%}
+.src-load .src-title{margin-bottom:6px}
+
+/* new chat: centred when it fits, scrolls from the top when it doesn't (never clips the greeting) */
+.screen.ws.new .ws-body{justify-content:flex-start}
+.screen.ws.new .composer{margin-top:auto}
+.screen.ws.new .newst{margin-bottom:auto}
+.cbox textarea:focus-visible{box-shadow:none;outline:0}

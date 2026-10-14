@@ -9,6 +9,7 @@ import { safeHref } from './api'
 const httpsOnly = (url: string) => { const h = safeHref(url); return h && h.startsWith('https:') ? h : '' }
 
 const CITE = /\[(E\d+)\]/g
+const plain = ({ children }: { children?: ReactNode }) => <p className="ans-h">{children}</p>
 
 /** Evidence labels in order of first appearance (drives chip numbering and the Sources row). */
 export function citedOrder(text: string): string[] {
@@ -57,5 +58,7 @@ export function Answer({ text, labels, titles, onCite, className }: { text: stri
         return href ? <a href={href} target="_blank" rel="noopener noreferrer">{children as ReactNode}</a> : <span>{children as ReactNode}</span>
       },
       img: ({ alt }) => <span className="muted">{alt || ''}</span>,
+      // Answers are prose: a heading the model still writes reads as a short plain paragraph.
+      h1: plain, h2: plain, h3: plain, h4: plain, h5: plain, h6: plain,
     }}>{md}</ReactMarkdown></div>
 }

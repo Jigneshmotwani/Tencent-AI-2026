@@ -29,6 +29,15 @@ export default function PoliciesPage() {
 // ---------------------------------------------------------------- models
 interface Model { id: string; alias: string; label: string; provider: string; model_id: string; api_base: string; has_key: boolean; input_per_1m: number | null; output_per_1m: number | null; enabled: boolean; is_default: boolean; allowed_groups: string[]; source: string }
 const price = (n: number | null) => n == null ? '—' : '$' + Number(n).toFixed(2)
+const PROVIDER_LABEL: Record<string, string> = {
+  openai: 'OpenAI-compatible', 'openai-compatible': 'OpenAI-compatible', openai_compatible: 'OpenAI-compatible', deepseek: 'DeepSeek', anthropic: 'Anthropic-compatible',
+  'anthropic-compatible': 'Anthropic-compatible', anthropic_compatible: 'Anthropic-compatible', ollama: 'Self-hosted', vllm: 'Self-hosted', 'self-hosted': 'Self-hosted', self_hosted: 'Self-hosted', local: 'Self-hosted',
+}
+/** Display name for a model provider id ("openai" → "OpenAI-compatible"); unknown ids are title-cased, never shown raw. */
+function providerLabel(p: string) {
+  const k = (p || '').trim().toLowerCase()
+  return PROVIDER_LABEL[k] ?? (k ? k.split(/[_-]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ') : '—')
+}
 
 function ModelsPane() {
   const { data, error, reload } = useApi<Model[]>('/admin/models')
@@ -46,7 +55,7 @@ function ModelsPane() {
       <thead><tr><th>Model</th><th>Provider</th><th>Input / 1M</th><th>Output / 1M</th><th>Default</th><th>Enabled</th><th style={{ width: 44 }} /></tr></thead>
       <tbody>{data.map(m => { const name = m.label || m.alias; return <tr key={m.id} style={{ cursor: 'default' }}>
         <td><b style={{ fontWeight: 500 }} className={name.includes('-') ? 'mono' : undefined}>{name}</b></td>
-        <td>{m.provider}</td><td>{price(m.input_per_1m)}</td><td>{price(m.output_per_1m)}</td>
+        <td>{providerLabel(m.provider)}</td><td>{price(m.input_per_1m)}</td><td>{price(m.output_per_1m)}</td>
         <td><Radio name="defm" checked={m.is_default} label={`Make ${name} the default`} onChange={() => void patch(m, { is_default: true })} /></td>
         <td><Switch checked={m.enabled} label={`Enable ${name}`} onChange={v => { if (m.is_default) { toast('The default model must stay enabled'); return } void patch(m, { enabled: v }) }} /></td>
         <td style={{ position: 'relative' }}>
@@ -98,8 +107,8 @@ function ToolsPane({ groups }: { groups: Group[] }) {
   if (error && !data) return <LoadError error={error} onRetry={() => void reload()} />
   if (!data) return <Loading what="tools" />
   const run = async (task: () => Promise<unknown>, msg?: string) => { try { await task(); msg ? toast(msg) : saved(); await reload(true) } catch (e) { fail(e) } }
-  return <>{data.map(t => {
-    const open = openSrv[t.id] ?? (isPending(t) || false)
+  return <>{data.map((t, i) => {
+    const open = openSrv[t.id] ?? (isPending(t) || i < 2)
     const builtin = t.kind === 'builtin'
     return <div className="crd" key={t.id}>
       <div className="crd-h" style={{ marginBottom: open ? 12 : 0 }}>
@@ -181,9 +190,12 @@ function GuardPane() {
 // ---------------------------------------------------------------- approval rules
 function ApprovalPane({ groups }: { groups: Group[] }) {
   const { data, error, reload } = useApi<PolicyPayload>('/policies')
+  const hub = useApi<{ sources: { provider: string; configured: boolean }[] }>('/connections/hub')
+  const slackOn = !!hub.data?.sources.some(s => s.provider === 'slack' && s.configured)
   if (error && !data) return <LoadError error={error} onRetry={() => void reload()} />
   if (!data) return <Loading what="approval rules" />
-  const rules = data.approval_rules ?? []
+  // Slack rules only when Slack is configured for this deployment.
+  const rules = (data.approval_rules ?? []).filter(r => slackOn || !r.action.startsWith('slack.'))
   const gid = (v: Rule['approver_group'] | PolicyPayload['publish_reviewer_group']) => !v ? '' : typeof v === 'string' ? v : v.id
   const save = async (body: unknown) => { try { await api('/policies/extras', 'PUT', body); saved(); await reload(true) } catch (e) { fail(e); await reload(true) } }
   const opts = (none: string) => [{ value: '', label: none }, ...groups.map(g => ({ value: g.id, label: g.name }))]
@@ -191,7 +203,7 @@ function ApprovalPane({ groups }: { groups: Group[] }) {
     <div className="crd">{rules.map(r => <div className="setrow" key={r.action}>
       <div><b style={{ fontWeight: 500 }}>{ACTION_NAME[r.action] ?? r.action}</b><div className="d">{r.write ? 'Write action' : 'Read action'}</div></div>
       <div className="fl2"><span className="d">Requires approval</span>
-        {r.write ? <span className="lk" title="Write actions always require approval"><Switch checked label="Requires approval, locked" disabled /><Icon name="lock" small /></span>
+        {r.write ? <span className="lk lk-on" title="Write actions always require approval"><Switch checked label="Requires approval, locked" disabled /><Icon name="lock" small /></span>
           : <Switch checked={r.requires_approval} label={`Requires approval for ${ACTION_NAME[r.action] ?? r.action}`} disabled />}
         <Select style={{ width: 190 }} aria-label={`Approver for ${r.action}`} value={gid(r.approver_group)} options={opts('Any approver')}
           onChange={e => void save({ approval_rules: [{ action: r.action, approver_group: e.target.value || null }] })} /></div>

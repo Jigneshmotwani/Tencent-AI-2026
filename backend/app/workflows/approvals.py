@@ -69,7 +69,18 @@ def can_decide(approval: Approval, user: User, db=None, gids: set[str] | None = 
     if approval.requester_id == user.id:
         # Never for publish requests (even as admin). Runs: only when explicitly allowed; holding an approver role does
         # not override allow_requester=false.
-        return approval.kind != 'publish_request' and 'requester' in (approval.approver_roles or [])
+        if approval.kind == 'publish_request' or 'requester' not in (approval.approver_roles or []):
+            return False
+        if not approval.approver_group_id:
+            return True
+        # An approver group applies to the requester too: allow_requester never bypasses it.
+        if gids is None:
+            if db is None:
+                with SessionLocal() as own:
+                    gids = _gids(own, user)
+            else:
+                gids = _gids(db, user)
+        return approval.approver_group_id in gids
     return _eligible(approval, user, db, gids)
 
 

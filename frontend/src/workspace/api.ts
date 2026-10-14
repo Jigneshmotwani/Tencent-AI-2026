@@ -69,20 +69,28 @@ const ICON_LOOK: Record<string, Look> = {
   book: { cat: 'know', icon: 'book' }, 'book-open': { cat: 'know', icon: 'book' }, file: { cat: 'know', icon: 'file' },
   spark: { cat: 'ai', icon: 'spark' }, sparkle: { cat: 'ai', icon: 'spark' }, sparkles: { cat: 'ai', icon: 'spark' },
   'shield-check': { cat: 'appr', icon: 'usercheck' }, usercheck: { cat: 'appr', icon: 'usercheck' }, 'user-check': { cat: 'appr', icon: 'usercheck' },
-  search: { cat: 'act', icon: 'search' }, siren: { cat: 'act', icon: 'zap' }, ticket: { cat: 'act', icon: 'ticket' },
+  search: { cat: 'act', icon: 'search' }, siren: { cat: 'act', icon: 'zap' }, alert: { cat: 'act', icon: 'zap' }, zap: { cat: 'act', icon: 'zap' }, ticket: { cat: 'act', icon: 'ticket' },
+  'clipboard-check': { cat: 'appr', icon: 'usercheck' }, 'user-search': { cat: 'appr', icon: 'usercheck' }, building: { cat: 'appr', icon: 'usercheck' },
   db: { cat: 'data', icon: 'db' }, database: { cat: 'data', icon: 'db' },
 }
+/** Known agents by name, so a run card or list never falls back to a generic data glyph (KYB → usercheck). */
+const NAME_LOOK: [RegExp, Look][] = [
+  [/kyb|onboarding|due diligence/i, { cat: 'appr', icon: 'usercheck' }], [/policy/i, { cat: 'know', icon: 'book' }],
+  [/transaction|investigat/i, { cat: 'ai', icon: 'spark' }], [/incident/i, { cat: 'act', icon: 'zap' }], [/audit/i, { cat: 'act', icon: 'search' }],
+]
 export interface Look { cat: Cat; icon: IconName }
 /** An agent's tile: its `icon` when set, else its `category`, else the dominant node family of its spec. */
-export function agentLook(agent: { icon?: string | null; category?: string | null }, spec?: WorkflowSpec | null): Look {
+export function agentLook(agent: { icon?: string | null; category?: string | null; name?: string | null }, spec?: WorkflowSpec | null): Look {
   const byIcon = agent.icon ? ICON_LOOK[agent.icon] : undefined
   if (byIcon) return byIcon
+  const byName = agent.name ? NAME_LOOK.find(([re]) => re.test(agent.name!))?.[1] : undefined
+  if (byName) return byName
   const c = agent.category ? (CATS.has(agent.category) ? agent.category as Cat : CAT_ALIAS[agent.category]) : undefined
   if (c) return { cat: c, icon: CAT_ICON[c] }
   let best: Cat = 'ai', max = 0
   if (spec) {
     const counts = new Map<Cat, number>()
-    for (const n of spec.nodes) { const k = nodeCat(n.type); if (k !== 'trigger' && k !== 'route' && k !== 'guard' && n.type !== 'output') counts.set(k, (counts.get(k) ?? 0) + 1) }
+    for (const n of spec.nodes) { const k = nodeCat(n.type); if (k !== 'trigger' && k !== 'route' && k !== 'guard' && k !== 'data' && n.type !== 'output') counts.set(k, (counts.get(k) ?? 0) + 1) }
     for (const k of CAT_ORDER) { const v = counts.get(k) ?? 0; if (v > max) { best = k; max = v } }
   }
   return { cat: best, icon: CAT_ICON[best] }

@@ -1,4 +1,4 @@
-# Iteration 3 handoff (14 October 2026)
+# Iteration 3 handoff (14 October 2026): ready for PM acceptance
 
 Start: `./scripts/start.sh --services compose` (Windows Git Bash + Docker Desktop). App http://localhost:5273 · API http://localhost:8100/api/health · Grafana http://localhost:3100. Accounts in ignored `.local/demo-accounts.txt`; with `DEMO_MODE=true` switch users from the user menu (*Switch demo user*).
 
@@ -29,7 +29,7 @@ Workers: W1 Workspace & Approvals, W2 Studio, W3 admin pages, W4 backend, W5 dem
 | # | Check | Result | Observation |
 |---|---|---|---|
 | 1 | Fidelity 1440 / 900 / 700 | **Pass** (see reviewer notes below) | Screenshot pairs in `.local/screens/` (`proto-*`/`app-*`, `w1-*`, `w2-*`, `w3-*`, `rev-*`). Content widths grow above 1500px viewports at the user's request; ≤1440 matches the prototype. |
-| 2a | Policy question as Priya | **Pass** | Streamed cited answer, source sheet with `<mark>`ed passage, Sources row with freshly authorized titles, footer "N sources · tokens · $". |
+| 2a | Policy question as Priya | **Pass** | ~40 s end to end (federated retrieval ~35 s). Short prose answer citing *AML Policy v4 (approved)*; streamed cited answer, source sheet with `<mark>`ed passage, Sources row with freshly authorized titles, footer "N sources · tokens · $". |
 | 2b | Copilot builds the Transaction Investigator | **Pass** | Video prompt → valid 10-step vertical graph (trigger → get_alert → retrieve → mask PII → investigate → check citations → risk router → draft STR → Compliance approval → create FINCRIME issue). |
 | 2c | Test run ALR-2291 + debug panel | **Pass** | Paused at approval. Steps: alert JSON (E1, synthetic), 6–8 readable candidates, PII 7–9 masked (IBAN/NRIC/phone), model usage per AI step (~$0.0016–0.0034), 5–6 claims verified 0 removed, router `high`, STR draft. |
 | 2d | Submit for review | **Pass** | Checklist all ✓ (test paused at approval, 2 writes gated, $2 budget, 3 sources/3 tools allowed); reviewer Wei Ming Tan; Priya deciding her own request → 403. |
@@ -41,10 +41,28 @@ Workers: W1 Workspace & Approvals, W2 Studio, W3 admin pages, W4 backend, W5 dem
 | 3 | Copilot reliability | **Pass: 12/13 after fixes (final prompt 4/5)** | The miss was still valid (12 steps, extra check + output) with approval before the write. Edit "Also close low-risk alerts with a Jira note" 4/4 valid. |
 | 4 | Governance | **Pass** | Page access hides nav and returns 403 per page family; builder-added MCP server pending and creator-only until approved; model add/disable/remove; zero agent limit → `blocked_by_budget`; admin changes audited ("Saved · logged to audit"). |
 | 5 | Failure states | **Pass** (provider error not forced) | Failed step + Retry from step (attempt 2 continues to approval); disconnected/unavailable Jira → retrieval continues with available sources and says so in logs; cancelled run → card "Stopped", approvals cancelled. |
-| 6 | Regression | **Pass** | KYB Case Reviewer ran from chat and created exactly one issue after approval (KYB-7); isolation 404s hold (W4 + security review); paused-approval restart check: see below. |
+| 6 | Regression | **Pass** | KYB Case Reviewer ran from chat and created exactly one issue after approval (KYB-7); isolation 404s hold (W4 + security review); a Transaction Investigator run paused at approval was still `paused` with its approval `pending` after a full stack restart. |
 | 7 | Build | **Pass** | `npm run build` (tsc + vite) clean; backend imports; one-command startup on Windows. |
 
-The reviewer findings and fixes are appended below after the review completes.
+## Security review (read-only reviewer, §7b)
+
+No High findings. Verified live: page access returns 403 per page family (25 routes, path-encoding tricks included) and locked cells can't lock admins out; groups/roles never widen source access (all reads use the invoker's delegated token); debug, sources, evidence, retry and cancel are 404 for non-owners with no excerpts or secrets and `some_hidden` carries no count; demo switcher refuses non-loopback Host and spoofed forwarding headers, kills the old session and is audited; publish review can't be bypassed (direct publish 409, requester never decides even as admin, non-reviewer 404, double decision 409, four parallel decisions → one success); run approvals check the approver group and execute once; no secrets in models/tools/MCP/connections responses; CSRF/Origin enforced on 19 new mutations; admin changes hash-chained; NL audit query only emits allowlisted fields.
+
+Fixed after review:
+- Medium: `allow_requester` could bypass `approver_group`; the requester now must also be in the approver group (`workflows/approvals.py`).
+- Medium: `.env.example` now ships `DEMO_MODE=false` (local `.env` enables it; the config already forces loopback origins).
+- Low: re-publishing an older version (e.g. after undo) to a shared audience now requires review; builders can't register loopback HTTP MCP servers (admins only); `access.page` denials are recorded once per user+page per 10 minutes; budget reads require admin explicitly.
+- Functional: the auditor account gains the `user` capability so Workspace and Connections (granted by the page matrix) work with her own access.
+
+## Visual QA (read-only reviewer, §7a)
+
+~150 screenshot pairs at 1440/900/700/400 (`.local/screens/rev-*`). Shell, Studio, Approvals, Tools, My runs, Page access, Users, Groups and Settings matched; no horizontal scroll at any size; sheets overlay content. Fixed after review:
+- Citations: source titles were slow (~17 s) because every read re-checked the provider identity under a per-connection lock; the identity check is now cached 60 s per token (each document read is still authorized by the provider), and reads within a source run in parallel with their own deadline (top 6 per source). Policy answers dropped from ~65 s to ~40 s and AML Policy v4 is reliably retrieved.
+- Answers are now short prose with citations (no "Supporting evidence / Missing information" headings).
+- Audit: page-denial rows show the page; opaque Drive folder ids are no longer shown; reviewer probe data archived.
+- Budgets: demo limits seeded (org $200 at 80%, groups, agents with per-run caps, users) idempotently and on `--reset-demo`.
+- Shell: demo switcher subtitles ("Auditor" not "Auditor (auditor)"), user menu height capped at ≤700.
+- Frontend fix pass: Sources row shows skeleton chips then freshly authorized titles (one row, "+N more"); a citation opens the sheet immediately; chats stay pinned to the bottom as run cards and sources load; the draft STR sheet keeps paragraphs and says "Draft only. Nothing is filed until <group> approves."; the invocation pill reads "@Agent · alert ALR-2291"; one-line agent descriptions and consistent agent icons; Submit modal checklist reads "Test run" and has no extra select; run drawer tokens/cost/elapsed are live and consistent; canvas grid colours, single router handle with bezier branches, "High" / "Low or medium" labels; step sheet inputs list the referenced values; Policies locked toggles in ink, Slack rules hidden, provider display names; Connections masks personal emails in linked identities (`j•••@gmail.com`).
 
 ## Copilot success rate
 12/13 valid equivalent graphs after prompt fixes (worked example, node registry, group ids, vertical layout, retry on empty output); final prompt 4/5; edits 4/4.
@@ -55,7 +73,7 @@ Prep: run `--reset-demo`; sign in as **compliance** (Priya); browser at 1440×90
 
 | Time | Click | Expected on screen |
 |---|---|---|
-| 0:00 | Workspace → type "A customer received S$480k in 9 transfers from 6 new overseas senders in 48 hours. What does our policy say we must do?" → Enter | Answer streams in ~15–25 s with citation chips; Sources row shows *AML Policy v4 (approved)*, *Red-flag typologies*; footer with tokens and cost. |
+| 0:00 | Workspace → type "A customer received S$480k in 9 transfers from 6 new overseas senders in 48 hours. What does our policy say we must do?" → Enter | Answer streams after ~35–40 s of live retrieval (trim in editing) with citation chips; Sources row shows *AML Policy v4 (approved)*, *Red-flag typologies*; footer with tokens and cost. |
 | 0:30 | Click citation 1 | Source sheet: Confluence › NSDEMO crumb, title, the cited passage highlighted (escalate to the MLRO within 1 business day). Esc. |
 | 0:45 | Studio → New agent → Describe it to Copilot → paste "Build an agent that investigates a flagged transaction alert, checks it against our AML policy, and drafts an STR for compliance approval if the risk is high" | ~10–20 s: green preview of the vertical graph; reply "Done. I added 10 steps: …". Apply. (Shows the build; continue with the seeded agent.) |
 | 1:15 | Back → open **Transaction Investigator** (v2 · Draft) | Canvas with the High branch (Draft STR → Compliance approval → File STR case) and Low or medium branch (Confirm close → Close with note). |
@@ -82,3 +100,5 @@ Workspace answer + source sheet; Copilot preview on the canvas; run drawer pause
 - Approvals for runs that fail are cancelled with the run; startup marks only stale running runs (no event for 180 s) as failed.
 - Audit browsing and auto-verify are de-duplicated within 10 minutes per user (each distinct view is still audited).
 - Copilot: about 1 in 13 builds adds extra steps; it remains valid and approval-gated.
+- A publish request submitted by the only reviewer-group member/admin has no other eligible decider (requesters never decide their own); add a second reviewer.
+- There is no archive endpoint for agents yet (suspend or set audience to Only me; `--reset-demo` archives demo leftovers).

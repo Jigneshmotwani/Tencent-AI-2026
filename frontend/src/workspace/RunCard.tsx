@@ -1,12 +1,12 @@
 // Inline agent run card: live step progress (SSE + persisted node states), result summary with citations, the generated
 // draft, who the run is waiting for, and "Open in Studio" for the agent's owner. Restores from the run id alone.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, safeError } from '../api'
 import type { NodeRunState, WorkflowSpec } from '../contracts'
 import { Icon } from '../ui/icons'
 import { Button, Dot, Tile, cx, fmtSecs } from '../ui/kit'
 import { navigate } from '../ui/router'
-import { Agent, AgentRunDetail, ApprovalView, TERMINAL_RUN, agentLook, agentSpec } from './api'
+import { Agent, AgentRunDetail, ApprovalView, TERMINAL_RUN, agentLook, agentSpec, invocationText } from './api'
 import { Answer, citedOrder } from './Answer'
 
 export interface DraftView { crumb: string[]; title: string; text: string; note?: string; runId: string; labels: string[] }
@@ -108,15 +108,32 @@ function summaryOf(d: AgentRunDetail): { lead: string; text: string } | null {
   return null
 }
 
+/** Draft text as paragraphs: every line break starts a new paragraph (lists stay lists); a "Subject:" line leads. */
+export function draftParagraphs(text: string, subject?: string) {
+  const lines = text.replace(/\r\n?/g, '\n').split(/\n+/).map(l => l.trim()).filter(Boolean)
+  const subj = subject?.trim()
+  const out = lines.map(l => l.replace(/^\**\s*subject\s*:\s*\**\s*/i, '**Subject:** '))
+  if (subj && !out.some(l => l.startsWith('**Subject:**'))) out.unshift(`**Subject:** ${subj}`)
+  return out.join('\n\n')
+}
+
 function draftOf(d: AgentRunDetail, spec: WorkflowSpec | null): { label: string; text: string } | null {
   const label = (id: string) => nodeLabel(spec, id)
   const cands = d.nodes.filter(n => n.status === 'succeeded' && n.node_type === 'llm.generate' && /draft/i.test(`${n.node_id} ${label(n.node_id)}`))
   const n = cands[cands.length - 1]
   if (!n || !n.output) return null
   const o = n.output as Record<string, unknown>
-  const t = ['text', 'markdown', 'draft', 'narrative', 'content'].map(k => o[k]).find(v => typeof v === 'string' && v.trim()) as string | undefined
-  const text = t ?? Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => `**${cap(k.replace(/_/g, ' '))}:** ${typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : JSON.stringify(v)}`).join('\n\n')
+  const t = ['text', 'markdown', 'draft', 'narrative', 'content', 'body'].map(k => o[k]).find(v => typeof v === 'string' && v.trim()) as string | undefined
+  const subject = typeof o.subject === 'string' ? o.subject : undefined
+  const text = t ? draftParagraphs(t, subject) : Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => `**${cap(k.replace(/_/g, ' '))}:** ${typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : JSON.stringify(v)}`).join('\n\n')
   return text ? { label: label(n.node_id), text } : null
+}
+
+/** "@Transaction Investigator · alert ALR-2291" with the values in mono. */
+export function Invocation({ text }: { text: string }) {
+  const [head, ...rest] = text.split(' · ')
+  const tail = rest.join(' · ')
+  return <>{head}{tail && <> · {tail.split(/(\s?[A-Z0-9][A-Z0-9-]{2,})/).map((p, i) => /^\s?[A-Z0-9][A-Z0-9-]{2,}$/.test(p) && /\d/.test(p) ? <Fragment key={i}>{/^\s/.test(p) && ' '}<span className="mono">{p.trim()}</span></Fragment> : p)}</>}</>
 }
 
 function waitingNote(a: ApprovalView): string {
@@ -144,8 +161,16 @@ function decidedNote(a: ApprovalView): string {
   return `Approved by ${by}.${keys.length ? ` Filed ${keys.join(', ')} to Jira.` : ''}`
 }
 
-export function RunCard({ runId, agents, onCite, onDraft }: { runId: string; agents: Agent[]; onCite: (runId: string, label: string, claim: string) => void; onDraft: (d: DraftView) => void }) {
+export function RunCard({ runId, agents, onCite, onDraft, invocation }: { runId: string; agents: Agent[]; onCite: (runId: string, label: string, claim: string) => void; onDraft: (d: DraftView) => void; invocation?: string }) {
   const { detail, error } = useAgentRun(runId)
+  // The invocation pill is rebuilt from the run's real inputs once known ("@Transaction Investigator · alert ALR-2291").
+  const inputs = (detail?.run.inputs ?? {}) as Record<string, unknown>
+  const name = invocation?.slice(1).split(' · ')[0] ?? ''
+  const pill = invocation && (detail && Object.values(inputs).some(v => v !== '' && v != null) ? invocationText(agents.find(a => a.id === detail.run.workflow_id)?.name || detail.run.workflow_name || name, inputs) : invocation)
+  return <>{pill && <div className="invk"><Invocation text={pill} /></div>}<RunCardBody runId={runId} detail={detail} error={error} agents={agents} onCite={onCite} onDraft={onDraft} /></>
+}
+
+function RunCardBody({ runId, detail, error, agents, onCite, onDraft }: { runId: string; detail: AgentRunDetail | null; error: string; agents: Agent[]; onCite: (runId: string, label: string, claim: string) => void; onDraft: (d: DraftView) => void }) {
   const [spec, setSpec] = useState<WorkflowSpec | null>(null)
   const wfId = detail?.run.workflow_id, ver = detail?.run.workflow_version
   const agent = agents.find(a => a.id === wfId) ?? null
@@ -199,6 +224,10 @@ export function RunCard({ runId, agents, onCite, onDraft }: { runId: string; age
   const decided = [...detail.approvals].reverse().find(a => a.status !== 'pending')
   const [stText, dot] = st === 'completed' ? ['Completed', 'green'] : st === 'paused' || pendingApproval ? ['Waiting for approval', 'amber'] : TERMINAL_RUN.has(st) ? ['Stopped', 'grey'] : ['Running', 'ink']
   const summary = summaryOf(detail)
+  const approverGroup = (pendingApproval ?? detail.approvals.find(a => a.approver_group?.name))?.approver_group?.name
+  const draftNote = decided?.status === 'approved' ? undefined
+    : pendingApproval || !TERMINAL_RUN.has(st) ? `Draft only. Nothing is filed until ${approverGroup ? `${approverGroup} approves` : 'it is approved'}.`
+    : 'Draft only. Nothing was filed.'
   const draft = draftOf(detail, spec)
   const evidenceLabels = ((run.outputs?.evidence ?? []) as { label?: string }[]).map(e => e.label).filter((l): l is string => !!l)
   const firstInput = Object.values(run.inputs ?? {}).find(v => typeof v === 'string' && v.length < 40) as string | undefined
@@ -223,7 +252,7 @@ export function RunCard({ runId, agents, onCite, onDraft }: { runId: string; age
 
   return <div className="rcard">
     <div className="rc-h">
-      <Tile {...agentLook(agent ?? {}, spec)} /><b>{name}</b><span className="pill cobalt">v{run.workflow_version}</span>
+      <Tile {...agentLook(agent ?? { name: run.workflow_name }, spec)} /><b>{name}</b><span className="pill cobalt">v{run.workflow_version}</span>
       <span className="st"><span className={cx('dotx', 'rc-dot', dot)} />{stText}</span>
     </div>
     <ul className="rc-steps">{rows.map(({ n, label }) => {
@@ -235,7 +264,7 @@ export function RunCard({ runId, agents, onCite, onDraft }: { runId: string; age
         onCite={(label, claim) => onCite(run.id, label, claim)} />}
       {draft && <div className="rc-item"><Tile cat="ai" icon="file" /><span className="g">{draft.label} ready</span>
         <Button size="sm" onClick={() => onDraft({ crumb: [name, draft.label], title: `${draft.label}${firstInput ? ` for ${firstInput}` : ''}`, text: draft.text, runId: run.id, labels: evidenceLabels,
-          note: pendingApproval ? 'Draft only. Nothing is filed until it is approved.' : undefined })}>View draft</Button></div>}
+          note: draftNote })}>View draft</Button></div>}
       {(pendingApproval || decided || stopNote || canStudio) && <div className="rc-note">
         {(pendingApproval || decided || stopNote) && <span className="nt"><span className={cx('dotx', pendingApproval ? 'rc-ndot' : 'still', !pendingApproval && (st === 'completed' ? 'green' : ''))} />
           <span>{pendingApproval ? waitingNote(pendingApproval) : decided ? decidedNote(decided) : stopNote}</span></span>}

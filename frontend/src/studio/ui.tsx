@@ -29,7 +29,6 @@ export function JsonBlock({ value }: { value: unknown }) { return <pre className
 export function pretty(value: unknown) { try { return typeof value === 'string' ? value : JSON.stringify(value, null, 2) } catch { return String(value) } }
 
 export function providerName(provider: string) { return ({ drive: 'Google Drive', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' } as Record<string, string>)[provider] ?? provider }
-export function money(value: unknown) { return typeof value === 'number' && Number.isFinite(value) ? `USD ${value.toFixed(4)}` : '—' }
 export function isNotFound(error: unknown) { return error instanceof ApiError && (error.status === 404 || error.status === 405) }
 export function hasCap(capabilities: string[], ...names: string[]) { return names.some(name => capabilities.includes(name)) }
 

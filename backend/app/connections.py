@@ -37,6 +37,9 @@ REQUIRED_SCOPES = {'drive': {DRIVE_SCOPE}, 'confluence': CONFLUENCE_SCOPES, 'jir
 ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token'
 SLACK_TOKEN_URL = 'https://slack.com/api/oauth.v2.access'
 _locks: dict[str, asyncio.Lock] = {}
+# Recent successful identity rechecks: connection_id -> (sha256(access token), monotonic time).
+_verified: dict[str, tuple[str, float]] = {}
+IDENTITY_RECHECK_S = 60
 
 
 def _fernet() -> Fernet:
@@ -432,13 +435,19 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
                     # Persist a rotated refresh token immediately: the previous one is single-use.
                     db.commit()
                     _audit(db, user, 'connection.refresh', connection.provider, 'allowed', 'token_refreshed')
-                if connection.provider in ('confluence', 'jira', 'slack'):
-                    # Grants, accessible sites and workspace membership can change; recheck before each request.
+                verified_key = hashlib.sha256(token['access_token'].encode()).hexdigest()
+                recent = _verified.get(connection.id)
+                if connection.provider in ('confluence', 'jira', 'slack') and not (
+                        recent and recent[0] == verified_key and time.monotonic() - recent[1] < IDENTITY_RECHECK_S):
+                    # Grants, accessible sites and workspace membership can change; recheck at most every
+                    # IDENTITY_RECHECK_S per token. Every document read is still authorized by the provider with this token.
                     subject, _, tenant, _, scopes = await _provider_identity(client, connection.provider, token['access_token'], connection.tenant_id)
                     if subject != connection.provider_subject or tenant != connection.tenant_id:
+                        _verified.pop(connection.id, None)
                         raise SourceError('denied')
                     if scopes is not None:
                         connection.scopes = scopes
+                    _verified[connection.id] = (verified_key, time.monotonic())
             connection.checked_at = now()
             db.commit()
             return AccessContext(connection.id, user.id, connection.provider, connection.provider_subject,
