@@ -89,7 +89,13 @@ def precheck(db, *, workflow_id, user_id, estimate_usd):
     if workflow is not None:
         budget, _ = workflow_budget(db, workflow)
         checks.append(('workflow', budget, workflow_spent(db, workflow.id)))
-    if user_id:
+        # Iteration 3 admin limits are monthly; they add to (never relax) the per-workflow budget above.
+        for scope, limit, spent in limit_checks(db, workflow_id=workflow.id, user_id=user_id):
+            checks.append((scope, limit, spent))
+    elif user_id:
+        for scope, limit, spent in limit_checks(db, workflow_id=None, user_id=user_id):
+            checks.append((scope, limit, spent))
+    if user_id and not any(c[0] == 'user' for c in checks):
         checks.append(('user', float(get_policy(db)['default_user_budget_usd']), user_month_spent(db, user_id)))
     result = {'ok': True, 'scope': None, 'remaining_usd': float('inf'), 'warning': False, 'estimate_usd': estimate, 'checks': {}}
     for scope, budget, spent in checks:
@@ -230,3 +236,135 @@ def summary(db, user, *, all_scopes: bool) -> dict:
             'estimate_rates_per_1m': {'input': in_rate, 'output': out_rate},
             'overshoot_note': 'Checks run before each model call; a call already in flight when a budget is crossed can '
                               'exceed it by at most its own cost.'}
+
+
+# ---- Iteration 3 (W4): admin budget limits per org / group / workflow / user, monthly (UTC calendar month) ----
+def next_month_start() -> datetime:
+    start = _month_start()
+    return start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+
+
+def limit_row(db, scope_type: str, scope_id: str = ''):
+    from ..db import BudgetLimit
+    return db.scalar(select(BudgetLimit).where(BudgetLimit.scope_type == scope_type, BudgetLimit.scope_id == (scope_id or '')))
+
+
+def workflow_month_spent(db, workflow_id) -> float:
+    return float(db.execute(text('SELECT COALESCE(SUM(cost_usd),0) FROM workflow_runs WHERE workflow_id=:w AND created_at>=:s'),
+                            {'w': workflow_id, 's': _month_start()}).scalar() or 0)
+
+
+def group_month_spent(db, group_id) -> float:
+    from ..admin.directory import member_ids
+    return sum(user_month_spent(db, uid) for uid in member_ids(db, group_id))
+
+
+def org_month_spent(db) -> float:
+    start = _month_start()
+    chat = db.execute(text("SELECT COALESCE(SUM(NULLIF(usage->>'cost','')::numeric),0) FROM runs WHERE created_at>=:s"), {'s': start}).scalar() or 0
+    flows = db.execute(text('SELECT COALESCE(SUM(cost_usd),0) FROM workflow_runs WHERE created_at>=:s'), {'s': start}).scalar() or 0
+    return float(chat) + float(flows)
+
+
+def user_limit(db, user_id) -> float:
+    from .policies import get_policy
+    row = limit_row(db, 'user', user_id)
+    return float(row.limit_usd) if row is not None else float(get_policy(db)['default_user_budget_usd'])
+
+
+def limit_checks(db, *, workflow_id, user_id) -> list[tuple[str, float, float]]:
+    """[(scope, limit_usd, month_spent)] for every admin limit that applies to this workflow run."""
+    from ..admin.directory import user_group_ids
+    out = []
+    if workflow_id and (row := limit_row(db, 'workflow', workflow_id)) is not None:
+        out.append(('workflow', float(row.limit_usd), workflow_month_spent(db, workflow_id)))
+    if user_id:
+        out.append(('user', user_limit(db, user_id), user_month_spent(db, user_id)))
+        for gid in user_group_ids(db, user_id):
+            if (row := limit_row(db, 'group', gid)) is not None:
+                out.append(('group', float(row.limit_usd), group_month_spent(db, gid)))
+    if (row := limit_row(db, 'org', '')) is not None:
+        out.append(('org', float(row.limit_usd), org_month_spent(db)))
+    return out
+
+
+def start_block(db, *, workflow_id, user) -> str | None:
+    """Scope whose monthly limit is already used up (the run is blocked before it starts), else None."""
+    for scope, limit, spent in limit_checks(db, workflow_id=workflow_id, user_id=user.id if user is not None else None):
+        if limit <= 0 or spent >= limit:
+            return scope
+    return None
+
+
+def workflow_blocked(db, workflow_id) -> bool:
+    row = limit_row(db, 'workflow', workflow_id)
+    return row is not None and (row.limit_usd <= 0 or workflow_month_spent(db, workflow_id) >= row.limit_usd)
+
+
+def overview(db) -> dict:
+    from ..db import Run, WorkflowRun
+    org = limit_row(db, 'org', '')
+    start = _month_start()
+    today = datetime.now(timezone.utc).date()
+    from datetime import timedelta
+    first = today - timedelta(days=29)
+    daily = {first + timedelta(days=i): 0.0 for i in range(30)}
+    since = datetime.combine(first, datetime.min.time(), tzinfo=timezone.utc)
+    for day, usd in db.execute(text("SELECT (created_at AT TIME ZONE 'UTC')::date d, COALESCE(SUM(cost_usd),0) FROM workflow_runs "
+                                    'WHERE created_at>=:s GROUP BY 1'), {'s': since}):
+        if day in daily: daily[day] += float(usd)
+    for day, usd in db.execute(text("SELECT (created_at AT TIME ZONE 'UTC')::date d, COALESCE(SUM(NULLIF(usage->>'cost','')::numeric),0) FROM runs "
+                                    'WHERE created_at>=:s GROUP BY 1'), {'s': since}):
+        if day in daily: daily[day] += float(usd)
+    # Top spenders this month: published agents, Studio test runs (unpublished versions) and Workspace chat.
+    agents: dict[str, float] = {}
+    tests = 0.0
+    rows = db.execute(text('SELECT r.workflow_id, w.name, v.status, COALESCE(SUM(r.cost_usd),0) FROM workflow_runs r JOIN workflows w ON w.id=r.workflow_id '
+                           'LEFT JOIN workflow_versions v ON v.workflow_id=r.workflow_id AND v.version=r.workflow_version '
+                           'WHERE r.created_at>=:s GROUP BY 1,2,3'), {'s': start})
+    names = {}
+    for wid, name, vstatus, usd in rows:
+        if vstatus == 'published':
+            agents[wid] = agents.get(wid, 0.0) + float(usd); names[wid] = name
+        else:
+            tests += float(usd)
+    chat = float(db.execute(text("SELECT COALESCE(SUM(NULLIF(usage->>'cost','')::numeric),0) FROM runs WHERE created_at>=:s"), {'s': start}).scalar() or 0)
+    top = [{'name': names[w], 'kind': 'Agent', 'usd': round(v, 4)} for w, v in agents.items()]
+    if tests: top.append({'name': 'Studio test runs', 'kind': 'Builders', 'usd': round(tests, 4)})
+    if chat: top.append({'name': 'Workspace chat', 'kind': 'Chat', 'usd': round(chat, 4)})
+    top = sorted([t for t in top if t['usd'] > 0], key=lambda t: -t['usd'])[:5]
+    return {'org': {'used_usd': round(org_month_spent(db), 4), 'limit_usd': float(org.limit_usd) if org is not None else None,
+                    'threshold_pct': (org.threshold_pct if org is not None and org.threshold_pct else int(WARN_AT * 100)),
+                    'resets_at': next_month_start().isoformat()},
+            'daily': [{'date': d.isoformat(), 'usd': round(v, 4)} for d, v in daily.items()], 'top': top}
+
+
+def _row(id, name, spend, limit, extra=None):
+    return {'id': id, 'name': name, 'spend_usd': round(spend, 4), 'limit_usd': limit,
+            'blocked': limit is not None and (limit <= 0 or spend >= limit), **(extra or {})}
+
+
+def scope_rows(db, kind: str) -> list[dict]:
+    from ..db import Group, User as U
+    if kind == 'groups':
+        out = []
+        for g in db.scalars(select(Group).order_by(Group.name)):
+            row = limit_row(db, 'group', g.id)
+            out.append(_row(g.id, g.name, group_month_spent(db, g.id), float(row.limit_usd) if row is not None else None))
+        return out
+    if kind == 'users':
+        return [_row(u.id, u.name or u.username, user_month_spent(db, u.id), user_limit(db, u.id))
+                for u in db.scalars(select(U).order_by(U.name)) if u.status != 'disabled']
+    if kind == 'agents':
+        out = []
+        for wf in db.scalars(select(Workflow).where(Workflow.status != 'archived').order_by(Workflow.name)):
+            spend = workflow_month_spent(db, wf.id)
+            if not wf.published_version and not spend:
+                continue  # drafts appear once they have spend
+            row = limit_row(db, 'workflow', wf.id)
+            pol = (_current_spec(db, wf).get('policies') or {})
+            out.append(_row(wf.id, wf.name, spend, float(row.limit_usd) if row is not None else None,
+                            {'max_steps': (row.max_steps if row is not None and row.max_steps else pol.get('max_steps')),
+                             'max_tokens': (row.max_tokens if row is not None and row.max_tokens else pol.get('max_tokens_per_run'))}))
+        return out
+    raise ValueError('unknown_scope')

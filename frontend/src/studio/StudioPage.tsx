@@ -1,66 +1,99 @@
-// Studio home (workflows + templates + create) and the editor route.
-import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { api, date, safeError } from '../api'
-import type { StudioRegistry, WorkflowSummary } from '../contracts'
-import { createFromDescription } from '../copilot/api'
+// Studio: `/studio` is the agents list (table, New agent menu, templates); `/studio/<workflowId>` is the editor.
+import { useEffect, useRef, useState } from 'react'
+import { safeError } from '../api'
+import type { StudioRegistry } from '../contracts'
+import { api } from '../api'
+import { Button, Menu, StatusPill, Tile, fmtDay, toast, type Cat, CAT_ICON } from '../ui/kit'
+import type { IconName } from '../ui/icons'
+import { navigate, useRoute } from '../ui/router'
+import { type TemplateInfo, type WorkflowRow, createBlank, createFromTemplate, listTemplates, listWorkflows } from './api'
 import { StudioEditor } from './StudioEditor'
-import { Badge, Button, Empty, Notice, StatusChip, isNotFound } from './ui'
+import './studio.css'
 
-interface TemplateInfo { template_key: string; name: string; description: string }
-function createdId(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null
-  const record = value as Record<string, unknown>
-  for (const key of ['id', 'workflow_id']) if (typeof record[key] === 'string') return record[key] as string
-  return null
+export default function StudioPage() {
+  const route = useRoute()
+  const openId = route.parts[0] ?? null
+  return <section className="screen studio-screen">{openId ? <EditorRoute key={openId} id={openId} /> : <StudioHome />}</section>
 }
 
-export default function StudioPage({ openId, onOpen }: { openId: string | null; onOpen: (id: string | null) => void }) {
-  const [registry, setRegistry] = useState<StudioRegistry | null>(null), [registryError, setRegistryError] = useState('')
-  useEffect(() => { api<StudioRegistry>('/studio/registry').then(setRegistry).catch(failure => setRegistryError(safeError(failure))) }, [])
-  if (openId) {
-    if (registryError) return <Notice tone="error">The node registry could not be loaded: {registryError}</Notice>
-    if (!registry) return <p className="muted">Loading the node registry…</p>
-    return <StudioEditor key={openId} workflowId={openId} registry={registry} onBack={() => onOpen(null)} />
-  }
-  return <StudioHome onOpen={id => onOpen(id)} />
+let registryCache: StudioRegistry | null = null
+function EditorRoute({ id }: { id: string }) {
+  const [registry, setRegistry] = useState<StudioRegistry | null>(registryCache)
+  const [error, setError] = useState('')
+  useEffect(() => { if (!registryCache) api<StudioRegistry>('/studio/registry').then(r => { registryCache = r; setRegistry(r) }).catch(e => setError(safeError(e))) }, [])
+  if (!registry) return <div className="stscr st-editor"><div className="trow st-title gut"><span className="muted">{error || ''}</span></div></div>
+  return <StudioEditor workflowId={id} registry={registry} />
 }
 
-function StudioHome({ onOpen }: { onOpen: (id: string) => void }) {
-  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null)
+const REG_CAT: Record<string, Cat> = { trigger: 'trigger', knowledge: 'know', ai: 'ai', tool: 'data', logic: 'route', guardrail: 'guard', governance: 'appr', output: 'act' }
+const ICON_CAT: Record<string, [Cat, IconName]> = { book: ['know', 'book'], spark: ['ai', 'spark'], usercheck: ['appr', 'usercheck'], search: ['act', 'search'] }
+function tileOf(icon?: string, category?: string): [Cat, IconName | undefined] {
+  if (icon && ICON_CAT[icon]) return ICON_CAT[icon]
+  if (!category) return ['ai', undefined]
+  return [(category in CAT_ICON ? category as Cat : REG_CAT[category]) ?? 'ai', undefined]
+}
+const TPL_ICON: Record<string, [Cat, IconName]> = {
+  'shield-check': ['appr', 'usercheck'], 'book-open': ['know', 'book'], book: ['know', 'book'], siren: ['act', 'ticket'], search: ['act', 'search'],
+  alert: ['ai', 'spark'], spark: ['ai', 'spark'], file: ['know', 'file'],
+}
+
+function StudioHome() {
+  const [rows, setRows] = useState<WorkflowRow[] | null>(null)
   const [templates, setTemplates] = useState<TemplateInfo[]>([])
-  const [error, setError] = useState(''), [busy, setBusy] = useState<string | null>(null)
-  const [name, setName] = useState(''), [description, setDescription] = useState('')
-  const load = useCallback(async () => {
-    let list: WorkflowSummary[] = []
-    try { list = await api<WorkflowSummary[]>('/workflows'); setWorkflows(list); setError('') } catch (failure) { setWorkflows([]); setError(isNotFound(failure) ? 'The workflow service is not available yet.' : safeError(failure)) }
-    try { const value = await api<(Partial<TemplateInfo> & { key?: string })[]>('/workflow-templates'); setTemplates(value.map(item => ({ template_key: item.template_key ?? item.key ?? '', name: item.name ?? '', description: item.description ?? '' })).filter(item => item.template_key)) } catch {
-      const seen = new Map<string, TemplateInfo>()
-      for (const item of list) if (item.template_key && !seen.has(item.template_key)) seen.set(item.template_key, { template_key: item.template_key, name: item.name, description: item.description })
-      setTemplates([...seen.values()])
-    }
+  const [error, setError] = useState('')
+  const [menu, setMenu] = useState(false)
+  const [busy, setBusy] = useState('')
+  const newBtn = useRef<HTMLButtonElement>(null)
+  const tplRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    listWorkflows().then(setRows).catch(e => { setRows([]); setError(safeError(e)) })
+    listTemplates().then(setTemplates).catch(() => setTemplates([]))
   }, [])
-  useEffect(() => { void load() }, [load])
-  const create = async (key: string, path: string, body: unknown) => {
-    setBusy(key); setError('')
-    try { const id = createdId(await api<unknown>(path, 'POST', body)); if (id) onOpen(id); else await load() } catch (failure) { setError(safeError(failure)) } finally { setBusy(null) }
+  const create = async (key: string, fn: () => Promise<{ id: string }>, query = '') => {
+    if (busy) return
+    setBusy(key)
+    try { const d = await fn(); navigate(`/studio/${encodeURIComponent(d.id)}${query}`) } catch (e) { toast(safeError(e)) } finally { setBusy('') }
   }
-  const blank = (event: FormEvent) => { event.preventDefault(); if (name.trim()) void create('blank', '/workflows', { name: name.trim(), description: description.trim() }) }
-  const describe = async () => {
-    if (!description.trim()) return
-    setBusy('describe'); setError('')
-    try { const result = await createFromDescription(description.trim()); onOpen(result.workflow_id) } catch (failure) { setError(safeError(failure)) } finally { setBusy(null) }
-  }
-  return <div className="content-stack">
-    <div className="intro-row"><div><h2>Agent Studio</h2><p className="muted">Build permission-aware agentic workflows. Every run reads sources with the invoking user's own access.</p></div><Button className="subtle" onClick={() => void load()}>Refresh</Button></div>
-    {error && <Notice tone="error">{error}</Notice>}
-    <div className="studio-home-grid">
-      <section className="card"><h3>New workflow</h3><form className="stack-form" onSubmit={blank}>
-        <label className="field"><span className="field-label">Name</span><input value={name} maxLength={100} onChange={event => setName(event.target.value)} placeholder="e.g. Vendor due-diligence reviewer" /></label>
-        <label className="field"><span className="field-label">Description</span><textarea rows={3} value={description} maxLength={1000} onChange={event => setDescription(event.target.value)} placeholder="What should it do? Copilot can draft the whole graph from this." /></label>
-        <div className="button-row"><Button className="primary" type="submit" disabled={!name.trim() || busy !== null}>{busy === 'blank' ? 'Creating…' : 'Create blank'}</Button><Button type="button" disabled={!description.trim() || busy !== null} onClick={() => void describe()}>{busy === 'describe' ? 'Drafting…' : 'Create from description (Copilot)'}</Button></div>
-      </form></section>
-      <section className="card"><h3>Templates</h3>{templates.length === 0 ? <p className="small muted">No templates available yet.</p> : <ul className="template-list">{templates.map(template => <li key={template.template_key}><div><strong>{template.name}</strong><small>{template.description}</small></div><Button className="subtle" disabled={busy !== null} onClick={() => void create(`t-${template.template_key}`, '/workflows/from-template', { template_key: template.template_key })}>{busy === `t-${template.template_key}` ? 'Creating…' : 'Use template'}</Button></li>)}</ul>}</section>
+  return <div className="stscr studio-home"><div className="page gut"><div className="wrap sw">
+    <div className="trow"><h1>Studio</h1>
+      <div className="menu-wrap"><Button ref={newBtn} variant="primary" size="sm" icon="plus" aria-haspopup="true" aria-expanded={menu} onClick={() => setMenu(m => !m)}>New agent</Button>
+        <Menu open={menu} onClose={() => setMenu(false)} anchor={newBtn} className="wide" items={[
+          { label: 'Describe it to Copilot', sub: 'Chat your way to a first draft', onClick: () => void create('copilot', () => createBlank('Untitled agent'), '?copilot=1') },
+          { label: 'Start blank', sub: 'Begin with a trigger and add steps', onClick: () => void create('blank', () => createBlank('Untitled agent')) },
+          { label: 'From template', sub: 'Pick one below', onClick: () => tplRef.current?.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }) },
+        ]} />
+      </div>
     </div>
-    <section><h3>Workflows</h3>{workflows === null ? <p className="muted">Loading workflows…</p> : workflows.length === 0 ? <Empty title="No workflows yet">Create a blank workflow or start from a template.</Empty> : <div className="table-wrap"><table><thead><tr><th>Workflow</th><th>Status</th><th>Versions</th><th>Owner</th><th>Updated</th><th></th></tr></thead><tbody>{workflows.map(item => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.description.slice(0, 120)}</small></td><td><StatusChip status={item.status} />{item.template_key && <Badge>template</Badge>}</td><td>draft v{item.draft_version}{item.published_version ? ` · published v${item.published_version}` : ''}</td><td>{item.owner}</td><td>{date(item.updated_at)}</td><td><button className="text-button" onClick={() => onOpen(item.id)}>{item.can_edit ? 'Open' : 'View'}</button></td></tr>)}</tbody></table></div>}</section>
-  </div>
+    {error && <div className="errbox" role="alert" style={{ fontFamily: 'var(--f-ui)' }}>{error}</div>}
+    <div className="tbl ag-tbl"><table>
+      <thead><tr><th>Name</th><th>Status</th><th>Version</th><th>Audience</th><th>Last edited</th><th>Owner</th></tr></thead>
+      <tbody>
+        {rows === null && <tr><td colSpan={6} className="muted">Loading…</td></tr>}
+        {rows?.length === 0 && !error && <tr><td colSpan={6} className="muted">No agents yet. Use New agent to build one.</td></tr>}
+        {rows?.map(r => {
+          const status = r.display_status ?? (r.status === 'published' && r.published_version != null && r.draft_version !== r.published_version ? 'draft' : r.status)
+          const live = r.live_version ?? r.published_version
+          const ver = status === 'published' && live ? live : r.draft_version
+          const [cat, icon] = tileOf(r.icon, r.category)
+          const open = () => navigate('/studio/' + encodeURIComponent(r.id))
+          return <tr key={r.id} tabIndex={0} onClick={open} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}>
+            <td><span className="nm"><Tile cat={cat} icon={icon} />{r.name}</span></td>
+            <td><StatusPill status={status} /></td>
+            <td>v{ver}{live && status !== 'published' && live !== ver ? <span className="sub">v{live} live</span> : null}</td>
+            <td>{r.audience_label ?? ''}</td>
+            <td>{fmtDay(r.updated_at)}</td>
+            <td>{r.owner_name ?? r.owner}</td>
+          </tr>
+        })}
+      </tbody>
+    </table></div>
+    {templates.length > 0 && <>
+      <h2 className="sec2">Templates</h2>
+      <div className="tpls" ref={tplRef}>{templates.map(t => {
+        const [cat, icon] = TPL_ICON[t.icon ?? ''] ?? ['ai', 'spark']
+        return <button key={t.key} type="button" className="tpl" disabled={!!busy} onClick={() => void create('t:' + t.key, () => createFromTemplate(t.key))}>
+          <Tile cat={cat} icon={icon} /><span><b>{t.name}</b><span className="d">{t.description}</span></span></button>
+      })}</div>
+    </>}
+  </div></div></div>
 }

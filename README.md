@@ -1,13 +1,17 @@
-# Permission-aware Agent Studio (Tencent AI 2026): iteration 2
+# Internal Brain: permission-aware Agent Studio (Tencent AI 2026), iteration 3
 
-Product name: **[Product Name]** (placeholder).
+Product name: **Internal Brain** (from the approved design, `docs/design/prototype.html`).
 
 Local React/TypeScript + FastAPI + PostgreSQL app. It does two things:
 
 - **Workspace Q&A** across Google Drive, Confluence, Jira and Slack, using each user's own delegated access.
 - **Agent Studio**, a visual workflow builder. It has a React Flow canvas, typed nodes, a chat Copilot that edits the graph, live run overlay, human approvals, guardrails and budgets.
 
-The flagship template is **KYB Case Reviewer**. It runs on synthetic Northstar Pay / Acme Trading data:
+Iteration 3 rebuilt the UI to the approved prototype (dark sidebar, Workspace, Studio, Approvals, Tools, Audit, Budgets, Policies, Users & groups, Connections, Settings) and added the governance it needs: a publish review workflow (draft → in review → published / changes requested), version diffs, run debug detail with retry-from-step, users and groups, a server-enforced page-access matrix, a model registry, budgets per org/group/agent/user, and a local demo-user switcher.
+
+The video scenario is **Transaction Investigator** on synthetic alert ALR-2291 (Harbourline Trading): a local `txn-monitoring` MCP server, AML Policy v4 in Confluence, restricted FinCrime case files in Drive, an STR draft behind a Compliance-leads approval, and one FINCRIME Jira issue created as the invoker.
+
+The iteration 2 flagship, **KYB Case Reviewer**, still runs on synthetic Northstar Pay / Acme Trading data:
 
 - reviews a Jira KYB case against SG KYB Policy v3;
 - calls a local synthetic `kyb-registry` MCP server;
@@ -81,14 +85,18 @@ The launcher creates ignored `.env` (mode 600) from `.env.example` and generates
 - Grafana admin password;
 - `AUDIT_HMAC_KEY`.
 
-It also creates four local accounts. Their passwords go to `.local/demo-accounts.txt`; read it privately and never paste it into chat.
+It also creates four local accounts. Their passwords go to `.local/demo-accounts.txt`; read it privately and never paste it into chat. Iteration 3 gives them the demo identities below (linked source identities are unchanged: Compliance users use the owner identities, Operations the `…0055` identities).
 
-| Account | Capabilities |
-|---|---|
-| `operations` | User |
-| `compliance` | Builder + User |
-| `admin` | Admin + Builder + User |
-| `auditor` | Audit metadata only |
+| Account | Demo user | Title | Role | Groups |
+|---|---|---|---|---|
+| `compliance` | Priya Raman | Compliance | Builder | Compliance, Onboarding |
+| `operations` | Daniel Koh | Operations | User | Operations, Onboarding |
+| `admin` | Wei Ming Tan | Compliance lead | Admin | Compliance, Compliance leads |
+| `auditor` | Aisha Rahman | Auditor | Auditor (audit metadata only) | Audit |
+
+Roles and groups decide which pages and agents a person can use, who reviews and approves, tool allowlists and budget scopes. **They never grant document access**: every source read still uses that person's own delegated identity.
+
+**Demo mode** (`DEMO_MODE=true` in `.env`, the default for this local build): the user menu offers *Switch demo user*, which ends the current session and signs in as another demo user through a real server session. It answers only on loopback and is audited (`session.demo_switch`); with `DEMO_MODE=false` the endpoints return 404.
 
 Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser profiles to act as two users at once.
 
@@ -139,6 +147,8 @@ Restart after editing `.env`.
 - Jira cases KYB-101..103 plus incident follow-ups.
 - Slack threads (optional): `#kyb-ops` public, including outdated advice that conflicts with policy v3; `#compliance-escalations` private.
 - The `kyb-registry` MCP data is in `mcp_servers/kyb_registry/data.json`.
+- STR scenario (iteration 3): Confluence *AML Policy v4 (approved)*, *Red-flag typologies*, *STR Drafting Guide* and a **restricted** *FINCRIME case notes* page; Drive case files for ALR-2291 and a prior case (restricted *FinCrime cases* folder); Jira project `FINCRIME` (no cases are seeded; cases are created only by approved runs).
+- The `txn-monitoring` MCP server (`mcp_servers/txn_monitoring`, stdio, synthetic, read-only: `get_alert`, `list_transactions`, `get_counterparty`) is registered and admin-approved by default.
 
 Seed with the authorizing user's own delegated credentials. It is idempotent and labels everything synthetic. `uv run` works the same on macOS and Windows:
 
@@ -154,17 +164,31 @@ uv run --frozen python -m backend.app.seed --as compliance [--only jira,slack,co
 - `confluence-restricted-kyb-edd-playbook.md` needs a Confluence page restriction (Standard plan or trial) so that only the compliance identity can view it.
 - Freshness demo (append to a page, then re-ask): `--update-page "Payment-service Incident Runbook" --append "<text>"`.
 
+STR scenario (iteration 3):
+
+```sh
+uv run --frozen python -m backend.app.seed --as compliance --str-only --atlassian-basic .local/atlassian-setup.env [--review-log-issue]
+uv run --frozen python -m backend.app.seed --as compliance --reset-demo   # local DB only: back to the video's starting state
+```
+
+- Creates the four Confluence pages (case notes restricted to the seeding identity), the team-managed project `FINCRIME`, and records Drive/Confluence ids in the audit labels (topic "STR case files"). `--review-log-issue` adds one non-case "Alert review log" issue that low-risk closures comment on.
+- `JIRA_PROJECT_KEYS="KYB,FINCRIME"`; after changing it each user reconnects Jira in Connections.
+- Drive (read-only scope): create a child folder **FinCrime cases** in the demo folder shared only with the compliance identity and upload `drive-fincrime-alr-2291-case-file.txt` and `drive-fincrime-prior-case-fc-2026-014.txt`; then rerun the seed to record their ids.
+- Seeded agents: *Policy Expert* (v4, everyone), *KYB Case Reviewer* (Onboarding), *Transaction Investigator* (v1 live for Compliance, v2 draft adds "Close with note"), *Audit Explorer* (v1 in review).
+
 ## Using it
 
+- **Workspace**: ask questions (cited answers, source sheet with the cited passage highlighted), or pick an agent with **Answer with ▾** or **@mention**; agents with inputs show an inline form and an inline run card with live steps and the approval status.
 - **Studio** (builder):
   - Open a template or create from a description.
   - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
-  - Run in the Test panel and watch nodes light up from real events. Publish to an audience.
+  - Test run: the run panel shows each step's input, output and logs from `GET /api/workflow-runs/{id}/debug`, with **Retry from this step** on failures.
+  - **Submit for review** with an audience (Only me publishes immediately; a group or everyone needs a reviewer in *Compliance leads* or an admin). Users keep the live version until the review is approved. Versions shows the diff against live and restores any version as a new draft.
 - **Workspace**: ask questions, pick **Answer with → Workflow: …** to invoke a published one-input workflow from chat, or run any published workflow from the Catalog tab.
-- **Approvals**: the inbox shows the exact destination and payload. Approval re-authorizes, then executes once.
-- **Activity**: run history with an "Open trace in Grafana" link.
-- **Audit** (auditor): Verify integrity, filters, and natural-language queries (e.g. "everything operations accessed in the NSDEMO space in the last 30 days").
-- **Policies** (admin): allowed models/tools, approval-required actions, budgets.
+- **Approvals**: agent runs (exact destination and payload; approval re-authorizes, then executes once) and publish requests (diff vs live, test run, sources and tools, audience).
+- **Audit** (auditor/admin): all events by default, Verify integrity, natural-language questions (e.g. "Who opened STR case files this week?") that filter the table, and a **My runs** tab (the former Activity page, with Grafana trace links).
+- **Tools**: MCP servers and built-ins; servers added by builders are *pending admin approval* and usable only by their creator until approved.
+- **Policies** (admin): models, tools, the role × page access matrix (enforced by the API), guardrails (read-only) and approval rules. **Budgets** and **Users & groups** (admin). Every change shows "Saved · logged to audit".
 
 **Tamper demo** (as the DB owner; the app role cannot UPDATE/DELETE audit rows). Pick a seq; Verify integrity then reports that exact broken seq:
 
@@ -180,4 +204,4 @@ docker compose exec -T postgres psql -U app -d app -c "ALTER TABLE audit_events 
 - **Grounding:** citation-based, with optional LLM entailment.
 - **Scope:** this is a local hackathon build with no production security or compliance claim.
 
-See [architecture](docs/architecture.md), [contracts](docs/contracts.md) and the [iteration 2 handoff](docs/iteration-2-handoff.md).
+See [architecture](docs/architecture.md), [contracts](docs/contracts.md), [iteration 3 contracts](docs/iteration-3-contracts.md) and the [iteration 3 handoff](docs/iteration-3-handoff.md).

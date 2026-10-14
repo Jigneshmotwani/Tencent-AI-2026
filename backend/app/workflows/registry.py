@@ -123,10 +123,15 @@ NODE_TYPES: dict[str, dict] = {
     'human.approval': {
         'label': 'Human approval', 'category': 'governance',
         'description': 'Pauses the run and creates an approval request previewing exactly the downstream write actions '
-                       '(destination + payload). Resumes on decision; rejected => downstream actions are skipped.',
+                       '(destination + payload). Resumes on decision; rejected => downstream actions are skipped. '
+                       'Set approver_group (a group id or exact group name, e.g. "Compliance leads") so that only builders/admins '
+                       'in that group may approve; respond_within and message are shown to the approver.',
         'config_schema': {'type': 'object', 'additionalProperties': False, 'properties': {
             'title': {**TEMPLATE_STR, 'maxLength': 200},
             'approver_roles': {'type': 'array', 'items': {'enum': ['user', 'builder', 'admin']}, 'default': ['builder'], 'description': 'Roles that may approve runs started by other users (platform floor: only builder/admin ever approve others; "user" is accepted for older specs and ignored); the invoker approves their own run only if allow_requester'},
+            'approver_group': {'type': 'string', 'maxLength': 100, 'description': 'Group id or exact group name. When set, an approver must hold builder/admin AND be a member of this group'},
+            'respond_within': {'type': 'string', 'maxLength': 40, 'description': 'Expected response time shown to the approver, e.g. "4 hours"'},
+            'message': {**TEMPLATE_STR, 'maxLength': 1000, 'description': 'Note shown to the approver; may use {{templates}}'},
             'allow_requester': {'type': 'boolean', 'default': True, 'description': 'Invoker may approve their own run'}}},
         'inputs': [{'name': 'in', 'type': 'any'}], 'outputs': [{'name': 'decision', 'type': 'context'}], 'side_effect': False,
     },

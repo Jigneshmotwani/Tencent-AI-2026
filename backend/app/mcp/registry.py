@@ -1,7 +1,8 @@
 """W4 owns. MCP server registry (T05). Contract (signatures frozen by lead):
   ensure_default_servers(db) -> None            # registers local synthetic 'kyb-registry' (stdio) idempotently
   list_servers_public(db) -> list[dict]         # safe: id,name,transport,url|command,enabled,synthetic,status,checked_at,tools
-  list_tools(db, enabled_only=True) -> list[dict]  # {server, tool, qualified:'mcp:<server>/<tool>', description, input_schema, synthetic}
+  list_tools(db, enabled_only=True, user_id=None) -> list[dict]  # {server, tool, qualified:'mcp:<server>/<tool>', description, input_schema, synthetic}
+     # enabled_only: approved servers only, plus the caller's own servers awaiting admin approval when user_id is given
   async call_tool(db, server, tool, arguments) -> dict  # {content: <json-serializable>, synthetic: bool}; raises McpError(code)
 
 Security model:
@@ -286,7 +287,14 @@ def ensure_default_servers(db) -> None:
 
 def _tool_public(t: dict) -> dict:
     return {'name': t['name'], 'description': t.get('description', ''), 'enabled': bool(t.get('enabled')),
-            'input_schema': t.get('input_schema') or {'type': 'object'}}
+            'input_schema': t.get('input_schema') or {'type': 'object'}, 'read_only': bool(t.get('read_only')),
+            'allowed_groups': list(t.get('allowed_groups') or [])}
+
+
+def usable_by(server: McpServer, user_id: str | None) -> bool:
+    """Approved servers are usable by everyone; a builder's pending server only by its creator; rejected by nobody."""
+    status = server.approval_status or 'approved'
+    return status == 'approved' or (status == 'pending_admin_approval' and user_id is not None and server.created_by == user_id)
 
 
 def server_public(server: McpServer) -> dict:
@@ -300,6 +308,7 @@ def server_public(server: McpServer) -> dict:
         'created_at': server.created_at.isoformat() if server.created_at else None,
         'has_auth': bool(server.credential_ref), 'tool_count': len(tools),
         'enabled_tool_count': sum(1 for t in tools if t['enabled']), 'tools': tools,
+        'approval_status': server.approval_status or 'approved', 'created_by': server.created_by, 'notes': server.notes or '',
     }
 
 
@@ -307,10 +316,10 @@ def list_servers_public(db) -> list[dict]:
     return [server_public(s) for s in db.scalars(select(McpServer).order_by(McpServer.created_at))]
 
 
-def list_tools(db, enabled_only=True) -> list[dict]:
+def list_tools(db, enabled_only=True, user_id=None) -> list[dict]:
     out = []
     for server in db.scalars(select(McpServer).order_by(McpServer.created_at)):
-        if enabled_only and not server.enabled:
+        if enabled_only and (not server.enabled or not usable_by(server, user_id)):
             continue
         for t in server.tools or []:
             if enabled_only and not t.get('enabled'):
@@ -371,7 +380,7 @@ async def call_tool(db, server, tool, arguments, *, actor_id=None, run_id=None, 
     try:
         if row is None:
             raise McpError('mcp_server_not_found')
-        if not row.enabled:
+        if not row.enabled or not usable_by(row, actor_id):
             raise McpError('mcp_server_disabled')
         spec = next((t for t in (row.tools or []) if t.get('name') == tool), None)
         if spec is None:

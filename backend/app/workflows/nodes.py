@@ -108,6 +108,8 @@ def _alias(ctx, cfg):
 
 
 def _guard_event(ctx, node, guardrail, outcome, detail):
+    name = {'pii': 'PII', 'pii_leak': 'PII leak'}.get(guardrail, guardrail.replace('_', ' ').capitalize())
+    ctx.log(node['id'], f'{name}: {detail[:200]}', 'warn' if outcome in ('blocked', 'flagged') else 'info')
     emit(ctx.run_id, 'guardrail_result', {'node_id': node['id'], 'guardrail': guardrail, 'outcome': outcome, 'detail_safe': detail[:300]})
     record_guardrail(guardrail=guardrail, outcome=outcome, workflow=ctx.workflow_name)
     _audit(ctx, 'guardrail.' + guardrail, 'allowed' if outcome in ('pass', 'masked', 'quarantined', 'stripped', 'flagged', 'repaired') else 'denied',
@@ -120,6 +122,7 @@ def _usage_sum(a: dict, b: dict) -> dict:
 
 # ------------------------------------------------------------------ trigger
 async def trigger(ctx: RunCtx, node):
+    ctx.log(node['id'], f"Started with {len(ctx.inputs)} input(s): {', '.join(sorted(ctx.inputs)) or 'none'}")
     return NodeResult(output={'inputs': ctx.inputs}, summary=f'{len(ctx.inputs)} input(s)')
 
 
@@ -130,6 +133,8 @@ async def _retrieve(ctx: RunCtx, node_id: str, query: str, sources, limit: int, 
     if not providers:
         return [], ['No allowed sources for this step.']
     docs, limitations = await retrieve(ctx.user, query[:500], ctx.run_id, providers=providers, audit_ctx=ctx.audit_ctx(node_id), limit=limit)
+    # Counts of documents the invoker could read (unreadable hits are never counted or named).
+    ctx.log(node_id, f"Searched {len(providers)} source(s): {len(docs)} readable candidate(s) across {len({p for _, p, _ in docs})} source(s)")
     out = []
     wanted = {c.lstrip('#').lower() for c in (slack_channels or [])}
     for connection_id, provider, doc in docs:
@@ -152,6 +157,9 @@ async def knowledge_retrieve(ctx: RunCtx, node):
     if not query.strip():
         raise NodeFailure('empty_query')
     refs, limitations = await _retrieve(ctx, node['id'], query, cfg.get('sources'), int(cfg.get('max_documents') or 6), cfg.get('slack_channels'))
+    for limitation in limitations:
+        ctx.log(node['id'], limitation[:200], 'warn')
+    ctx.log(node['id'], f"{len(refs)} evidence item(s) passed on: {', '.join(r['label'] for r in refs) or 'none'}")
     by = {}
     for r in refs: by[r['provider']] = by.get(r['provider'], 0) + 1
     summary = f'{len(refs)} document(s)' + (' (' + ', '.join(f'{k} {v}' for k, v in sorted(by.items())) + ')' if by else '')
@@ -207,6 +215,7 @@ async def llm_generate(ctx: RunCtx, node):
     else:
         text, usage = await model_call(ctx, node, messages, max_tokens=max_tokens, model_alias=_alias(ctx, cfg))
         value, summary = {'text': text.strip()}, f'{len(text.split())} words generated'
+    ctx.log(node['id'], summary)
     if not isinstance(value, dict):
         value = {'value': value}
     return NodeResult(output=value, summary=summary, usage=usage, warnings=warnings)
@@ -216,7 +225,7 @@ async def llm_generate(ctx: RunCtx, node):
 def _agent_tool_specs(ctx, allowed):
     from ..mcp.registry import list_tools
     with SessionLocal() as db:
-        mcp = {t['qualified']: t for t in list_tools(db, enabled_only=True)}
+        mcp = {t['qualified']: t for t in list_tools(db, enabled_only=True, user_id=ctx.user.id)}
     specs = {}
     for t in allowed:
         if t == 'knowledge.search':
@@ -291,6 +300,8 @@ async def agent(ctx: RunCtx, node):
             except NodeFailure as exc:
                 result, ok = {'error': exc.code}, False
         calls.append({'step': i + 1, 'tool': tool[:100], 'ok': ok, 'evidence_label': result.get('evidence_label') if isinstance(result, dict) else None})
+        ctx.log(node['id'], f"Step {i + 1}: {tool[:100]} " + ('ok' + (f" -> {calls[-1]['evidence_label']}" if calls[-1]['evidence_label'] else '') if ok else f"failed ({result.get('error')})"),
+                'info' if ok else 'warn')
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': tool[:100], 'step': i + 1, 'ok': ok,
                                          'evidence_label': calls[-1]['evidence_label']})
         _audit(ctx, 'agent.tool_call', 'allowed' if ok else 'error', 'ok' if ok else str(result.get('error')), node_id=node['id'], details={'tool': tool[:100]})
@@ -314,7 +325,7 @@ async def _mcp_call(ctx: RunCtx, node, server: str, tool: str, args: dict):
     from ..mcp.registry import McpError, call_tool, list_tools
     q = f'mcp:{server}/{tool}'
     with SessionLocal() as db:
-        enabled = {t['qualified']: t for t in list_tools(db, enabled_only=True)}
+        enabled = {t['qualified']: t for t in list_tools(db, enabled_only=True, user_id=ctx.user.id)}
     if q not in enabled:
         raise NodeFailure('mcp_tool_unavailable')
     # MCP calls use a shared server credential, not the invoker's identity, and bypass approvals: read-only tools only.
@@ -344,9 +355,11 @@ async def tool_mcp(ctx: RunCtx, node):
     args = ctx.render(cfg.get('arguments') or {}, warnings)
     q = f"mcp:{cfg.get('server')}/{cfg.get('tool')}"
     emit(ctx.run_id, 'tool_call', {'node_id': node['id'], 'tool': q})
+    ctx.log(node['id'], f"Calling {q} with {', '.join(sorted(args)) if isinstance(args, dict) and args else 'no arguments'}")
     out = await _mcp_call(ctx, node, cfg.get('server', ''), cfg.get('tool', ''), args if isinstance(args, dict) else {})
     emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': q, 'ok': True, 'evidence_label': out['evidence_label'],
                                      'synthetic': out['synthetic']})
+    ctx.log(node['id'], f"Result ok -> {out['evidence_label']}" + (' (synthetic data)' if out['synthetic'] else ''))
     return NodeResult(output=out, summary=f"{q} -> {out['evidence_label']}" + (' (synthetic)' if out['synthetic'] else ''), warnings=warnings)
 
 
@@ -437,15 +450,18 @@ async def tool_builtin(ctx: RunCtx, node):
         return await _write(ctx, node, tool, warnings)
     params = ctx.render(cfg.get('params') or {}, warnings)
     emit(ctx.run_id, 'tool_call', {'node_id': node['id'], 'tool': 'builtin:' + tool})
+    ctx.log(node['id'], f'Calling builtin:{tool}' + (f" ({params.get('issue_key')})" if isinstance(params, dict) and params.get('issue_key') else ''))
     if tool == 'jira.get_issue':
         out = await _jira_get_issue(ctx, node, str(params.get('issue_key') or ''))
         persist = {**out, 'fields': _persist_fields(out['fields'])}
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'evidence_label': out['evidence_label']})
+        ctx.log(node['id'], f"Result ok -> {out['evidence_label']}")
         return NodeResult(output=out, persist=persist, summary=f"{out['issue_key']} -> {out['evidence_label']}", warnings=warnings)
     if tool == 'jira.search':
         out = await _jira_search(ctx, node, str(params.get('jql') or ''), int(params.get('max_results') or 5))
         persist = {'issues': [{k: v for k, v in i.items() if k != 'summary'} for i in out['issues']]}
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'count': len(out['issues'])})
+        ctx.log(node['id'], f"Result ok: {len(out['issues'])} readable issue(s)")
         return NodeResult(output=out, persist=persist, summary=f"{len(out['issues'])} issue(s)", warnings=warnings)
     if tool == 'slack.draft':
         channel = str(params.get('channel') or '').lstrip('#')
@@ -459,6 +475,7 @@ async def tool_builtin(ctx: RunCtx, node):
             db.add(draft); db.commit(); draft_id = draft.id
         _audit(ctx, 'slack.draft', node_id=node['id'], provider='slack', container=channel, details={'draft_id': draft_id})
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:slack.draft', 'ok': True})
+        ctx.log(node['id'], f'Draft stored for #{channel} (not sent)')
         return NodeResult(output={'draft_id': draft_id, 'channel': channel, 'text': text}, summary=f'Draft stored for #{channel} (not sent)',
                           warnings=warnings)
     raise NodeFailure('tool_not_allowed')
@@ -471,6 +488,7 @@ async def _write(ctx: RunCtx, node, tool: str, warnings):
         approvals = list(db.scalars(select(Approval).where(Approval.run_id == ctx.run_id).order_by(Approval.created_at.desc())))
     governing = next((a for a in approvals if any(x.get('node_id') == node['id'] for x in a.actions or [])), None)
     if governing is not None and governing.status in ('rejected', 'cancelled'):
+        ctx.log(node['id'], f'Skipped: approval {governing.status}')
         return NodeResult(output={'status': 'skipped', 'reason': 'approval_' + governing.status, 'approval_id': governing.id},
                           status='skipped', passthrough=True, summary='approval_' + governing.status)
     if governing is not None and governing.status == 'approved':
@@ -483,8 +501,11 @@ async def _write(ctx: RunCtx, node, tool: str, warnings):
         params, index, approval_id = ctx.render((node.get('config') or {}).get('params') or {}, warnings), 0, None
     key = idempotency_key(ctx.run_id, node['id'], index)
     emit(ctx.run_id, 'tool_call', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'destination': _destination(tool, params)[:120]})
+    ctx.log(node['id'], f'Executing {tool}: {_destination(tool, params)[:120]}')
     result = await execute_action(ctx, node['id'], approval_id, tool, params, key)
     emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'reused': result.get('reused', False)})
+    ids = ', '.join(str(v) for k, v in result.items() if k in ('key', 'issue_key', 'id', 'ts') and v)
+    ctx.log(node['id'], 'Executed' + (f' -> {ids}' if ids else '') + (' (idempotent reuse)' if result.get('reused') else ''))
     out = {'status': 'executed', **{k: v for k, v in result.items() if k != 'reused'}}
     return NodeResult(output=out, summary=f'{tool} executed' + (' (idempotent reuse)' if result.get('reused') else ''), warnings=warnings)
 
@@ -497,6 +518,7 @@ async def logic_router(ctx: RunCtx, node):
     norm = str(value if value is not None else '').strip().lower()
     cases = [str(c) for c in cfg.get('cases') or []]
     handle = norm if norm in cases else (cfg.get('default') or 'default')
+    ctx.log(node['id'], f"Value '{norm[:60]}' -> branch '{handle}'" + ('' if norm in cases else ' (default)'))
     return NodeResult(output={'branch': handle, 'value': norm[:100], 'matched': norm in cases}, handle=handle,
                       summary=f"Branch '{handle}'" + ('' if norm in cases else ' (default)'), warnings=warnings)
 
@@ -669,10 +691,25 @@ async def human_approval(ctx: RunCtx, node):
     roles = list(cfg.get('approver_roles') or ['builder'])
     if cfg.get('allow_requester', True):
         roles.append('requester')
+    message = str(ctx.render(cfg.get('message') or '', warnings) or '')[:1000]
+    if message and ctx.guard and ctx.guard.get('pii'):
+        message, _ = ctx.masker.mask(message, ctx.guard['pii'])
     with SessionLocal() as db:
+        from ..admin.directory import approval_rules, resolve_group
+        group = resolve_group(db, cfg.get('approver_group'))
+        if group is None and not cfg.get('approver_group'):
+            # Policy default approver group per action type (Policies -> approval rules); the node setting wins.
+            rules = approval_rules(db)
+            group = next((g for g in (resolve_group(db, rules.get(a['type'])) for a in actions) if g is not None), None)
+        elif group is None:
+            raise NodeFailure('approver_group_unknown')
         approval = Approval(run_id=ctx.run_id, workflow_id=ctx.workflow_id, workflow_version=ctx.version, node_id=node['id'],
-                            requester_id=ctx.user.id, approver_roles=roles, status='pending', title=title, actions=actions)
+                            requester_id=ctx.user.id, approver_roles=roles, status='pending', title=title, actions=actions,
+                            approver_group_id=group.id if group else None,
+                            payload={'message': message, 'respond_within': str(cfg.get('respond_within') or '')[:40]})
         db.add(approval); db.commit(); approval_id = approval.id
+        group_name = group.name if group else ''
+    ctx.log(node['id'], f'Approval requested for {len(actions)} action(s)' + (f' from {group_name}' if group_name else ''))
     emit(ctx.run_id, 'approval_requested', {'approval_id': approval_id, 'node_id': node['id'], 'action_count': len(actions)})
     record_approval(status='requested', workflow=ctx.workflow_name)
     _audit(ctx, 'approval.requested', node_id=node['id'], details={'approval_id': approval_id, 'action_types': [a['type'] for a in actions]})
@@ -730,6 +767,7 @@ async def output_node(ctx: RunCtx, node):
         run = db.get(WorkflowRun, ctx.run_id)
         run.outputs = {**(run.outputs or {}), **{k: v for k, v in out.items()}, 'output_node': node['id']}
         db.commit()
+    ctx.log(node['id'], f'{len(citations)} citation(s), {len(actions)} action(s)')
     return NodeResult(output=out, summary=f'{len(citations)} citation(s), {len(actions)} action(s)', warnings=warnings)
 
 

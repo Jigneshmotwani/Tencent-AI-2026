@@ -288,11 +288,11 @@ async def hub(user: User = Depends(current_user), db: DBSession = Depends(get_db
         sources.append(entry)
     try:
         from .mcp.registry import list_servers_public
-        servers = list_servers_public(db)
+        servers = [x for x in list_servers_public(db) if x.get('approval_status', 'approved') == 'approved' or x.get('created_by') == user.id]
     except Exception:
         servers = []
-    from .gateway import model_aliases
-    aliases = model_aliases()
+    from .governance.models import enabled_aliases
+    aliases = enabled_aliases()
     allowed = None
     try:
         from .governance.policies import get_policy

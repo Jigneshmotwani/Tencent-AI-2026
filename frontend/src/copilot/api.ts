@@ -1,4 +1,4 @@
-// W4 owns. Copilot REST helpers (routes in frontend/src/contracts.ts).
+// Copilot REST helpers (W2): history, propose, apply, discard and create-from-description.
 import { api } from '../api'
 import type { CopilotProposal, GraphOp, Validation } from '../contracts'
 

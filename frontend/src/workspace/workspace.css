@@ -1,0 +1,49 @@
+/* Workspace additions on top of the prototype classes in ui/app.css (tokens only). */
+.ans-turn{margin-bottom:32px}
+.ans-turn:last-child{margin-bottom:0}
+.ans h2,.ans h3,.ans h4{font:600 13px/1.4 var(--f-ui);color:var(--ink2);margin:20px 0 8px}
+.ans>:first-child{margin-top:0}
+.ans ul,.ans ol{margin:0 0 16px;padding-left:20px}
+.ans li{font-size:15px;line-height:1.65;margin:0 0 4px}
+.ans li p{margin:0}
+.ans a{color:var(--link)}
+.ans code,.draft-txt code{font:12.5px var(--f-mono)}
+.ans hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+.ans table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px}
+.ans th,.ans td{border:1px solid var(--line);padding:6px 10px;text-align:left}
+.ans-turn .srcs{margin-top:4px}
+.ws-wait{display:flex;align-items:center;gap:10px;color:var(--ink2);font-size:14px;margin:0 0 16px}
+.ws-calm{color:var(--ink2);font-size:14px;line-height:1.6;margin:0 0 16px}
+.ws-calm .link{font-size:14px}
+.src-title{font-size:19px;margin-bottom:16px}
+
+/* composer */
+.send[aria-disabled=true]{cursor:default}
+.ag .d{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.aform{flex-wrap:wrap;row-gap:8px}
+.aform .af{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.aform .input{max-width:100%}
+.aform input[type=checkbox]{margin:0}
+
+/* history */
+.hpop button{justify-content:flex-start}
+.hpop .hp-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-list{background:var(--surface);overflow:hidden;margin-bottom:24px}
+.hist-list .lrow{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left;font:inherit;color:var(--ink)}
+.hist-list .lrow:last-child{border-bottom:0}
+.hist-list .lrow:hover{background:var(--soft)}
+.hist-list .lrow .grow{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* run card */
+.rc-dot.amber{background:var(--amber);animation:pulse2 1.2s ease-in-out infinite}
+.rc-dot.ink{background:var(--ink);animation:pulse 1s ease-in-out infinite}
+.rc-dot.green{background:var(--green)}
+.rc-note .dotx.still{animation:none;background:var(--grey-dot)}
+.rc-note .dotx.still.green{background:var(--green)}
+.rc-steps li.pend{color:var(--ink2)}
+.rc-sum p{margin:0 0 12px;font-size:14.5px;line-height:1.6}
+.rc-sum strong{font-weight:500}
+.rc-res>:last-child{margin-bottom:0}
+.draft-txt strong{font-weight:500}
+.draft-txt ul,.draft-txt ol{margin:0 0 10px;padding-left:18px}
+.ws .sheet-f a.btn{text-decoration:none;color:var(--ink)}

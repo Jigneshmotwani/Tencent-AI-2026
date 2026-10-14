@@ -76,7 +76,30 @@ def _migration_2(db: Session, engine):
     db.execute(text('CREATE TRIGGER audit_no_truncate BEFORE TRUNCATE ON audit_events FOR EACH STATEMENT EXECUTE FUNCTION audit_append_only()'))
 
 
-MIGRATIONS = [(2, _migration_2)]
+def _migration_3(db: Session, engine):
+    """Iteration 3: directory profile, groups, publish review, run debug detail, MCP approval, models, budget limits."""
+    from .db import Base
+    Base.metadata.create_all(engine)  # groups, group_members, model_configs, budget_limits
+    cols = {
+        'users': [('email', "VARCHAR NOT NULL DEFAULT ''"), ('title', "VARCHAR NOT NULL DEFAULT ''"),
+                  ('status', "VARCHAR NOT NULL DEFAULT 'active'"), ('last_active_at', 'TIMESTAMPTZ'), ('created_at', 'TIMESTAMPTZ DEFAULT now()')],
+        'workflows': [('review_state', "VARCHAR NOT NULL DEFAULT ''"), ('review_version', 'INTEGER')],
+        'approvals': [('kind', "VARCHAR NOT NULL DEFAULT 'run_action'"), ('payload', "JSON NOT NULL DEFAULT '{}'"), ('approver_group_id', 'VARCHAR')],
+        'workflow_node_states': [('input', "JSON NOT NULL DEFAULT '{}'"), ('logs', "JSON NOT NULL DEFAULT '[]'"), ('attempt', 'INTEGER NOT NULL DEFAULT 1')],
+        'mcp_servers': [('approval_status', "VARCHAR NOT NULL DEFAULT 'approved'"), ('approved_by', 'VARCHAR'), ('notes', "TEXT NOT NULL DEFAULT ''")],
+    }
+    insp = inspect(engine)
+    for table, adds in cols.items():
+        existing = {c['name'] for c in insp.get_columns(table)}
+        for name, ddl in adds:
+            if name not in existing:
+                db.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {ddl}'))
+    db.execute(text('ALTER TABLE approvals ALTER COLUMN run_id DROP NOT NULL'))
+    db.execute(text('CREATE INDEX IF NOT EXISTS approvals_status_kind ON approvals (status, kind)'))
+    db.execute(text('CREATE INDEX IF NOT EXISTS audit_events_ts ON audit_events (timestamp)'))
+
+
+MIGRATIONS = [(2, _migration_2), (3, _migration_3)]
 
 
 def apply(db: Session, engine):

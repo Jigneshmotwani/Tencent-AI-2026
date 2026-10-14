@@ -1,109 +1,172 @@
-// React Flow canvas: editable graph, live run overlay (events only) and Copilot diff preview.
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import { Background, Controls, MarkerType, MiniMap, ReactFlow, ReactFlowProvider, applyEdgeChanges, applyNodeChanges, useReactFlow, type Connection, type Edge, type EdgeChange, type NodeChange } from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
-import type { CopilotProposal, StudioRegistry, WfEdge, WorkflowSpec } from '../contracts'
-import { categoryOf, edgeId, routerHandles } from './model'
-import { NodeCard, type CardNode, type DiffKind } from './NodeCard'
+// React Flow canvas restyled to the prototype: off-white 20/100px grid, 240×56 cards, smooth bezier edges with the
+// ink dash-flow on the taken path, branch labels, "+" insert on edge hover and output-handle drag-to-connect.
+// Run states come from the SSE overlay only; the Copilot preview paints added/changed/removed nodes and edges.
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Background, BackgroundVariant, EdgeLabelRenderer, Handle, Position, ReactFlow, applyNodeChanges, useReactFlow, useStore,
+  type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps,
+} from '@xyflow/react'
+import '@xyflow/react/dist/base.css'
+import type { SpecDiff, StudioRegistry, WfEdge, WfNode, WorkflowSpec } from '../contracts'
+import { Icon } from '../ui/icons'
+import { Tile, cx, type Cat } from '../ui/kit'
+import { NODE_H, NODE_W, catOf, humanCase, isRouter, routerHandles } from './model'
 import { edgeTaken, type RunOverlay } from './useRunStream'
 
-export const PALETTE_MIME = 'application/x-studio-palette'
-const nodeTypes = { wf: NodeCard }
+export type CardState = '' | 'running' | 'waiting' | 'done' | 'failed' | 'skipped'
+type DiffKind = 'add' | 'chg' | 'rem' | null
+interface StepData extends Record<string, unknown> {
+  node: WfNode; cat: Cat; sub: string; state: CardState; diff: DiffKind; sel: boolean; handles: string[] | null; hasIn: boolean; hasOut: boolean; locked: boolean
+}
+type StepNode = Node<StepData, 'step'>
+interface FlowData extends Record<string, unknown> { cls: string; label?: string; side?: 'L' | 'R'; labelTaken?: boolean; edge: WfEdge; onInsert?: (e: WfEdge) => void }
+type FlowEdgeT = Edge<FlowData, 'flow'>
+
+const STATE: Record<string, CardState> = { running: 'running', awaiting_approval: 'waiting', succeeded: 'done', failed: 'failed', skipped: 'skipped' }
+
+const StepCard = memo(function StepCard({ data }: NodeProps<StepNode>) {
+  const { node, cat, sub, state, diff, sel, handles, hasIn, hasOut, locked } = data
+  const title = node.label || node.id
+  return <div className={cx('node', sel && 'sel', diff && 'df-' + diff)} data-state={state} role="button" tabIndex={0} aria-label={`${title}, ${sub}`}>
+    {hasIn && <Handle type="target" position={Position.Top} className="tgt" isConnectable={!locked} />}
+    <Tile cat={cat} />
+    <span className="ntext"><b>{title}</b><i>{sub}</i></span>
+    <span className="sdot" />
+    {hasOut && (handles
+      ? handles.map((h, i) => <Handle key={h} id={h} type="source" position={Position.Bottom} className="handle" isConnectable={!locked} title={humanCase(h)} style={{ left: `calc(50% + ${(i - (handles.length - 1) / 2) * 14}px)` }} />)
+      : <Handle type="source" position={Position.Bottom} className="handle" isConnectable={!locked} />)}
+  </div>
+})
+
+function FlowEdge({ sourceX, sourceY, targetX, targetY, data }: EdgeProps<FlowEdgeT>) {
+  const [show, setShow] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const on = () => { clearTimeout(timer.current); setShow(true) }
+  const off = () => { timer.current = setTimeout(() => setShow(false), 200) }
+  const d = Math.max(30, Math.abs(targetY - sourceY) / 2)
+  const path = `M${sourceX} ${sourceY} C${sourceX} ${sourceY + d},${targetX} ${targetY - d},${targetX} ${targetY}`
+  const mx = (sourceX + targetX) / 2, my = (sourceY + targetY) / 2
+  const insert = data?.onInsert
+  return <>
+    <g className={cx('eg', data?.cls)}>
+      <path className="ehit" d={path} onMouseEnter={insert ? on : undefined} onMouseLeave={insert ? off : undefined} />
+      <path className="eb" d={path} /><path className="ef" d={path} />
+    </g>
+    <EdgeLabelRenderer>
+      {insert && <button type="button" className={cx('plus nodrag nopan', show && 'show')} aria-label="Insert a step here" style={{ transform: `translate(${mx}px,${my}px)` }}
+        onMouseEnter={on} onMouseLeave={off} onClick={e => { e.stopPropagation(); insert(data!.edge) }}><Icon name="plus" small /></button>}
+      {data?.label && <div className={cx('elabel', data.labelTaken && 'taken')} style={{
+        transform: data.side === 'L' ? `translate(${targetX - 10}px,${targetY - 14}px) translate(-100%,-50%)` : `translate(${targetX + 10}px,${targetY - 14}px) translateY(-50%)`,
+      }}>{data.label}</div>}
+    </EdgeLabelRenderer>
+  </>
+}
+
+const nodeTypes = { step: StepCard }
+const edgeTypes = { flow: FlowEdge }
 
 export interface CanvasProps {
   spec: WorkflowSpec
+  base?: WorkflowSpec | null
+  diff?: SpecDiff | null
   registry: StudioRegistry
-  selectedId: string | null
-  onSelect: (id: string | null) => void
-  onSpecChange: (update: (spec: WorkflowSpec) => WorkflowSpec) => void
-  onDropItem: (key: string, position: { x: number; y: number }) => void
   overlay: RunOverlay | null
-  issues: Record<string, 'error' | 'warning'>
-  proposal: CopilotProposal | null
-  readOnly: boolean
-  fitKey: string
+  selectedId: string | null
+  locked: boolean
+  subtitle: (node: WfNode, spec: WorkflowSpec) => string
+  onSelect: (id: string | null) => void
+  onMoved: (positions: Map<string, { x: number; y: number }>) => void
+  onConnect: (source: string, target: string, handle: string | null) => void
+  onInsert: (edge: WfEdge) => void
+  onUserMove: () => void
 }
 
-export default function Canvas(props: CanvasProps) { return <ReactFlowProvider><CanvasInner {...props} /></ReactFlowProvider> }
-
-function CanvasInner({ spec, registry, selectedId, onSelect, onSpecChange, onDropItem, overlay, issues, proposal, readOnly, fitKey }: CanvasProps) {
-  const flow = useReactFlow()
-  const display = proposal ? proposal.preview_spec : spec
-  const locked = readOnly || !!proposal
-
+export default function Canvas({ spec, base, diff, registry, overlay, selectedId, locked, subtitle, onSelect, onMoved, onConnect, onInsert, onUserMove }: CanvasProps) {
   const built = useMemo(() => {
-    const diff = proposal?.diff
-    const kind = (id: string): DiffKind => !diff ? null : diff.added_nodes.includes(id) ? 'added' : diff.changed_nodes.includes(id) ? 'changed' : null
-    const nodes: CardNode[] = display.nodes.map(node => ({
-      id: node.id, type: 'wf', position: node.position ?? { x: 0, y: 0 }, selected: node.id === selectedId,
-      data: { node, def: registry.node_types[node.type], status: overlay ? overlay.nodeStates[node.id] ?? 'idle' : null, diff: kind(node.id), issue: proposal ? null : issues[node.id] ?? null, badges: overlay?.guardrails[node.id] ?? [], decision: overlay?.decisions[node.id] },
-    }))
-    if (proposal) for (const id of proposal.diff.removed_nodes) {
-      const ghost = spec.nodes.find(node => node.id === id)
-      if (ghost) nodes.push({ id: ghost.id, type: 'wf', position: ghost.position ?? { x: 0, y: 0 }, selectable: false, draggable: false, data: { node: ghost, def: registry.node_types[ghost.type], status: null, diff: 'removed', issue: null, badges: [] } })
+    const kind = (id: string): DiffKind => !diff ? null : diff.added_nodes.includes(id) ? 'add' : diff.changed_nodes.includes(id) ? 'chg' : null
+    const stateOf = (id: string): CardState => overlay ? STATE[overlay.nodeStates[id] ?? ''] ?? '' : ''
+    const card = (node: WfNode, from: WorkflowSpec, dk: DiffKind): StepNode => {
+      const def = registry.node_types[node.type]
+      return {
+        id: node.id, type: 'step', position: node.position ?? { x: 0, y: 0 }, width: NODE_W, height: NODE_H, draggable: !locked && dk !== 'rem', selectable: false,
+        data: { node, cat: catOf(node.type), sub: subtitle(node, from), state: stateOf(node.id), diff: dk, sel: node.id === selectedId, handles: isRouter(registry, node) ? routerHandles(node) : null,
+          hasIn: !def || def.inputs.length > 0, hasOut: !def || def.outputs.length > 0, locked },
+      }
     }
-    const handleFor = (edge: WfEdge, source: WorkflowSpec['nodes'][number] | undefined) => {
-      if (!edge.sourceHandle || !source) return null
-      return registry.node_types[source.type]?.handles === 'config.cases' && routerHandles(source).includes(edge.sourceHandle) ? edge.sourceHandle : null
-    }
-    const toEdge = (edge: WfEdge, nodesOf: WorkflowSpec, cls: string): Edge => {
+    const nodes: StepNode[] = spec.nodes.map(node => card(node, spec, kind(node.id)))
+    if (diff && base) for (const id of diff.removed_nodes) { const ghost = base.nodes.find(n => n.id === id); if (ghost) nodes.push(card(ghost, base, 'rem')) }
+    const pos = new Map(nodes.map(n => [n.id, n.position]))
+    const toEdge = (edge: WfEdge, from: WorkflowSpec, extra: string): FlowEdgeT => {
+      const src = from.nodes.find(n => n.id === edge.source)
+      const router = isRouter(registry, src)
+      const handle = router && edge.sourceHandle && routerHandles(src!).includes(edge.sourceHandle) ? edge.sourceHandle : null
       const taken = !!overlay && edgeTaken(overlay, edge)
-      const color = cls === 'edge-added' ? '#2f8a4c' : cls === 'edge-removed' ? '#c0453b' : taken ? 'var(--accent)' : undefined
-      return { id: edge.id, source: edge.source, target: edge.target, sourceHandle: handleFor(edge, nodesOf.nodes.find(node => node.id === edge.source)), animated: taken, className: [cls, taken ? 'edge-taken' : ''].filter(Boolean).join(' '),
-        label: edge.condition || edge.sourceHandle || undefined, markerEnd: { type: MarkerType.ArrowClosed, color },
-        style: { stroke: color, strokeWidth: taken || cls ? 2.4 : 1.5, strokeDasharray: cls === 'edge-removed' ? '6 4' : undefined }, selectable: !proposal, deletable: !locked }
+      const skipped = !!overlay && overlay.nodeStates[edge.target] === 'skipped'
+      const label = handle ? humanCase(handle) : edge.condition ? edge.condition : undefined
+      const sx = pos.get(edge.source)?.x ?? 0, tx = pos.get(edge.target)?.x ?? 0
+      return {
+        id: (extra === 'rem' ? 'ghost-' : '') + edge.id, type: 'flow', source: edge.source, target: edge.target, sourceHandle: handle, selectable: false, focusable: false,
+        data: { edge, cls: cx(taken && 'taken', skipped && 'skipped', extra && 'df-' + extra), label, side: tx < sx ? 'L' : 'R', labelTaken: taken, onInsert: locked || extra ? undefined : onInsert },
+      }
     }
-    const edges: Edge[] = display.edges.map(edge => toEdge(edge, display, proposal?.diff.added_edges.includes(edge.id) ? 'edge-added' : ''))
-    if (proposal) for (const id of proposal.diff.removed_edges) { const old = spec.edges.find(edge => edge.id === id); if (old) edges.push(toEdge(old, spec, 'edge-removed')) }
+    const edges = spec.edges.filter(e => pos.has(e.source) && pos.has(e.target)).map(e => toEdge(e, spec, diff?.added_edges.includes(e.id) ? 'add' : ''))
+    if (diff && base) for (const id of diff.removed_edges) { const old = base.edges.find(e => e.id === id); if (old && pos.has(old.source) && pos.has(old.target)) edges.push(toEdge(old, base, 'rem')) }
     return { nodes, edges }
-  }, [display, spec, proposal, registry, selectedId, overlay, issues, locked])
+  }, [spec, base, diff, registry, overlay, selectedId, locked, subtitle, onInsert])
 
-  const [nodes, setNodes] = useState<CardNode[]>([])
-  const [edges, setEdges] = useState<Edge[]>([])
+  const [nodes, setNodes] = useState<StepNode[]>(built.nodes)
   useEffect(() => {
-    setNodes(previous => {
-      const old = new Map(previous.map(node => [node.id, node]))
-      return built.nodes.map(node => { const prior = old.get(node.id); return prior ? { ...node, measured: prior.measured, position: prior.dragging ? prior.position : node.position, dragging: prior.dragging } : node })
-    })
-    setEdges(previous => { const old = new Map(previous.map(edge => [edge.id, edge])); return built.edges.map(edge => ({ ...edge, selected: old.get(edge.id)?.selected })) })
-  }, [built])
+    setNodes(prev => { const old = new Map(prev.map(n => [n.id, n])); return built.nodes.map(n => { const p = old.get(n.id); return p?.dragging ? { ...n, position: p.position, dragging: true } : n }) })
+  }, [built.nodes])
+  const onNodesChange = useCallback((changes: NodeChange<StepNode>[]) => setNodes(cur => applyNodeChanges(changes.filter(c => c.type === 'position' || c.type === 'dimensions'), cur)), [])
+  const connect = useCallback((c: Connection) => { if (!locked && c.source && c.target && c.source !== c.target) onConnect(c.source, c.target, c.sourceHandle ?? null) }, [locked, onConnect])
 
-  const fitted = useRef('')
-  useEffect(() => {
-    const key = `${fitKey}|${proposal?.proposal_id ?? ''}`
-    if (fitted.current === key || !nodes.length || !nodes.every(node => node.measured)) return
-    fitted.current = key
-    requestAnimationFrame(() => void flow.fitView({ padding: 0.15, duration: 200 }))
-  }, [fitKey, proposal, nodes, flow])
-
-  const onNodesChange = useCallback((changes: NodeChange<CardNode>[]) => setNodes(current => applyNodeChanges(changes.filter(change => change.type !== 'select' && change.type !== 'remove'), current)), [])
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges(current => applyEdgeChanges(changes.filter(change => change.type !== 'remove'), current)), [])
-  const onConnect = useCallback((connection: Connection) => {
-    if (locked || !connection.source || !connection.target || connection.source === connection.target) return
-    onSpecChange(current => {
-      const id = edgeId(connection.source, connection.target, connection.sourceHandle)
-      if (current.edges.some(edge => edge.id === id)) return current
-      return { ...current, edges: [...current.edges, { id, source: connection.source, target: connection.target, ...(connection.sourceHandle ? { sourceHandle: connection.sourceHandle } : {}) }] }
-    })
-  }, [locked, onSpecChange])
-  const onDrop = (event: DragEvent) => {
-    event.preventDefault()
-    const key = event.dataTransfer.getData(PALETTE_MIME)
-    if (!key || locked) return
-    const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-    onDropItem(key, { x: point.x - 115, y: point.y - 40 })
-  }
-
-  return <div className="canvas" onDragOver={event => { if (!locked) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDrop={onDrop}>
-    <ReactFlow<CardNode, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
-      onNodeClick={(_, node) => { if (node.data.diff !== 'removed') onSelect(node.id) }} onPaneClick={() => onSelect(null)}
-      onNodeDragStop={(_, __, moved) => { if (locked) return; const positions = new Map(moved.map(node => [node.id, node.position])); onSpecChange(current => ({ ...current, nodes: current.nodes.map(node => positions.has(node.id) ? { ...node, position: { x: Math.round(positions.get(node.id)!.x), y: Math.round(positions.get(node.id)!.y) } } : node) })) }}
-      onNodesDelete={deleted => { if (locked) return; const ids = new Set(deleted.map(node => node.id)); onSpecChange(current => ({ ...current, nodes: current.nodes.filter(node => !ids.has(node.id)), edges: current.edges.filter(edge => !ids.has(edge.source) && !ids.has(edge.target)) })); onSelect(null) }}
-      onEdgesDelete={deleted => { if (locked) return; const ids = new Set(deleted.map(edge => edge.id)); onSpecChange(current => ({ ...current, edges: current.edges.filter(edge => !ids.has(edge.id)) })) }}
-      nodesDraggable={!locked} nodesConnectable={!locked} deleteKeyCode={locked ? null : ['Delete', 'Backspace']} minZoom={0.2} maxZoom={1.75} defaultEdgeOptions={{ type: 'smoothstep' }}>
-      <Background gap={18} />
-      <Controls showInteractive={false} />
-      <MiniMap pannable zoomable nodeColor={node => categoryOf((node.data as CardNode['data']).def).color} />
+  return <div className="vp st-flow">
+    <ReactFlow<StepNode, FlowEdgeT> nodes={nodes} edges={built.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      onNodesChange={onNodesChange} onConnect={connect}
+      onNodeClick={(_, n) => { if (n.data.diff !== 'rem') onSelect(n.id) }} onPaneClick={() => onSelect(null)}
+      onNodeDragStop={(_, __, moved) => { if (!locked) onMoved(new Map(moved.map(n => [n.id, { x: Math.round(n.position.x), y: Math.round(n.position.y) }]))) }}
+      onMoveStart={e => { if (e) onUserMove() }}
+      nodesDraggable={!locked} nodesConnectable={!locked} elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} deleteKeyCode={null}
+      selectionKeyCode={null} multiSelectionKeyCode={null} nodeDragThreshold={4} connectionRadius={28}
+      minZoom={0.4} maxZoom={2} panOnScroll zoomOnScroll={false} zoomOnPinch zoomActivationKeyCode={['Control', 'Meta']} panActivationKeyCode="Space" zoomOnDoubleClick={false}
+      connectionLineStyle={{ stroke: 'var(--ink)', strokeWidth: 1.5 }} proOptions={{ hideAttribution: true }} defaultViewport={{ x: 0, y: 0, zoom: 1 }}>
+      <Background id="g20" variant={BackgroundVariant.Lines} gap={20} color="var(--grid)" lineWidth={1} />
+      <Background id="g100" variant={BackgroundVariant.Lines} gap={100} color="var(--grid2)" lineWidth={1} />
     </ReactFlow>
   </div>
+}
+
+/** View helpers for the toolbar and auto-view (prototype `autoView` / `fit` / `zoomBy`). */
+export function useView(spec: WorkflowSpec, reserve: { right: number; bottom: number }, box: React.RefObject<HTMLElement | null>) {
+  const flow = useReactFlow()
+  const zoom = useStore(s => s.transform[2])
+  const rect = useCallback(() => {
+    const el = box.current, W = el?.clientWidth ?? 0, H = el?.clientHeight ?? 0
+    const r = W >= 1000 ? W - reserve.right : W
+    return { l: 0, r: Math.max(200, r), t: 56, b: Math.max(160, H - reserve.bottom - 72), W }
+  }, [box, reserve.right, reserve.bottom])
+  const bbox = useCallback(() => {
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9
+    spec.nodes.forEach(n => { const p = n.position ?? { x: 0, y: 0 }; x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x + NODE_W); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y + NODE_H) })
+    return spec.nodes.length ? { x0, x1, y0, y1 } : { x0: -NODE_W / 2, x1: NODE_W / 2, y0: 0, y1: NODE_H }
+  }, [spec.nodes])
+  const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v))
+  const autoView = useCallback((anim: boolean) => {
+    const f = rect(); if (!f.W) return
+    const bb = bbox(), fw = f.r - f.l
+    const z = clamp(Math.min(1, (fw - 32) / (bb.x1 - bb.x0)), 0.4, 1)
+    void flow.setViewport({ x: f.l + fw / 2 - (bb.x0 + bb.x1) / 2 * z, y: f.t + 8 - bb.y0 * z, zoom: z }, { duration: anim ? 220 : 0 })
+  }, [rect, bbox, flow])
+  const fit = useCallback(() => {
+    const f = rect(), bb = bbox(), fw = f.r - f.l, fh = f.b - f.t, w = bb.x1 - bb.x0, h = bb.y1 - bb.y0
+    const z = clamp(Math.min(1, (fw - 32) / w, (fh - 16) / h), 0.4, 2)
+    void flow.setViewport({ x: f.l + fw / 2 - (bb.x0 + bb.x1) / 2 * z, y: f.t + (fh - h * z) / 2 - bb.y0 * z, zoom: z }, { duration: 220 })
+  }, [rect, bbox, flow])
+  const zoomBy = useCallback((dz: number) => {
+    const f = rect(), vp = flow.getViewport(), nz = clamp(Math.round((vp.zoom + dz) * 10) / 10, 0.4, 2)
+    const cx = (f.l + f.r) / 2, cy = (f.t + f.b) / 2, k = nz / vp.zoom
+    void flow.setViewport({ x: cx - (cx - vp.x) * k, y: cy - (cy - vp.y) * k, zoom: nz }, { duration: 120 })
+  }, [rect, flow])
+  return { zoom, autoView, fit, zoomBy }
 }

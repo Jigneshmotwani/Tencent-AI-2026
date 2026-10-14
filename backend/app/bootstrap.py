@@ -41,6 +41,14 @@ def bootstrap():
         # Seeded templates, default MCP registration and platform policy (idempotent, code-defined).
         from .seed_defaults import seed_defaults
         seed_defaults(db)
+        # Iteration 3: demo directory (titles, groups, memberships), page-access defaults (W4, idempotent).
+        try:
+            from .admin.defaults import ensure_directory_defaults
+        except ImportError:
+            ensure_directory_defaults = None
+        if ensure_directory_defaults:
+            ensure_directory_defaults(db)
+            db.commit()
     if created:
         folder=Path('.local'); folder.mkdir(exist_ok=True); os.chmod(folder,0o700)
         file=folder/'demo-accounts.txt'

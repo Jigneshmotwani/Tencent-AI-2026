@@ -23,6 +23,7 @@ from ..db import (Approval, NodeState, User, Workflow, WorkflowEvent, WorkflowRu
 from ..telemetry import audit
 from . import approvals as A
 from . import engine
+from . import review as R
 from .spec import TERMINAL_RUN, WorkflowSpec
 from .validate import validate_spec
 
@@ -43,16 +44,18 @@ def _version(db, wf_id, v) -> WorkflowVersion | None:
     return db.scalar(select(WorkflowVersion).where(WorkflowVersion.workflow_id == wf_id, WorkflowVersion.version == v))
 
 
-def audience_ok(spec: dict, user: User) -> bool:
-    aud = spec.get('audience') or {}
-    return bool(set(aud.get('roles') or []) & _caps(user)) or user.username in (aud.get('users') or [])
+def audience_ok(spec: dict, user: User, db=None) -> bool:
+    if db is None:
+        with SessionLocal() as own:
+            return R.audience_ok(own, spec, user)
+    return R.audience_ok(db, spec, user)
 
 
 def _published_for(db, wf: Workflow, user: User) -> WorkflowVersion | None:
     if wf.status != 'published' or not wf.published_version:
         return None
     ver = _version(db, wf.id, wf.published_version)
-    return ver if ver is not None and (wf.owner_id == user.id or audience_ok(ver.spec, user)) else None
+    return ver if ver is not None and (wf.owner_id == user.id or R.audience_ok(db, ver.spec, user)) else None
 
 
 def _owned_wf(db, wf_id, user, edit=False) -> Workflow:
@@ -81,16 +84,33 @@ def summary(db, wf: Workflow, user: User) -> dict:
     owner = db.get(User, wf.owner_id)
     is_owner = wf.owner_id == user.id
     can_run = is_owner or _published_for(db, wf, user) is not None
+    live = _version(db, wf.id, wf.published_version) if wf.published_version else None
+    shown = live if (live is not None and not is_owner) else (_version(db, wf.id, wf.draft_version) if is_owner else live)
+    from ..governance.budgets import workflow_blocked
     return {'id': wf.id, 'name': wf.name, 'description': wf.description, 'icon': wf.icon, 'status': wf.status,
             'template_key': wf.template_key, 'owner': owner.username if owner else '', 'draft_version': wf.draft_version,
             'published_version': wf.published_version, 'updated_at': wf.updated_at,
-            'can_edit': is_owner and 'builder' in _caps(user), 'can_run': can_run}
+            'can_edit': is_owner and 'builder' in _caps(user), 'can_run': can_run,
+            'display_status': R.display_status(wf) if is_owner else wf.status, 'live_version': wf.published_version,
+            'review_state': wf.review_state or '', 'review_version': wf.review_version,
+            'audience_label': R.audience_label(db, (live or shown).spec if (live or shown) else None),
+            'owner_name': (owner.name or owner.username) if owner else '',
+            'category': R.category(shown.spec if shown else None), 'blocked': workflow_blocked(db, wf.id)}
 
 
-def _version_info(db, v: WorkflowVersion) -> dict:
+def _version_info(db, v: WorkflowVersion, wf: Workflow | None = None) -> dict:
     creator = db.get(User, v.created_by)
+    wf = wf or db.get(Workflow, v.workflow_id)
+    decided = db.scalar(select(Approval).where(Approval.workflow_id == v.workflow_id, Approval.kind == 'publish_request',
+                                               Approval.workflow_version == v.version, Approval.status.in_(('approved', 'rejected')))
+                        .order_by(Approval.decided_at.desc()).limit(1))
+    parent = _version(db, v.workflow_id, v.parent_version) if v.parent_version else None
     return {'version': v.version, 'status': v.status, 'parent_version': v.parent_version, 'note': v.note,
-            'created_at': v.created_at, 'created_by': creator.username if creator else ''}
+            'created_at': v.created_at, 'created_by': creator.username if creator else '',
+            'state': R.version_state(wf, v), 'is_live': wf.published_version == v.version,
+            'created_by_name': (creator.name or creator.username) if creator else '',
+            'decided_by_name': R.D.display_name(db, decided.decided_by) if decided else None,
+            'audience_label': R.audience_label(db, v.spec), 'summary': R.diff_summary(R.diff(parent.spec if parent else None, v.spec))}
 
 
 def detail(db, wf: Workflow, user: User) -> dict:
@@ -102,8 +122,8 @@ def detail(db, wf: Workflow, user: User) -> dict:
         ver = _published_for(db, wf, user)
         versions = [ver] if ver else []
     spec = copy.deepcopy(ver.spec) if ver else {}
-    return {**summary(db, wf, user), 'spec': spec, 'versions': [_version_info(db, v) for v in versions],
-            'validation': validate_spec(spec, db) if spec else {'ok': False, 'errors': [], 'warnings': []}}
+    return {**summary(db, wf, user), 'spec': spec, 'versions': [_version_info(db, v, wf) for v in versions],
+            'validation': validate_spec(spec, db, user=user) if spec else {'ok': False, 'errors': [], 'warnings': []}}
 
 
 def _normalize(spec: dict, wf: Workflow, version: int, status: str) -> dict:
@@ -249,7 +269,7 @@ def workflows_from_template(body: FromTemplate, request: Request, user: User = D
 @router.post('/workflows/validate')
 def workflows_validate(body: ValidateBody, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
-    return validate_spec(body.spec, db)
+    return validate_spec(body.spec, db, user=user)
 
 
 @router.get('/workflows/{wf_id}')
@@ -281,7 +301,7 @@ def workflow_versions(wf_id: str, user: User = Depends(identity.current_user), d
     identity.require_capability(user, 'user')
     wf, is_owner, pub = _readable_wf(db, wf_id, user)
     rows = list(db.scalars(select(WorkflowVersion).where(WorkflowVersion.workflow_id == wf.id).order_by(WorkflowVersion.version.desc()))) if is_owner else [pub]
-    return [_version_info(db, v) for v in rows]
+    return [_version_info(db, v, wf) for v in rows]
 
 
 @router.get('/workflows/{wf_id}/versions/{version}')
@@ -291,7 +311,7 @@ def workflow_version_get(wf_id: str, version: int, user: User = Depends(identity
     row = _version(db, wf.id, version) if is_owner else (pub if pub.version == version else None)
     if row is None:
         _not_found(db, user)
-    return {**_version_info(db, row), 'spec': row.spec}
+    return {**_version_info(db, row, wf), 'spec': row.spec}
 
 
 @router.post('/workflows/{wf_id}/publish')
@@ -299,15 +319,15 @@ def workflow_publish(wf_id: str, request: Request, user: User = Depends(identity
     identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
     wf = _owned_wf(db, wf_id, user, edit=True)
     row = _version(db, wf.id, wf.draft_version)
-    result = validate_spec(row.spec, db)
+    result = validate_spec(row.spec, db, user=user)
     if not result['ok']:
         audit(db, user.id, 'workflow.publish', 'denied', 'validation_failed', workflow_id=wf.id, workflow_version=row.version)
         raise HTTPException(422, {'code': 'validation_failed', 'validation': result})
-    if row.status != 'published':
-        row.spec = {**row.spec, 'status': 'published'}
-        row.status = 'published'  # immutable from now on; further edits create a new version
-    wf.published_version = row.version
-    wf.status = 'published'; wf.updated_at = now()
+    if R.needs_review(row.spec) and row.status != 'published':
+        # Iteration 3: shared audiences go through POST /workflows/{id}/submit (publish review); never self-published.
+        audit(db, user.id, 'workflow.publish', 'denied', 'review_required', workflow_id=wf.id, workflow_version=row.version)
+        raise HTTPException(409, 'review_required')
+    R.publish_version(db, wf, row)
     audit(db, user.id, 'workflow.publish', workflow_id=wf.id, workflow_version=row.version, commit=False)
     db.commit()
     return detail(db, wf, user)
@@ -410,7 +430,9 @@ async def run_create(wf_id: str, body: RunBody, request: Request, user: User = D
         if code.startswith('missing_input:'):
             raise HTTPException(422, {'code': 'missing_input', 'input': code.split(':', 1)[1]}) from None
         raise HTTPException(422, 'invalid_input') from None
-    return {'run_id': run.id, 'workflow_version': run.workflow_version}
+    db.expire_all()
+    fresh = db.get(type(run), run.id)
+    return {'run_id': run.id, 'workflow_version': run.workflow_version, 'status': fresh.status, 'error_code': fresh.error_code}
 
 
 @router.get('/workflow-runs')
@@ -511,22 +533,27 @@ async def run_evidence(run_id: str, label: str, user: User = Depends(identity.cu
 
 # ------------------------------------------------------------------ approvals
 @router.get('/approvals')
-def approvals_list(status: str | None = None, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
+def approvals_list(status: str | None = None, kind: Literal['run_action', 'publish_request'] | None = None,
+                   user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user')
-    return [A.serialize(db, a, user) for a in A.visible(db, user, status)]
+    gids = A._gids(db, user)
+    return [A.serialize(db, a, user, gids) for a in A.visible(db, user, status, kind)]
 
 
 @router.get('/approvals/count')
 def approvals_count(user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user')
-    return {'pending': sum(1 for a in A.visible(db, user, 'pending') if A.can_decide(a, user))}
+    gids = A._gids(db, user)
+    items = [a for a in A.visible(db, user, 'pending') if A.can_decide(a, user, db, gids)]
+    return {'pending': len(items), 'run_action': sum(1 for a in items if a.kind != 'publish_request'),
+            'publish_request': sum(1 for a in items if a.kind == 'publish_request')}
 
 
 @router.get('/approvals/{approval_id}')
 def approval_get(approval_id: str, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user')
     a = db.get(Approval, approval_id)
-    if a is None or not A.can_see(a, user):
+    if a is None or not A.can_see(a, user, db):
         _not_found(db, user, 'approvals')
     return A.serialize(db, a, user)
 
@@ -535,3 +562,96 @@ def approval_get(approval_id: str, user: User = Depends(identity.current_user), 
 async def approval_decide(approval_id: str, body: DecisionBody, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user'); identity.require_mutation(request, user, db)
     return await A.decide(db, approval_id, user, body.decision, body.reason)
+
+
+# ------------------------------------------------------------------ publish review + diffs (iteration 3)
+class AudienceBody(BaseModel):
+    kind: Literal['only_me', 'group', 'everyone']
+    group_id: str | None = Field(default=None, max_length=100)
+
+
+class SubmitBody(BaseModel):
+    audience: AudienceBody
+    note: str = Field(default='', max_length=1000)
+
+
+@router.get('/workflows/{wf_id}/review')
+def workflow_review(wf_id: str, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
+    identity.require_capability(user, 'builder')
+    wf = _owned_wf(db, wf_id, user, edit=True)
+    row = _version(db, wf.id, wf.draft_version)
+    return {'checklist': R.checklist(db, wf, row, user), 'reviewers': R.reviewers(db, exclude_user_id=user.id),
+            'live_version': wf.published_version, 'draft_version': wf.draft_version, 'review_state': wf.review_state or '',
+            'review_version': wf.review_version, 'audiences': R.audiences(db),
+            'audience': (row.spec.get('audience') or {}) if row else {}}
+
+
+@router.post('/workflows/{wf_id}/submit')
+def workflow_submit(wf_id: str, body: SubmitBody, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
+    identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
+    wf = _owned_wf(db, wf_id, user, edit=True)
+    if wf.status == 'archived':
+        raise HTTPException(409, 'workflow_archived')
+    try:
+        aud = R.audience_spec(db, body.audience.kind, body.audience.group_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    row = _version(db, wf.id, wf.draft_version)
+    if row.status == 'draft':
+        row.spec = _normalize({**row.spec, 'audience': aud}, wf, row.version, 'draft')
+    elif row.status == 'published' and wf.published_version == row.version and R.audience_label(db, row.spec) == R.audience_label(db, {'audience': aud})             and (row.spec.get('audience') or {}).get('kind') == aud['kind']:
+        raise HTTPException(409, 'already_live')
+    else:
+        row = _new_version(db, wf, {**copy.deepcopy(row.spec), 'audience': aud}, user, 'audience: ' + body.audience.kind, row.version)
+        db.flush()
+    result = validate_spec(row.spec, db, user=user)
+    if not result['ok']:
+        db.rollback()
+        audit(db, user.id, 'workflow.submit', 'denied', 'validation_failed', workflow_id=wf.id, workflow_version=row.version)
+        raise HTTPException(422, {'code': 'validation_failed', 'validation': result})
+    previous = R.pending_request(db, wf.id)
+    if previous is not None:
+        previous.status = 'cancelled'; previous.decided_at = now(); previous.reason = 'superseded'
+        old = _version(db, wf.id, previous.workflow_version)
+        if old is not None and old.status == 'in_review':
+            old.status = 'draft' if old.version == wf.draft_version else 'changes_requested'
+    if body.audience.kind == 'only_me':
+        R.publish_version(db, wf, row)
+        wf.review_state = ''; wf.review_version = None
+        audit(db, user.id, 'workflow.publish', 'allowed', 'only_me', workflow_id=wf.id, workflow_version=row.version,
+              details={'audience': 'only_me'}, commit=False)
+        db.commit()
+        return detail(db, wf, user)
+    group = R.D.reviewer_group(db)
+    approval = Approval(run_id=None, workflow_id=wf.id, workflow_version=row.version, node_id='', requester_id=user.id,
+                        approver_roles=['admin'], status='pending', kind='publish_request',
+                        title=f'Publish {wf.name} v{row.version}', approver_group_id=group.id if group else None,
+                        payload=R.request_payload(db, wf, row, aud, body.note, user))
+    db.add(approval)
+    row.status = 'in_review'  # the reviewed version is locked; further edits create a new version
+    wf.review_state = 'in_review'; wf.review_version = row.version; wf.updated_at = now()
+    db.flush()
+    audit(db, user.id, 'workflow.submit', 'allowed', 'in_review', workflow_id=wf.id, workflow_version=row.version,
+          details={'approval_id': approval.id, 'audience': body.audience.kind, 'reviewer_group_id': approval.approver_group_id}, commit=False)
+    db.commit()
+    return detail(db, wf, user)
+
+
+@router.get('/workflows/{wf_id}/versions/{version}/diff')
+def workflow_version_diff(wf_id: str, version: int, against: str = 'live', user: User = Depends(identity.current_user),
+                          db: DBSession = Depends(get_db)):
+    identity.require_capability(user, 'builder')
+    wf = _owned_wf(db, wf_id, user)
+    row = _version(db, wf.id, version)
+    if row is None:
+        _not_found(db, user)
+    if against == 'live':
+        base = _version(db, wf.id, wf.published_version) if wf.published_version else None
+    else:
+        try:
+            base = _version(db, wf.id, int(against))
+        except ValueError:
+            raise HTTPException(422, 'invalid_against') from None
+        if base is None:
+            _not_found(db, user)
+    return {**R.diff(base.spec if base else None, row.spec), 'version': version, 'against': base.version if base else None}

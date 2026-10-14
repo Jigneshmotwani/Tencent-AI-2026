@@ -1,204 +1,190 @@
-// W5 owns. Auditor view: chain integrity, structured + natural-language audit queries, run reconstruction.
-// Responses carry metadata, generated answers and resource references only; never source excerpts.
-import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { ApiError, api, date, safeError } from '../api'
-import { Badge, Button, Empty, JsonBlock, Markdown, Notice, StatusChip, money, providerName, safeLocalUrl } from '../studio/ui'
-import './audit.css'
+// Audit (reference screen): integrity badge + Verify, all events by default (paginated), NL ask with suggestion chips that
+// filters the table, decision filter, row sheet (question, per-document decisions, outcome, hash) and the "My runs" tab.
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { api, safeError } from '../api'
+import { hasCap, useMe } from '../shell/session'
+import { Icon } from '../ui/icons'
+import { Button, Dot, IconButton, Pill, Popover, Sheet, Spinner, Tabs, cx, fmtInt, fmtWhen, toast } from '../ui/kit'
+import MyRuns from './MyRuns'
 
-interface Verify { ok: boolean; count: number; head_hash?: string; broken_seq?: number | null; reason?: string }
-interface Meta { users: string[]; providers: string[]; operations: string[]; workflows: { id: string; name: string }[]; grafana: Record<string, string> }
-interface AuditQuery { actor?: string; provider?: string; container?: string; resource_id?: string; outcome?: 'allowed' | 'denied' | 'error'; workflow?: string; operation?: string; run_id?: string; last_days?: number; since?: string; until?: string; limit?: number; offset?: number }
-interface EventRow { seq: number; timestamp: string; actor: string | null; operation: string; provider: string | null; outcome: string; reason: string | null; container: string | null; resource_ids: string[]; decision: Record<string, string>; workflow_id: string | null; workflow_version: number | null; node_id: string | null; run_id: string | null; trace_id: string | null; trace_url: string; details: Record<string, unknown> }
-interface ResourceDecision { resource_id: string; provider: string | null; container: string | null; operation: string; decision: string; reason: string; node_id: string | null; seq: number; cited: boolean }
-interface RunView { run_id: string; kind: 'chat' | 'workflow'; actor: string; status: string; name: string; version: string | number | null; created_at: string; finished_at: string | null; model_alias: string | null; cost_usd: number | null; total_tokens: number | null; question: string; inputs: Record<string, unknown> | null; answer: string; trace_id: string | null; trace_url: string; resources: ResourceDecision[] }
-interface QueryResponse { query: AuditQuery; results: { total: number; limit: number; offset: number; events: EventRow[]; runs: RunView[] } }
-
-interface Filters { actor: string; provider: string; container: string; resource_id: string; outcome: string; workflow: string; operation: string; run_id: string; range: string; since: string; until: string; limit: string }
-const EMPTY: Filters = { actor: '', provider: '', container: '', resource_id: '', outcome: '', workflow: '', operation: '', run_id: '', range: '7', since: '', until: '', limit: '50' }
-const RANGES: [string, string][] = [['1', 'Last 24 hours'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['', 'All time'], ['custom', 'Custom range']]
-const LOCAL_ERRORS: Record<string, string> = {
-  nl_query_not_understood: 'The request could not be turned into a valid audit query. Rephrase it or use the filters.',
-  budget_exceeded: 'The model budget is exhausted, so the natural-language query could not run. Use the filters instead.',
-  model_not_allowed: 'The configured model is not allowed by policy. Use the filters instead.',
+export interface AuditRow {
+  seq: number; timestamp: string; actor: string; actor_name: string; actor_title: string; label: string; resource_label: string; resource_mono: boolean
+  hash: string; operation: string; provider: string | null; outcome: 'allowed' | 'denied' | 'error'; reason: string; container: string | null
+  resource_ids: string[]; decision: Record<string, string>; workflow_id: string | null; run_id: string | null; details: Record<string, unknown>
 }
-function message(error: unknown) { return error instanceof ApiError && LOCAL_ERRORS[error.code] ? LOCAL_ERRORS[error.code] : safeError(error) }
-function decisionTone(value: string) { return value === 'allowed' ? 'success' : value === 'denied' ? 'error' : value === 'error' ? 'warn' : undefined }
-function toLocalInput(iso?: string) { if (!iso) return ''; const d = new Date(iso); if (Number.isNaN(d.getTime())) return ''; const pad = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` }
+interface QueryResult { query: Record<string, unknown>; label: string; results: { total: number; limit: number; offset: number; events: AuditRow[] } }
+interface RunResource { resource_id: string; provider: string | null; container: string | null; operation: string; decision: string; reason: string; label?: string; container_label?: string }
+interface RunAudit { run_id: string; kind: 'chat' | 'workflow'; actor: string; status: string; name: string; question: string; inputs: Record<string, unknown> | null; answer: string; resources: RunResource[] }
+type Integrity = { state: 'checking' } | { state: 'ok'; count: number } | { state: 'broken'; seq: number | null; count: number } | { state: 'error' }
 
-function buildQuery(f: Filters, offset = 0): AuditQuery {
-  const q: AuditQuery = { limit: Math.min(Math.max(Number(f.limit) || 50, 1), 200), offset }
-  for (const key of ['actor', 'provider', 'container', 'resource_id', 'workflow', 'operation', 'run_id'] as const) { const v = f[key].trim(); if (v) q[key] = v }
-  if (f.outcome) q.outcome = f.outcome as AuditQuery['outcome']
-  if (f.range === 'custom') {
-    if (f.since) q.since = new Date(f.since).toISOString()
-    if (f.until) q.until = new Date(f.until).toISOString()
-  } else if (f.range) q.last_days = Number(f.range)
-  return q
-}
-
-function filtersFrom(q: AuditQuery): Filters {
-  const custom = !!(q.since || q.until)
-  return { actor: q.actor ?? '', provider: q.provider ?? '', container: q.container ?? '', resource_id: q.resource_id ?? '', outcome: q.outcome ?? '', workflow: q.workflow ?? '', operation: q.operation ?? '', run_id: q.run_id ?? '',
-    range: custom ? 'custom' : q.last_days ? String(q.last_days) : '', since: toLocalInput(q.since), until: toLocalInput(q.until), limit: String(q.limit ?? 50) }
-}
-
-function TraceLink({ url }: { url: string }) {
-  const href = safeLocalUrl(url)
-  return href ? <a className="text-button" href={href} target="_blank" rel="noopener noreferrer">Open trace in Grafana</a> : null
-}
-
-function Answer({ text }: { text: string }) {
-  if (!text) return <p className="muted small">No final answer was recorded for this run.</p>
-  if (text.trimStart().startsWith('{')) { try { return <JsonBlock value={JSON.parse(text)} /> } catch { /* not JSON: render as text */ } }
-  return <div className="gov-answer"><Markdown text={text} /></div>
-}
-
-function RunCard({ run }: { run: RunView }) {
-  const counts = run.resources.reduce<Record<string, number>>((acc, r) => { acc[r.decision] = (acc[r.decision] ?? 0) + 1; return acc }, {})
-  return <article className="gov-run">
-    <div className="gov-row spread">
-      <h3>{run.name || run.run_id} {run.version != null && <small className="muted">v{run.version}</small>}</h3>
-      <div className="gov-row"><Badge>{run.kind}</Badge><StatusChip status={run.status} /><TraceLink url={run.trace_url} /></div>
-    </div>
-    <div className="gov-meta">
-      <span>Invoker <strong>{run.actor}</strong></span><span>Started <strong>{date(run.created_at)}</strong></span>
-      <span>Model <strong>{run.model_alias || '—'}</strong></span><span>Tokens <strong>{run.total_tokens ?? '—'}</strong></span><span>Cost <strong>{money(run.cost_usd)}</strong></span>
-      <span className="mono">run {run.run_id}</span>
-    </div>
-    <div><div className="gov-label">Question / inputs</div><div className="gov-question">{run.inputs ? Object.entries(run.inputs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n') : run.question || '—'}</div></div>
-    <div><div className="gov-label">Final answer (generated text; source excerpts are never shown here)</div><Answer text={run.answer} /></div>
-    <div>
-      <div className="gov-label">Resources considered · {Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(' · ') || 'none recorded'}</div>
-      {run.resources.length > 0 && <div className="table-wrap"><table className="gov-table"><thead><tr><th>Decision</th><th>Provider</th><th>Container</th><th>Resource id</th><th>Operation</th><th>Node</th><th>Cited</th><th>Reason</th><th>Seq</th></tr></thead>
-        <tbody>{run.resources.map(r => <tr key={`${r.seq}-${r.resource_id}`}>
-          <td><Badge tone={decisionTone(r.decision)}>{r.decision}</Badge></td><td>{r.provider ? providerName(r.provider) : '—'}</td>
-          <td className="mono"><span className="gov-ellipsis" title={r.container ?? ''}>{r.container || '—'}</span></td>
-          <td className="mono"><span className="gov-ellipsis" title={r.resource_id}>{r.resource_id}</span></td>
-          <td className="mono">{r.operation}</td><td className="mono">{r.node_id || '—'}</td><td>{r.cited ? 'Yes' : ''}</td><td>{r.reason || ''}</td><td className="mono">{r.seq}</td>
-        </tr>)}</tbody></table></div>}
-    </div>
-  </article>
-}
-
-function EventsTable({ events, onRun }: { events: EventRow[]; onRun: (id: string) => void }) {
-  if (!events.length) return <Empty title="No audit events match">Widen the time range or clear a filter.</Empty>
-  return <div className="table-wrap"><table className="gov-table"><thead><tr><th>Seq</th><th>Time</th><th>Actor</th><th>Operation</th><th>Provider</th><th>Container</th><th>Resources</th><th>Outcome</th><th>Reason</th><th>Workflow · node</th><th>Run</th><th>Trace</th></tr></thead>
-    <tbody>{events.map(e => <tr key={e.seq}>
-      <td className="mono">{e.seq}</td><td>{date(e.timestamp)}</td><td>{e.actor || '—'}</td><td className="mono">{e.operation}</td><td>{e.provider ? providerName(e.provider) : '—'}</td>
-      <td className="mono"><span className="gov-ellipsis" title={e.container ?? ''}>{e.container || '—'}</span></td>
-      <td>{e.resource_ids.length ? <span className="gov-ellipsis mono" title={e.resource_ids.map(id => `${id}: ${e.decision[id] ?? e.outcome}`).join('\n')}>{e.resource_ids.length === 1 ? e.resource_ids[0] : `${e.resource_ids.length} resources`}</span> : '—'}</td>
-      <td><Badge tone={decisionTone(e.outcome)}>{e.outcome}</Badge></td><td>{e.reason || ''}</td>
-      <td className="mono">{e.workflow_id ? <span className="gov-ellipsis" title={e.workflow_id}>{e.workflow_id.slice(0, 8)}{e.workflow_version != null ? ` v${e.workflow_version}` : ''}{e.node_id ? ` · ${e.node_id}` : ''}</span> : '—'}</td>
-      <td>{e.run_id ? <button className="text-button" onClick={() => onRun(e.run_id!)} title={e.run_id}>Reconstruct</button> : '—'}</td>
-      <td>{safeLocalUrl(e.trace_url) ? <a className="text-button" href={safeLocalUrl(e.trace_url)} target="_blank" rel="noopener noreferrer">Trace</a> : '—'}</td>
-    </tr>)}</tbody></table></div>
-}
+const PER = 12
+const SUGGESTIONS = ['Who opened STR case files this week?', 'Denied access attempts today', 'What did operations ask about Acme?']
+const DECISION: Record<string, [string, '' | 'ok' | 'warn']> = { allowed: ['Allowed', 'ok'], denied: ['Denied', ''], error: ['Error', 'warn'] }
 
 export default function AuditPage() {
-  const [meta, setMeta] = useState<Meta | null>(null)
-  const [verify, setVerify] = useState<Verify | null>(null), [verifying, setVerifying] = useState(false), [verifiedAt, setVerifiedAt] = useState('')
-  const [filters, setFilters] = useState<Filters>(EMPTY)
-  const [nl, setNl] = useState(''), [nlQuery, setNlQuery] = useState<AuditQuery | null>(null)
-  const [response, setResponse] = useState<QueryResponse | null>(null), [mode, setMode] = useState<'structured' | 'nl'>('structured')
-  const [selected, setSelected] = useState<RunView | null>(null)
-  const [tab, setTab] = useState<'runs' | 'events'>('runs')
-  const [busy, setBusy] = useState(''), [error, setError] = useState('')
-  const set = (key: keyof Filters) => (event: { target: { value: string } }) => setFilters(current => ({ ...current, [key]: event.target.value }))
+  const me = useMe()
+  const [tab, setTab] = useState<'events' | 'runs'>('events')
+  const canRuns = hasCap(me, 'user')
+  return <section className="screen scr-audit">
+    <div className="page gut"><div className="wrap">
+      <div className="trow"><h1>Audit</h1>{tab === 'events' && <IntegrityBadge />}</div>
+      {canRuns && <Tabs className="pgtabs" label="Audit views" items={[['events', 'All events'], ['runs', 'My runs']]} value={tab} onChange={setTab} />}
+      {tab === 'events' ? <Events /> : <MyRuns />}
+    </div></div>
+  </section>
+}
 
-  const runStructured = useCallback(async (f: Filters, offset = 0) => {
-    setBusy('query'); setError('')
-    try { setResponse(await api<QueryResponse>('/audit/query', 'POST', buildQuery(f, offset))); setMode('structured') } catch (failure) { setError(message(failure)) } finally { setBusy('') }
+function IntegrityBadge() {
+  const [st, setSt] = useState<Integrity>({ state: 'checking' })
+  const verify = useCallback(async () => {
+    setSt({ state: 'checking' })
+    try {
+      const r = await api<{ ok: boolean; count: number; broken_seq?: number }>('/audit/verify')
+      setSt(r.ok ? { state: 'ok', count: r.count } : { state: 'broken', seq: r.broken_seq ?? null, count: r.count })
+    } catch { setSt({ state: 'error' }) }
   }, [])
-  useEffect(() => {
-    api<Meta>('/audit/meta').then(setMeta).catch(failure => setError(message(failure)))
-    void runStructured(EMPTY)
-  }, [runStructured])
-
-  const doVerify = async () => {
-    setVerifying(true); setError('')
-    try { setVerify(await api<Verify>('/audit/verify')); setVerifiedAt(new Date().toLocaleString()) } catch (failure) { setError(message(failure)) } finally { setVerifying(false) }
-  }
-  const submitFilters = (event: FormEvent) => { event.preventDefault(); setSelected(null); void runStructured(filters) }
-  const submitNl = async (event: FormEvent) => {
-    event.preventDefault(); if (nl.trim().length < 3) return
-    setBusy('nl'); setError(''); setSelected(null)
-    try { const result = await api<QueryResponse>('/audit/nl-query', 'POST', { text: nl.trim() }); setNlQuery(result.query); setResponse(result); setMode('nl') } catch (failure) { setError(message(failure)) } finally { setBusy('') }
-  }
-  const openRun = async (runId: string) => {
-    setBusy('run'); setError('')
-    try { setSelected(await api<RunView>(`/audit/runs/${encodeURIComponent(runId)}`)); window.scrollTo({ top: 0, behavior: 'smooth' }) } catch (failure) { setError(message(failure)) } finally { setBusy('') }
-  }
-  const page = (direction: 1 | -1) => {
-    if (!response) return
-    const offset = Math.max(0, response.results.offset + direction * response.results.limit)
-    const base = mode === 'nl' && nlQuery ? filtersFrom(nlQuery) : filters
-    if (mode === 'nl' && nlQuery) setFilters(base)
-    void runStructured(base, offset)
-  }
-  const grafana = meta?.grafana ?? {}
-  const results = response?.results
-
-  return <div className="content-stack">
-    {error && <Notice tone="error">{error}</Notice>}
-
-    <section className="card">
-      <div className="gov-card-head"><div><h2>Audit chain integrity</h2><p className="muted small">Every audit event is HMAC-SHA256 chained to the previous one and the table is append-only. Verification walks the whole chain in sequence order.</p></div>
-        <div className="gov-row">{(['usage', 'governance', 'runs'] as const).map(key => safeLocalUrl(grafana[key]) && <a key={key} className="button subtle" href={safeLocalUrl(grafana[key])} target="_blank" rel="noopener noreferrer">{{ usage: 'AI Usage & Cost', governance: 'Governance', runs: 'Workflow Runs' }[key]} in Grafana</a>)}</div></div>
-      <div className="gov-integrity">
-        <Button className="primary" onClick={() => void doVerify()} disabled={verifying}>{verifying ? 'Verifying…' : 'Verify integrity'}</Button>
-        {verify && (verify.ok
-          ? <Notice tone="success">Chain intact: <strong>{verify.count.toLocaleString()}</strong> events verified. Head <span className="mono">{verify.head_hash?.slice(0, 16)}…</span> <span className="muted">({verifiedAt})</span></Notice>
-          : <Notice tone="error">Chain broken at seq <strong>{verify.broken_seq ?? 'unknown'}</strong> ({(verify.reason ?? 'broken').replaceAll('_', ' ')}). {verify.count.toLocaleString()} events before it verified. <span className="muted">({verifiedAt})</span></Notice>)}
-      </div>
-    </section>
-
-    <section className="card gov-nl">
-      <div className="gov-card-head"><div><h2>Ask in plain language</h2><p className="muted small">The model only translates your request into a validated AuditQuery JSON object (allowlisted fields); code runs the query. It never writes SQL.</p></div></div>
-      <form onSubmit={event => void submitNl(event)} className="content-stack" style={{ gap: 10 }}>
-        <textarea value={nl} onChange={event => setNl(event.target.value)} maxLength={500} placeholder="e.g. everything operations accessed in the NSDEMO space in the last 30 days" aria-label="Natural-language audit question" />
-        <div className="gov-row"><Button className="primary" disabled={busy === 'nl' || nl.trim().length < 3}>{busy === 'nl' ? 'Translating…' : 'Translate and run'}</Button>
-          {nlQuery && <Button type="button" onClick={() => setFilters(filtersFrom(nlQuery))}>Copy into filters</Button>}</div>
-      </form>
-      {nlQuery && <div style={{ marginTop: 12 }}><div className="field-label">Generated AuditQuery (validated)</div><JsonBlock value={nlQuery} /></div>}
-    </section>
-
-    <section className="card">
-      <div className="gov-card-head"><div><h2>Filters</h2><p className="muted small">Exact match unless noted. Operation accepts a prefix wildcard such as <span className="mono">source.*</span>.</p></div></div>
-      <form onSubmit={submitFilters}>
-        <div className="gov-grid">
-          <label className="field"><span className="field-label">Actor</span><select value={filters.actor} onChange={set('actor')}><option value="">Anyone</option>{meta?.users.map(u => <option key={u} value={u}>{u}</option>)}</select></label>
-          <label className="field"><span className="field-label">Provider</span><select value={filters.provider} onChange={set('provider')}><option value="">Any</option>{meta?.providers.map(p => <option key={p} value={p}>{providerName(p)}</option>)}</select></label>
-          <label className="field"><span className="field-label">Outcome</span><select value={filters.outcome} onChange={set('outcome')}><option value="">Any</option><option value="allowed">Allowed</option><option value="denied">Denied</option><option value="error">Error</option></select></label>
-          <label className="field"><span className="field-label">Workflow</span><select value={filters.workflow} onChange={set('workflow')}><option value="">Any (incl. chat)</option>{meta?.workflows.map(w => <option key={w.id} value={w.id}>{w.name} · {w.id.slice(0, 6)}</option>)}</select></label>
-          <label className="field"><span className="field-label">Container (space, project, channel, folder)</span><input value={filters.container} onChange={set('container')} placeholder="e.g. NSDEMO" maxLength={200} /></label>
-          <label className="field"><span className="field-label">Resource id</span><input value={filters.resource_id} onChange={set('resource_id')} placeholder="page, file, issue or message id" maxLength={300} /></label>
-          <label className="field"><span className="field-label">Operation</span><input value={filters.operation} onChange={set('operation')} list="audit-operations" placeholder="e.g. source.*" maxLength={80} /><datalist id="audit-operations"><option value="source.*" />{meta?.operations.map(o => <option key={o} value={o} />)}</datalist></label>
-          <label className="field"><span className="field-label">Run id</span><input value={filters.run_id} onChange={set('run_id')} maxLength={64} /></label>
-          <label className="field"><span className="field-label">Time range</span><select value={filters.range} onChange={set('range')}>{RANGES.map(([v, l]) => <option key={l} value={v}>{l}</option>)}</select></label>
-          {filters.range === 'custom' && <>
-            <label className="field"><span className="field-label">From</span><input type="datetime-local" value={filters.since} onChange={set('since')} /></label>
-            <label className="field"><span className="field-label">Until</span><input type="datetime-local" value={filters.until} onChange={set('until')} /></label>
-          </>}
-          <label className="field"><span className="field-label">Page size</span><select value={filters.limit} onChange={set('limit')}>{['25', '50', '100', '200'].map(v => <option key={v}>{v}</option>)}</select></label>
-        </div>
-        <div className="gov-row" style={{ marginTop: 14 }}><Button className="primary" disabled={busy === 'query'}>{busy === 'query' ? 'Searching…' : 'Search audit log'}</Button><Button type="button" onClick={() => setFilters(EMPTY)}>Reset</Button></div>
-      </form>
-    </section>
-
-    {selected && <section className="card"><div className="gov-card-head"><div><h2>Run reconstruction</h2><p className="muted small">Question, every resource decision recorded for the run, and the final answer. This view is itself audited.</p></div><Button onClick={() => setSelected(null)}>Close</Button></div><RunCard run={selected} /></section>}
-
-    <section className="card">
-      <div className="gov-card-head"><div><h2>Results</h2>{results && <p className="muted small">{results.total.toLocaleString()} matching events · showing {results.total ? results.offset + 1 : 0}–{results.offset + results.events.length} · {mode === 'nl' ? 'from natural-language query' : 'from filters'} · {results.runs.length} run{results.runs.length === 1 ? '' : 's'} reconstructed</p>}</div>
-        {results && <div className="gov-row"><Button onClick={() => page(-1)} disabled={busy === 'query' || results.offset === 0}>Previous</Button><Button onClick={() => page(1)} disabled={busy === 'query' || results.offset + results.events.length >= results.total}>Next</Button></div>}</div>
-      {!results ? <p className="muted">{busy ? 'Loading…' : 'Run a query to see results.'}</p> : <>
-        <div className="gov-tabs" role="tablist">
-          <button role="tab" aria-selected={tab === 'runs'} className={tab === 'runs' ? 'active' : ''} onClick={() => setTab('runs')}>Runs ({results.runs.length})</button>
-          <button role="tab" aria-selected={tab === 'events'} className={tab === 'events' ? 'active' : ''} onClick={() => setTab('events')}>Events ({results.events.length})</button>
-        </div>
-        {tab === 'runs'
-          ? (results.runs.length ? <div className="content-stack" style={{ gap: 14 }}>{results.runs.map(run => <RunCard key={run.run_id} run={run} />)}</div> : <Empty title="No runs in these events">The matching events are not tied to a chat or workflow run. See the Events tab.</Empty>)
-          : <EventsTable events={results.events} onRun={id => void openRun(id)} />}
-      </>}
-    </section>
+  useEffect(() => { void verify() }, [verify])
+  if (st.state === 'checking') return <div className="integ" aria-live="polite"><Spinner /><b>Verifying chain…</b></div>
+  return <div className={cx('integ', st.state !== 'ok' && 'broken')} aria-live="polite">
+    <Dot tone={st.state === 'ok' ? 'green' : 'red'} />
+    {st.state === 'ok' && <b>Chain verified<span className="iv-text"> · {fmtInt(st.count)} events</span></b>}
+    {st.state === 'broken' && <b>Chain broken{st.seq != null && <> at <span className="mono">#{st.seq}</span></>}</b>}
+    {st.state === 'error' && <b>Verification unavailable</b>}
+    <Button variant="text" size="sm" onClick={() => void verify()}>Verify</Button>
   </div>
 }
+
+function Events() {
+  const [text, setText] = useState('')
+  const [filter, setFilter] = useState<{ query: Record<string, unknown>; label: string } | null>(null)
+  const [decision, setDecision] = useState<'all' | 'allowed' | 'denied'>('all')
+  const [page, setPage] = useState(0)
+  const [rows, setRows] = useState<AuditRow[] | null>(null)
+  const [total, setTotal] = useState(0)
+  const [allTotal, setAllTotal] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [open, setOpen] = useState<AuditRow | null>(null)
+  const [fOpen, setFOpen] = useState(false)
+  const fBtn = useRef<HTMLButtonElement>(null)
+
+  const load = useCallback(async () => {
+    const query = { ...(filter?.query ?? {}), ...(decision !== 'all' ? { outcome: decision } : {}), limit: PER, offset: page * PER }
+    try {
+      const r = await api<QueryResult>('/audit/query', 'POST', query)
+      setRows(r.results.events); setTotal(r.results.total); setError('')
+      if (!filter && decision === 'all') setAllTotal(r.results.total)
+    } catch (e) { setError(safeError(e)); setRows([]) }
+  }, [filter, decision, page])
+  useEffect(() => { void load() }, [load])
+
+  const ask = async (q: string) => {
+    const t = q.trim()
+    if (!t) { setFilter(null); setPage(0); return }
+    setText(t); setBusy(true); setError('')
+    try {
+      const r = await api<QueryResult>('/audit/nl-query', 'POST', { text: t })
+      const { limit: _l, offset: _o, ...query } = r.query
+      setFilter({ query, label: r.label }); setPage(0)
+    } catch (e) { toast(safeError(e) === 'Request could not complete (nl_query_not_understood).' ? 'Try asking about people, sources, decisions or a time window.' : safeError(e)) }
+    finally { setBusy(false) }
+  }
+  const clear = () => { setFilter(null); setText(''); setPage(0) }
+  const narrowed = !!filter || decision !== 'all'
+  const pages = Math.max(1, Math.ceil(total / PER))
+  const countText = rows == null ? '' : total === 0 ? '0 events' : narrowed
+    ? `${fmtInt(total)} of ${fmtInt(allTotal ?? total)}`
+    : `${fmtInt(page * PER + 1)}–${fmtInt(Math.min(total, (page + 1) * PER))} of ${fmtInt(total)}`
+
+  return <>
+    <form className="hero" onSubmit={(e: FormEvent) => { e.preventDefault(); void ask(text) }}>
+      <span className="ic"><Icon name="search" /></span>
+      <input value={text} onChange={e => setText(e.target.value)} placeholder="Ask about activity…" aria-label="Ask about activity" autoComplete="off" />
+      <Button variant="primary" size="sm" type="submit" disabled={busy}>{busy ? <><Spinner />Asking…</> : 'Ask'}</Button>
+    </form>
+    <div className="sugs">{SUGGESTIONS.map(s => <button key={s} type="button" className="sug" onClick={() => { setText(s); void ask(s) }}>{s}</button>)}</div>
+    <div className="meta-row">
+      <div className="meta-l"><p>{countText}</p>
+        {filter && <span className="fchip">Filtered: {filter.label}<button type="button" aria-label="Clear filter" onClick={clear}><Icon name="x" small /></button></span>}</div>
+      <div className="meta-r">
+        <Button ref={fBtn} size="sm" icon="filter" aria-haspopup="true" aria-expanded={fOpen} onClick={() => setFOpen(o => !o)}>Filters</Button>
+        {pages > 1 && <div className="pgn">
+          <IconButton icon="chevl" label="Previous page" disabled={page <= 0} onClick={() => setPage(p => p - 1)} />
+          <IconButton icon="chevr" label="Next page" disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)} />
+        </div>}
+        <Popover open={fOpen} onClose={() => setFOpen(false)} anchor={fBtn}>
+          <div className="lbl2">Decision</div>
+          {(['all', 'allowed', 'denied'] as const).map(d => <button key={d} type="button" aria-checked={decision === d} role="menuitemradio"
+            onClick={() => { setDecision(d); setPage(0); setFOpen(false) }}>{d === 'all' ? 'All' : DECISION[d][0]}</button>)}
+        </Popover>
+      </div>
+    </div>
+    {error && <p className="err-t" role="alert">{error}</p>}
+    <div className="tbl au-tbl"><table>
+      <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Resource</th><th>Decision</th></tr></thead>
+      <tbody>
+        {rows?.map(r => <tr key={r.seq} tabIndex={0} onClick={() => setOpen(r)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(r) } }}>
+          <td style={{ whiteSpace: 'nowrap' }}>{fmtWhen(r.timestamp)}</td>
+          <td>{r.actor_name}{r.actor_title && <span className="sub">{r.actor_title}</span>}</td>
+          <td>{r.label}</td>
+          <td className={r.resource_mono ? 'mono' : undefined} title={r.resource_label}>{r.resource_label || <span className="muted">—</span>}</td>
+          <td><Pill tone={DECISION[r.outcome]?.[1] ?? ''}>{DECISION[r.outcome]?.[0] ?? r.outcome}</Pill></td>
+        </tr>)}
+        {rows && !rows.length && <tr><td colSpan={5} className="empty-r">No events match. Clear the filter to see everything.</td></tr>}
+      </tbody>
+    </table></div>
+    <EventSheet row={open} onClose={() => setOpen(null)} />
+  </>
+}
+
+const humanKey = (k: string) => k.split('_').map((w, i) => w.toLowerCase() === 'id' ? 'ID' : i === 0 ? w[0].toUpperCase() + w.slice(1) : w).join(' ')
+function inputsText(inputs: Record<string, unknown>) {
+  return Object.entries(inputs).map(([k, v]) => `${humanKey(k)} ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' · ')
+}
+const SOURCE_OPS = new Set(['source.read', 'source.citation_read'])
+
+function EventSheet({ row, onClose }: { row: AuditRow | null; onClose: () => void }) {
+  const [run, setRun] = useState<RunAudit | null>(null)
+  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
+  useEffect(() => {
+    setRun(null)
+    if (!row?.run_id) { setState('idle'); return }
+    setState('loading')
+    api<RunAudit>('/audit/runs/' + encodeURIComponent(row.run_id)).then(r => { setRun(r); setState('ready') }).catch(() => setState('unavailable'))
+  }, [row])
+  if (!row) return null
+  const docs: RunResource[] = []
+  const seen = new Set<string>()
+  for (const r of run?.resources ?? []) {
+    if (!SOURCE_OPS.has(r.operation) || seen.has(r.resource_id)) continue
+    seen.add(r.resource_id); docs.push(r)
+  }
+  if (!run && row.resource_ids.length && SOURCE_OPS.has(row.operation)) {
+    for (const id of row.resource_ids) docs.push({ resource_id: id, provider: row.provider, container: row.container, operation: row.operation, decision: row.decision[id] ?? row.outcome, reason: row.reason, label: row.resource_label })
+  }
+  const qLabel = run?.kind === 'workflow' ? 'Run input' : 'Question asked'
+  const question = run ? (run.kind === 'workflow' && run.inputs ? inputsText(run.inputs) : run.question) : ''
+  return <Sheet open onClose={onClose} title={row.label} label="Event detail">
+    <p style={{ margin: '0 0 20px', color: 'var(--ink2)', fontSize: 13 }}>{row.actor_name}{row.actor_title && ` · ${row.actor_title}`} · {fmtWhen(row.timestamp)}</p>
+    {state === 'loading' && <p className="dd-m"><Spinner /> Loading the run record…</p>}
+    {question && <><h3 className="sec-t">{qLabel}</h3><div className="q">{question}</div></>}
+    {docs.length > 0 && <><h3 className="sec-t">Documents retrieved</h3><div className="docs">{docs.map(d =>
+      <div className="doc" key={d.resource_id}><span style={{ minWidth: 0 }}>{d.label ?? d.resource_id}
+        {(d.container_label || d.provider) && <span style={{ display: 'block', fontSize: 12, color: 'var(--ink2)' }}>{[providerName(d.provider), d.container_label].filter(Boolean).join(' · ')}</span>}</span>
+        <Pill tone={d.decision === 'allowed' ? 'ok' : ''}>{d.decision === 'allowed' ? 'Allowed' : 'Denied'}</Pill></div>)}</div></>}
+    <h3 className="sec-t">Outcome</h3>
+    <p style={{ margin: '0 0 20px', color: 'var(--ink2)', whiteSpace: 'pre-line' }}>{run?.answer ? clip(run.answer, 700) : outcomeText(row, run)}</p>
+    {!run && <><h3 className="sec-t">Details</h3><div className="q mono" style={{ fontSize: 12 }}>{row.operation} · {row.reason}</div></>}
+    <h3 className="sec-t">Event hash</h3><span className="hash mono" title={row.hash}>{row.hash ? row.hash.slice(0, 8) + '…' + row.hash.slice(-6) : '—'}</span>
+  </Sheet>
+}
+
+const providerName = (p: string | null) => p ? ({ drive: 'Drive', confluence: 'Confluence', jira: 'Jira', slack: 'Slack', mcp: 'MCP' } as Record<string, string>)[p] ?? p : ''
+const clip = (s: string, n: number) => s.length > n ? s.slice(0, n).trimEnd() + '…' : s
+function outcomeText(row: AuditRow, run: RunAudit | null) {
+  if (run) return run.status === 'completed' ? 'Completed.' : `Run ${run.status.replace(/_/g, ' ')}.`
+  if (row.outcome === 'allowed') return 'Allowed and recorded.'
+  if (row.outcome === 'denied') return 'Denied. The attempt was logged.'
+  return 'Failed. The error was logged.'
+}
+

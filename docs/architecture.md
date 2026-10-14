@@ -1,4 +1,4 @@
-# Architecture (iteration 2)
+# Architecture (iteration 3)
 
 Browser (React/TypeScript, React Flow Studio) → Vite `/api` proxy → local FastAPI (single process) → per-user authorization (`connections.access_context`) → source-native Drive / Confluence / Jira / Slack APIs with the **invoking user's delegated token** → fresh, bounded evidence → workflow engine or the fixed chat runner → guardrails → local LiteLLM gateway → configured inference provider. MCP tools (local synthetic `kyb-registry` over stdio, or registered HTTP servers) are called by the engine through the MCP registry. PostgreSQL holds application records and the hash-chained audit trail; a separate LiteLLM database holds gateway accounting and virtual keys. Traces and metrics flow app/LiteLLM → OTel Collector (allowlist redaction) → Tempo / Prometheus → Grafana, which also reads metadata views through a read-only role.
 
@@ -82,3 +82,21 @@ Retrieval is query-time and federated: no index, no source cache. Freshness is b
 ## Local runtime
 
 `./scripts/start.sh --services compose` starts PostgreSQL, OTel Collector, Tempo, Prometheus and Grafana in Docker (loopback ports) and supervises LiteLLM, the API, the HTTPS OAuth callback shim (self-signed, for Slack's HTTPS redirect requirement) and Vite locally. Migrations are versioned (`backend/app/migrations.py`) and run as the database owner; the API runs as the runtime role. The native profile (no Docker) keeps the iteration 1 local OTLP receiver and has no Grafana.
+
+## Iteration 3 additions
+
+**UI.** One React app shell (dark sidebar, History API router) with a small in-repo kit (`frontend/src/ui`: tokens, prototype CSS classes, components, Lucide icons, self-hosted fonts). Each page is a lazy route (`workspace`, `studio`, `approvals`, `tools`, `audit`, `budgets`, `policies`, `users`, `connections`, `settings`).
+
+**Groups and roles.** `groups` / `group_members` scope agent audiences, run approvers (`human.approval.approver_group`), the publish reviewer group (`publish_reviewer_group`, default *Compliance leads*), tool allowlists (stored; enforcement is P2) and budget scopes. Roles stay additive capabilities (admin ⊇ builder ⊇ user; auditor separate). Neither ever widens source access: retrieval and writes always use the invoker's delegated token, authorized in code.
+
+**Page access.** A role × page matrix in `platform_policies['page_access']` (defaults and locked cells from the approved design) drives the navigation (`/auth/me.pages`) and is enforced by API middleware per route family (`403 page_forbidden`). Workspace routes (chat, catalog, own runs, evidence) and OAuth callbacks are not page-gated; the cells that would lock admins out are locked.
+
+**Publish review.** `draft → in_review → published | changes_requested` (+ suspended, archived). *Only me* publishes immediately; a group or *everyone* creates a `publish_request` approval carrying the diff against live, the latest test run, sources/tools, audience and a server-computed checklist (test passed, writes behind approval, budget set, policy-allowed). Only admins or reviewer-group members other than the requester decide; approval publishes that exact version immutably (`workflow.publish`). Users keep running the live version until then.
+
+**Run debug.** Each node persists a redacted rendered input and safe log lines (tool calls, retrieval counts, guardrail findings, router decision, model usage) next to its persistable output. `GET /api/workflow-runs/{id}/debug` serves them to the invoker only; evidence titles come from a fresh read with the invoker's current identity. Retry-from-step re-runs a failed node with persisted upstream outputs, re-reading evidence references with the invoker's current token.
+
+**Models and budgets.** `model_configs` (env model + admin models registered in LiteLLM's DB; keys encrypted, never returned); the gateway refuses disabled models. `budget_limits` per org/group/workflow/user, checked at run start (`blocked_by_budget`), plus the existing per-run caps and LiteLLM virtual keys.
+
+**Demo switcher.** `DEMO_MODE=true` and loopback only: ends the session and creates a real session for a seeded demo user (`session.demo_switch` audited).
+
+**Audit labels.** `platform_policies['audit_labels']` maps container/resource ids to admin-configured labels and named topics (e.g. "STR case files"); the NL audit query may filter by topic. Labels are configuration, not source titles; titles and excerpts are still never stored.

@@ -1,0 +1,4 @@
+/* Admin pages: small alignment fixes for controls inside table cells. */
+.tbl td .switch,.tbl td .cbx{vertical-align:middle}
+.tbl td{line-height:20px}
+.crd .switch:disabled,.crd .select:disabled,.crd .tg:disabled{opacity:.6;cursor:default}

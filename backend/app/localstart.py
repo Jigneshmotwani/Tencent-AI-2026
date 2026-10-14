@@ -131,7 +131,7 @@ def main():
         run([sys.executable,'-m','backend.app.bootstrap'],env=env)
         config={'model_list':[], 'general_settings':{'master_key':'os.environ/LITELLM_MASTER_KEY',
             'database_url':'os.environ/LITELLM_DATABASE_URL','disable_error_logs':True,
-            'store_prompts_in_spend_logs':False},
+            'store_prompts_in_spend_logs':False,'store_model_in_db':True},
             'litellm_settings':{'telemetry':False,'set_verbose':False,'turn_off_message_logging':True,
                 'num_retries':0,'request_timeout':75},'router_settings':{'num_retries':0}}
         # LiteLLM's open-source OTel callback (messages are not logged: turn_off_message_logging). Prometheus is Enterprise-only.
@@ -167,7 +167,7 @@ def main():
             childenv=env.copy()
             if name=='litellm':
                 childenv['DATABASE_URL']=env['LITELLM_DATABASE_URL']
-                childenv.update({'OTEL_EXPORTER':'otlp_http','OTEL_SERVICE_NAME':'litellm'})
+                childenv.update({'OTEL_EXPORTER':'otlp_http','OTEL_SERVICE_NAME':'litellm','STORE_MODEL_IN_DB':'True'})
             children.append((name,subprocess.Popen(command,env=childenv,cwd=ROOT/'frontend' if name=='frontend' else ROOT,stdout=log,stderr=log)))
         print(f"Starting at {values['APP_ORIGIN']}. API: {values['API_ORIGIN']}/api/health",flush=True)
         print('Accounts: .local/demo-accounts.txt; safe local logs: .local/*.log. Ctrl-C stops native services.',flush=True)

@@ -9,13 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
 from .. import identity
-from ..db import AuditEvent, PlatformPolicy, User, Workflow, engine, get_db
+from datetime import timedelta
+
+from ..db import AuditEvent, PlatformPolicy, User, Workflow, engine, get_db, now
 from ..gateway import ModelError
 from ..governance import budgets, policies
 from ..governance.links import DASHBOARDS, grafana_dashboard_url
 from ..telemetry import audit, trace_id, tracer
 from . import chain
-from .query import AuditQuery, execute, reconstruct, translate
+from .query import AuditQuery, describe, execute, reconstruct, translate
 
 router = APIRouter(tags=['audit'])
 
@@ -32,8 +34,13 @@ def audit_verify(user: User = Depends(identity.current_user), db: DBSession = De
     with tracer.start_as_current_span('audit.verify'):
         with engine.connect() as conn:
             result = chain.check_anchor(conn, chain.verify(conn))
-        audit(db, user.id, 'audit.verify', 'allowed' if result['ok'] else 'error', 'chain_ok' if result['ok'] else result.get('reason', 'broken'),
-              details={k: result.get(k) for k in ('ok', 'count', 'broken_seq', 'reason') if k in result})
+        details = {k: result.get(k) for k in ('ok', 'count', 'broken_seq', 'reason') if k in result}
+        recent = db.scalar(select(AuditEvent).where(AuditEvent.actor_id == user.id, AuditEvent.operation == 'audit.verify',
+                                                    AuditEvent.timestamp >= now() - timedelta(minutes=10)).order_by(AuditEvent.seq.desc()).limit(1))
+        # A repeat check with the same result within 10 minutes is already on record (page loads verify automatically).
+        if recent is None or (recent.details or {}).get('ok') != details.get('ok') or (recent.details or {}).get('broken_seq') != details.get('broken_seq'):
+            audit(db, user.id, 'audit.verify', 'allowed' if result['ok'] else 'error', 'chain_ok' if result['ok'] else result.get('reason', 'broken'),
+                  details=details)
     return result
 
 
@@ -50,16 +57,24 @@ def audit_meta(user: User = Depends(identity.current_user), db: DBSession = Depe
 
 def _run_query(db, user, q: AuditQuery, mode: str) -> dict:
     with tracer.start_as_current_span('audit.query'):
-        result = execute(db, q)
-        audit(db, user.id, 'audit.query', 'allowed', mode, details={'mode': mode, 'query': q.model_dump(mode='json', exclude_none=True),
-              'result_count': result['total'], 'runs_viewed': [r['run_id'] for r in result['runs']]})
+        try:
+            result = execute(db, q)
+        except ValueError:
+            raise HTTPException(422, 'nl_query_not_understood') from None
+        details = {'mode': mode, 'query': q.model_dump(mode='json', exclude_none=True), 'result_count': result['total'],
+                   'runs_viewed': [r['run_id'] for r in result['runs']]}
+        # Re-viewing the same page (e.g. a refresh) within 10 minutes is already on record; avoid flooding the log.
+        recent = db.scalar(select(AuditEvent).where(AuditEvent.actor_id == user.id, AuditEvent.operation == 'audit.query',
+                                                    AuditEvent.timestamp >= now() - timedelta(minutes=10)).order_by(AuditEvent.seq.desc()).limit(1))
+        if recent is None or (recent.details or {}).get('query') != details['query'] or set((recent.details or {}).get('runs_viewed') or []) != set(details['runs_viewed']):
+            audit(db, user.id, 'audit.query', 'allowed', mode, details=details)
     return result
 
 
 @router.post('/audit/query')
 def audit_query(body: AuditQuery, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     _auditor(user); identity.require_mutation(request, user, db)
-    return {'query': body.model_dump(mode='json', exclude_none=True), 'results': _run_query(db, user, body, 'structured')}
+    return {'query': body.model_dump(mode='json', exclude_none=True), 'label': describe(db, body), 'results': _run_query(db, user, body, 'structured')}
 
 
 class NLQuery(BaseModel):
@@ -79,7 +94,7 @@ async def audit_nl_query(body: NLQuery, request: Request, user: User = Depends(i
         except ValueError as exc:
             audit(db, user.id, 'audit.query', 'error', str(exc)[:40], details={'mode': 'nl'})
             raise HTTPException(422, 'nl_query_not_understood')
-    return {'query': q.model_dump(mode='json', exclude_none=True), 'results': _run_query(db, user, q, 'nl')}
+    return {'query': q.model_dump(mode='json', exclude_none=True), 'label': describe(db, q), 'results': _run_query(db, user, q, 'nl')}
 
 
 @router.get('/audit/runs/{run_id}')
@@ -87,6 +102,14 @@ def audit_run(run_id: str, user: User = Depends(identity.current_user), db: DBSe
     """Reconstruct one run (question, per-resource decisions, answer). Audited as audit.view."""
     _auditor(user)
     runs = reconstruct(db, [run_id])
+    from .labels import JIRA_KEY, PROVIDER, load_labels
+    labels = load_labels(db)
+    for run in runs:
+        for res in run['resources']:
+            rid = str(res['resource_id'])
+            prov = PROVIDER.get(res.get('provider') or '', res.get('provider') or '')
+            res['label'] = labels['resources'].get(rid) or (rid if JIRA_KEY.match(rid) else f'{prov} document' if prov else rid[:40])
+            res['container_label'] = labels['containers'].get(res.get('container') or '', res.get('container') or '')
     audit(db, user.id, 'audit.view', 'allowed' if runs else 'denied', 'run_viewed' if runs else 'not_found', run_id=run_id if runs else None,
           details={'viewed_run_id': run_id})
     if not runs:

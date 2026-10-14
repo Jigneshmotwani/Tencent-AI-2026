@@ -102,7 +102,8 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
     _precheck(db, user, sum(len(m['content']) for m in messages))
     usage = {'calls': 0, 'total_tokens': 0, 'cost_usd': 0.0}
     best = None
-    for attempt in range(2):
+    attempts = 3 if mode == 'create' else 2
+    for attempt in range(attempts):
         completion = await _model(user, wf_id, wf_name, messages)
         usage['calls'] += 1
         usage['total_tokens'] += int((completion.usage or {}).get('total_tokens') or 0)
@@ -118,14 +119,16 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
         validation = core.validate(preview, db, ctx)
         result = {'explanation': str(data.get('explanation') or '').strip()[:2000], 'operations': ops, 'preview_spec': preview,
                   'warnings': warnings, 'unsupported': unsupported, 'validation': validation, 'attempts': attempt + 1}
-        score = len(validation['errors']) + (5 if parse_error else 0)
+        score = len(validation['errors']) + (100 if parse_error or (mode == 'create' and not ops) else 0)  # an unparseable or empty reply is never 'best'
         if best is None or score <= best[0]:
             best = (score, result)
-        if score == 0 or attempt == 1:
+        if score == 0 or attempt == attempts - 1:
             break
+        if not parse_error and mode == 'create' and not ops:
+            parse_error = 'No valid operations were returned; build the complete workflow.'
         problems = ([parse_error] if parse_error else []) + [f"- {e['code']}: {e['message']}" + (f" (node {e['node_id']})" if e.get('node_id') else '')
                                                              for e in validation['errors'][:15]] + [f'- {w}' for w in warnings[:10]]
-        messages = messages + [{'role': 'assistant', 'content': completion.text[:6000]},
+        messages = messages + [{'role': 'assistant', 'content': completion.text[:12000]},
                                {'role': 'user', 'content': 'Applying your operations to the ORIGINAL spec produced these problems:\n' + '\n'.join(problems) +
                                 '\nReturn the corrected, complete JSON object (all operations, against the original CURRENT SPEC). JSON only.'}]
     result = best[1]
@@ -149,7 +152,7 @@ async def copilot_create(body: CreateIn, request: Request, user: User = Depends(
     from ..config import settings
     base = WorkflowSpec(name='New workflow').model_dump()
     base['policies']['model_alias'] = settings().model_alias
-    base['audience'] = {'roles': ['user'], 'users': []}  # same default as the engine's POST /workflows
+    base['audience'] = {'kind': 'only_me', 'groups': [], 'roles': [], 'users': []}  # the audience is chosen at "Submit for review"
     base['nodes'] = [{'id': 'trigger', 'type': 'trigger.manual', 'label': 'Start', 'config': {}, 'position': {'x': 40, 'y': 40}}]
     started = time.monotonic()
     result = await _propose(db, user, '', 'New workflow', base, body.description, [], 'create')

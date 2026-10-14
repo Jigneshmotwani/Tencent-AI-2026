@@ -1,22 +1,67 @@
-// Spec helpers for the Studio editor: categories, ids, defaults, dagre layout.
+// Spec helpers for the Studio editor: node categories and subtitles, ids, defaults, the Add-step palette and the
+// vertical (dagre TB) auto-layout that matches the prototype's branch layout.
 import dagre from '@dagrejs/dagre'
-import type { NodeTypeDef, StudioRegistry, WfNode, WorkflowSpec } from '../contracts'
+import type { NodeTypeDef, StudioRegistry, WfEdge, WfNode, WorkflowSpec } from '../contracts'
+import { type Cat, nodeCat } from '../ui/kit'
 
-export const CATEGORY_ORDER = ['trigger', 'knowledge', 'ai', 'tool', 'logic', 'guardrail', 'governance', 'output']
-export const CATEGORY: Record<string, { label: string; color: string; glyph: string }> = {
-  trigger: { label: 'Triggers', color: '#3c6e9f', glyph: '▶' },
-  knowledge: { label: 'Knowledge', color: '#2f7d5b', glyph: '◎' },
-  ai: { label: 'AI', color: '#7a4fb0', glyph: '✦' },
-  tool: { label: 'Tools', color: '#b0672a', glyph: '◆' },
-  logic: { label: 'Logic', color: '#5c6670', glyph: '⑂' },
-  guardrail: { label: 'Guardrails', color: '#a8433b', glyph: '◈' },
-  governance: { label: 'Governance', color: '#a07a12', glyph: '✓' },
-  output: { label: 'Output', color: '#166578', glyph: '■' },
-  mcp: { label: 'MCP tools', color: '#b0672a', glyph: '◆' },
+export const NODE_W = 240, NODE_H = 56, PITCH = 88, BRANCH_EXTRA = 24
+
+export const SOURCE_LABEL: Record<string, string> = { confluence: 'Confluence', drive: 'Drive', jira: 'Jira', slack: 'Slack' }
+const PII_LABEL: Record<string, string> = { nric: 'NRIC', uen: 'UEN', iban: 'account no.', card: 'card no.', phone: 'phone', email: 'email' }
+const JIRA_LABEL: Record<string, string> = {
+  'jira.create_issue': 'Create Jira issue', 'jira.comment': 'Comment on Jira issue', 'jira.transition': 'Move Jira issue',
+  'jira.get_issue': 'Get Jira issue', 'jira.search': 'Search Jira', 'slack.draft': 'Draft Slack message', 'slack.post': 'Post to Slack',
 }
-export function categoryOf(def: NodeTypeDef | undefined) { return CATEGORY[def?.category ?? ''] ?? { label: def?.category ?? 'Other', color: '#5c6670', glyph: '●' } }
 
-export const NODE_W = 230, NODE_H = 86
+export const catOf = (type: string): Cat => nodeCat(type)
+/** "low_or_medium" → "Low or medium". */
+export const humanCase = (value: string) => { const s = value.replace(/[_-]+/g, ' ').trim(); return s ? s[0].toUpperCase() + s.slice(1) : s }
+const str = (v: unknown) => (typeof v === 'string' ? v : '')
+const stripTemplates = (s: string) => s.replace(/\{\{[^}]*\}\}/g, '…').replace(/\s+/g, ' ').trim()
+
+/** Second line of a node card, derived from its real config. */
+export function nodeSubtitle(node: WfNode, spec: WorkflowSpec, groupName?: (id: string) => string | undefined): string {
+  const c = node.config ?? {}
+  switch (node.type) {
+    case 'trigger.manual': return spec.inputs.map(i => i.name).join(', ') || 'Manual start'
+    case 'trigger.chat': return 'Chat message'
+    case 'tool.mcp': return str(c.server) || 'MCP tool'
+    case 'knowledge.retrieve': {
+      const src = Array.isArray(c.sources) ? c.sources as string[] : spec.policies?.allowed_sources ?? []
+      return src.map(s => SOURCE_LABEL[s] ?? s).join(' · ') || 'Knowledge'
+    }
+    case 'guardrail.input': {
+      const pii = Array.isArray(c.pii) ? c.pii as string[] : ['nric', 'iban', 'card', 'phone', 'email']
+      return pii.map(p => PII_LABEL[p] ?? p).join(', ') || 'Injection screen'
+    }
+    case 'guardrail.output': return c.grounding === false ? 'Checks the output' : 'Every claim cites a source'
+    case 'llm.generate': {
+      const first = stripTemplates(str(c.prompt).split('\n').find(l => l.trim()) ?? '')
+      return first || (c.output_schema ? 'Structured output' : 'Plain text')
+    }
+    case 'agent': return stripTemplates(str(c.goal).split('\n')[0] ?? '') || 'Autonomous agent'
+    case 'logic.router': {
+      const cases = routerHandles(node).map(humanCase)
+      return cases.length > 1 ? cases.slice(0, -1).join(', ') + ', or ' + cases[cases.length - 1].toLowerCase() : cases[0] ?? 'Branch'
+    }
+    case 'human.approval': {
+      const g = str(c.approver_group)
+      if (g) return `${groupName?.(g) ?? 'Approver'} group`
+      const roles = Array.isArray(c.approver_roles) ? c.approver_roles as string[] : ['builder']
+      return roles.includes('admin') && !roles.includes('builder') ? 'Admins' : 'Builders'
+    }
+    case 'tool.builtin': {
+      const tool = str(c.tool), p = (c.params ?? {}) as Record<string, unknown>
+      if (tool === 'jira.create_issue') return `Jira · ${str(p.project_key) || 'new issue'}`
+      if (tool === 'jira.comment') return 'Jira comment'
+      if (tool === 'jira.transition') return str(p.to_status) ? `Jira · ${str(p.to_status)}` : 'Jira transition'
+      if (tool.startsWith('slack.')) return 'Slack'
+      return JIRA_LABEL[tool] ?? (tool || 'Built-in tool')
+    }
+    case 'output': return 'Final answer'
+    default: return node.type
+  }
+}
 
 export function uniqueNodeId(spec: WorkflowSpec, hint: string) {
   let base = hint.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
@@ -34,27 +79,8 @@ export function defaultConfig(def: NodeTypeDef | undefined): Record<string, unkn
   for (const [key, prop] of Object.entries(props)) if (prop && prop.default !== undefined) out[key] = structuredClone(prop.default)
   return out
 }
-
-export interface PaletteItem { key: string; type: string; label: string; description: string; idHint: string; config: Record<string, unknown>; synthetic?: boolean }
-export function paletteItems(registry: StudioRegistry): { category: string; items: PaletteItem[] }[] {
-  const groups = new Map<string, PaletteItem[]>()
-  for (const [type, def] of Object.entries(registry.node_types)) {
-    const list = groups.get(def.category) ?? []
-    list.push({ key: type, type, label: def.label, description: def.description, idHint: type.split('.').pop() ?? type, config: defaultConfig(def) })
-    groups.set(def.category, list)
-  }
-  if (registry.node_types['tool.mcp']) {
-    const mcp = (registry.mcp_tools ?? []).map(tool => ({ key: `mcp:${tool.server}/${tool.tool}`, type: 'tool.mcp', label: tool.tool, description: `${tool.server}${tool.synthetic ? ' (synthetic data)' : ''}: ${tool.description}`, idHint: tool.tool, config: { server: tool.server, tool: tool.tool, arguments: {} }, synthetic: tool.synthetic }))
-    if (mcp.length) groups.set('mcp', mcp)
-  }
-  const order = [...CATEGORY_ORDER, 'mcp']
-  const rank = (category: string) => { const index = order.indexOf(category); return index === -1 ? 99 : index }
-  return [...groups.entries()].sort((a, b) => rank(a[0]) - rank(b[0])).map(([category, items]) => ({ category, items }))
-}
-
-export function newNode(spec: WorkflowSpec, item: PaletteItem, position: { x: number; y: number }): WfNode {
-  return { id: uniqueNodeId(spec, item.idHint), type: item.type, label: item.label, config: structuredClone(item.config), position: { x: Math.round(position.x), y: Math.round(position.y) } }
-}
+export const schemaHas = (registry: StudioRegistry, type: string, key: string) =>
+  !!((registry.node_types[type]?.config_schema?.properties ?? {}) as Record<string, unknown>)[key]
 
 export function edgeId(source: string, target: string, handle?: string | null) { return `e_${source}_${target}${handle ? `_${handle}` : ''}`.slice(0, 100) }
 
@@ -64,23 +90,92 @@ export function routerHandles(node: WfNode): string[] {
   const fallback = typeof node.config.default === 'string' && node.config.default ? node.config.default : 'default'
   return cases.includes(fallback) ? cases : [...cases, fallback]
 }
+export const isRouter = (registry: StudioRegistry, node: WfNode | undefined) => !!node && registry.node_types[node.type]?.handles === 'config.cases'
 
-export function layoutSpec(spec: WorkflowSpec): WorkflowSpec {
-  const graph = new dagre.graphlib.Graph()
-  graph.setGraph({ rankdir: 'LR', nodesep: 36, ranksep: 90, marginx: 30, marginy: 30 })
-  graph.setDefaultEdgeLabel(() => ({}))
-  const ids = new Set(spec.nodes.map(node => node.id))
-  spec.nodes.forEach(node => graph.setNode(node.id, { width: NODE_W, height: NODE_H }))
-  spec.edges.forEach(edge => { if (ids.has(edge.source) && ids.has(edge.target)) graph.setEdge(edge.source, edge.target) })
-  dagre.layout(graph)
-  return { ...spec, nodes: spec.nodes.map(node => { const point = graph.node(node.id); return point ? { ...node, position: { x: Math.round(point.x - NODE_W / 2), y: Math.round(point.y - NODE_H / 2) } } : node }) }
+// ---------------------------------------------------------------- Add-step palette
+export interface PaletteItem { key: string; type: string; label: string; sub: string; cat: Cat; idHint: string; config: Record<string, unknown> }
+export interface PaletteGroup { title: string; items: PaletteItem[] }
+
+export function paletteGroups(registry: StudioRegistry): PaletteGroup[] {
+  const has = (t: string) => !!registry.node_types[t]
+  const item = (type: string, label: string, sub: string, idHint: string, extra: Record<string, unknown> = {}): PaletteItem =>
+    ({ key: `${type}:${label}`, type, label, sub, cat: catOf(type), idHint, config: { ...defaultConfig(registry.node_types[type]), ...extra } })
+  const groups: PaletteGroup[] = []
+  const push = (title: string, items: PaletteItem[]) => { if (items.length) groups.push({ title, items }) }
+  push('Knowledge', has('knowledge.retrieve') ? [item('knowledge.retrieve', 'Search knowledge', registry.sources.map(s => SOURCE_LABEL[s] ?? s).join(' · '), 'find', { query: '' })] : [])
+  push('AI step', [
+    ...(has('llm.generate') ? [item('llm.generate', 'Ask AI', 'Prompt and model', 'ask_ai', { prompt: '' })] : []),
+    ...(has('agent') ? [item('agent', 'Run agent', 'Autonomous agent with tools', 'agent', { goal: '' })] : []),
+  ])
+  push('Data & tools (MCP)', has('tool.mcp') ? (registry.mcp_tools ?? []).map(t => ({
+    ...item('tool.mcp', humanCase(t.tool), t.server, t.tool, { server: t.server, tool: t.tool, arguments: {} }), key: `mcp:${t.server}/${t.tool}`,
+  })) : [])
+  push('Guardrail', [
+    ...(has('guardrail.input') ? [item('guardrail.input', 'Mask PII', 'NRIC, account no., phone', 'mask_pii')] : []),
+    ...(has('guardrail.output') ? [item('guardrail.output', 'Check citations', 'Every claim cites a source', 'check_citations')] : []),
+  ])
+  push('Router', has('logic.router') ? [item('logic.router', 'If / else', 'Branch on a condition', 'route', { value: '', cases: ['yes', 'no'], default: 'no' })] : [])
+  push('Approval', has('human.approval') ? [item('human.approval', 'Human approval', 'Wait for a person', 'approval')] : [])
+  const writes = new Set(registry.write_tools)
+  const actions = (registry.builtin_tools ?? []).filter(t => has('tool.builtin') && (t.startsWith('jira.') || t.startsWith('slack.')))
+    .sort((a, b) => Number(writes.has(b)) - Number(writes.has(a)))
+    .map(t => ({ ...item('tool.builtin', JIRA_LABEL[t] ?? t, t.startsWith('slack.') ? 'Slack' : 'Jira', t.split('.').pop() ?? t, { tool: t, params: {} }), key: `builtin:${t}` }))
+  push('Action', [...actions, ...(has('output') ? [item('output', 'Final answer', 'Answer shown to the user', 'output', { template: '' })] : [])])
+  return groups
 }
 
-/** Tool identifiers used in policies.allowed_tools. */
-export function toolOptions(registry: StudioRegistry): string[] {
-  const out = new Set<string>()
-  registry.agent_read_tools?.forEach(tool => out.add(tool))
-  registry.builtin_tools?.forEach(tool => out.add(`builtin:${tool}`))
-  registry.mcp_tools?.forEach(tool => out.add(`mcp:${tool.server}/${tool.tool}`))
-  return [...out]
+// ---------------------------------------------------------------- layout
+/** True when stored positions can't be shown as a clean vertical graph (missing, overlapping or left-to-right). */
+export function needsLayout(spec: WorkflowSpec): boolean {
+  const n = spec.nodes
+  if (n.length < 2) return false
+  for (let i = 0; i < n.length; i++) for (let j = i + 1; j < n.length; j++) {
+    const a = n[i].position ?? { x: 0, y: 0 }, b = n[j].position ?? { x: 0, y: 0 }
+    if (Math.abs(a.x - b.x) < NODE_W + 8 && Math.abs(a.y - b.y) < NODE_H + 8) return true
+  }
+  const xs = n.map(x => x.position?.x ?? 0), ys = n.map(x => x.position?.y ?? 0)
+  const w = Math.max(...xs) - Math.min(...xs) + NODE_W, h = Math.max(...ys) - Math.min(...ys) + NODE_H
+  return n.length >= 3 && w > h
+}
+
+/** Vertical auto-layout: dagre TB, 88px pitch, branches 280px apart with extra room under routers for the branch labels. */
+export function layoutSpec(spec: WorkflowSpec, registry?: StudioRegistry): WorkflowSpec {
+  if (!spec.nodes.length) return spec
+  const graph = new dagre.graphlib.Graph()
+  graph.setGraph({ rankdir: 'TB', nodesep: 40, ranksep: PITCH - NODE_H, marginx: 0, marginy: 0 })
+  graph.setDefaultEdgeLabel(() => ({}))
+  const byId = new Map(spec.nodes.map(node => [node.id, node]))
+  spec.nodes.forEach(node => graph.setNode(node.id, { width: NODE_W, height: NODE_H }))
+  // Router edges follow the case order so the first case ("High") lays out on the left.
+  const order = (e: WfEdge) => { const src = byId.get(e.source); if (!src || !e.sourceHandle) return 0; const i = routerHandles(src).indexOf(e.sourceHandle); return i < 0 ? 99 : i }
+  const edges = spec.edges.filter(e => byId.has(e.source) && byId.has(e.target) && e.source !== e.target)
+  ;[...edges].sort((a, b) => a.source === b.source ? order(a) - order(b) : 0).forEach(e => graph.setEdge(e.source, e.target))
+  dagre.layout(graph)
+  const pos = new Map<string, { x: number; y: number }>()
+  for (const node of spec.nodes) { const p = graph.node(node.id); pos.set(node.id, { x: Math.round(p.x - NODE_W / 2), y: Math.round(p.y - NODE_H / 2) }) }
+  // Extra room below every branching node (router or any node with several children) for the branch labels.
+  const branching = spec.nodes.filter(node => (registry ? isRouter(registry, node) : node.type === 'logic.router') || new Set(edges.filter(e => e.source === node.id).map(e => e.target)).size > 1)
+    .map(node => pos.get(node.id)!.y).sort((a, b) => a - b)
+  for (const [id, p] of pos) pos.set(id, { x: p.x, y: p.y + branching.filter(y => y < p.y).length * BRANCH_EXTRA })
+  // Centre the first node on x=0 like the prototype.
+  const first = spec.nodes.find(n => n.type.startsWith('trigger')) ?? spec.nodes[0]
+  const dx = -NODE_W / 2 - pos.get(first.id)!.x, dy = -pos.get(first.id)!.y
+  return { ...spec, nodes: spec.nodes.map(node => { const p = pos.get(node.id)!; return { ...node, position: { x: p.x + dx, y: p.y + dy } } }) }
+}
+
+/** Run timeline order: depth-first topological order (trigger first, then each branch left to right, like the prototype). */
+export function topoOrder(spec: WorkflowSpec): string[] {
+  const indeg = new Map(spec.nodes.map(n => [n.id, 0]))
+  new Set(spec.edges.filter(e => indeg.has(e.target) && indeg.has(e.source)).map(e => e.source + '>' + e.target)).forEach(k => { const t = k.split('>')[1]; indeg.set(t, (indeg.get(t) ?? 0) + 1) })
+  const pos = (id: string) => spec.nodes.find(n => n.id === id)?.position ?? { x: 0, y: 0 }
+  const byPos = (a: string, b: string) => pos(a).x - pos(b).x || pos(a).y - pos(b).y
+  const out: string[] = []
+  const visit = (id: string) => {
+    out.push(id)
+    const kids = [...new Set(spec.edges.filter(e => e.source === id && indeg.has(e.target)).map(e => e.target))].sort(byPos)
+    for (const k of kids) { const d = (indeg.get(k) ?? 0) - 1; indeg.set(k, d); if (d === 0) visit(k) }
+  }
+  ;[...indeg].filter(([, d]) => d === 0).map(([id]) => id).sort((a, b) => pos(a).y - pos(b).y || byPos(a, b)).forEach(visit)
+  spec.nodes.forEach(n => { if (!out.includes(n.id)) out.push(n.id) })
+  return out
 }

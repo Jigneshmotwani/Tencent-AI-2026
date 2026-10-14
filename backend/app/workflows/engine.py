@@ -85,6 +85,14 @@ class RunCtx:
     masker: Masker = field(default_factory=Masker)
     eff: dict = field(default_factory=dict)
     warned_budget: bool = False
+    # Run debug (iteration 3): safe per-node log lines, persisted outputs (what templates show in the debug input), models.
+    logs: dict = field(default_factory=dict)
+    persisted: dict = field(default_factory=dict)
+    node_models: dict = field(default_factory=dict)
+
+    def log(self, node_id: str, text: str, level: str = 'info'):
+        """Safe log line for the run debug panel: counts, labels, codes, tool names. Never source titles/excerpts/secrets."""
+        self.logs.setdefault(node_id, []).append({'ts': now().isoformat(), 'level': level, 'text': str(text)[:300]})
 
     @property
     def nodes(self):
@@ -256,6 +264,9 @@ async def model_call(ctx: RunCtx, node: dict, messages: list[dict], *, max_token
         db.commit()
         snapshot = dict(agg)
     emit(ctx.run_id, 'usage', {'node_id': node['id'], 'usage': snapshot})
+    ctx.node_models[node['id']] = alias
+    ctx.log(node['id'], f"Model {alias}: {int(usage.get('prompt_tokens') or 0):,} prompt + {int(usage.get('completion_tokens') or 0):,} completion tokens"
+            + (f', ${float(cost):.4f}' if cost else ''))
     return completion.text, {'prompt_tokens': usage.get('prompt_tokens'), 'completion_tokens': usage.get('completion_tokens'),
                              'total_tokens': total, 'cost': cost}
 
@@ -298,12 +309,12 @@ def active_count() -> int:
 def create_run(db, workflow: Workflow, version_row: WorkflowVersion, user: User, raw_inputs: dict, trigger: str = 'manual') -> WorkflowRun:
     """Validate + persist a run and start it. Raises ValueError('validation_failed'|'missing_input:<name>'|...)."""
     spec = dict(version_row.spec)
-    result = validate_spec(spec, db)
+    result = validate_spec(spec, db, user=user)
     if not result['ok']:
         err = ValueError('validation_failed'); err.validation = result
         raise err
     inputs = coerce_inputs(spec, raw_inputs)
-    eff = effective_policy(spec['policies'], db)
+    eff = effective_policy(spec['policies'], db, user=user, workflow_id=workflow.id)
     run = WorkflowRun(workflow_id=workflow.id, workflow_version=version_row.version, owner_id=user.id, trigger=trigger,
                       status='pending', inputs=inputs, outputs={}, usage={}, model_alias=eff['default_model'])
     db.add(run); db.flush()
@@ -312,12 +323,23 @@ def create_run(db, workflow: Workflow, version_row: WorkflowVersion, user: User,
     audit(db, user.id, 'workflow.run.requested', 'allowed', 'ok', None, run.id, workflow_id=workflow.id,
           workflow_version=version_row.version, details={'trigger': trigger, 'input_names': sorted(inputs)}, commit=False)
     db.commit()
+    from ..governance.budgets import start_block
+    scope = start_block(db, workflow_id=workflow.id, user=user)
+    if scope:
+        # Over-limit agent / user / group / org: blocked at run start, before any step or model call.
+        record_budget_block(workflow=workflow.name, scope=scope)
+        with SessionLocal() as adb:
+            audit(adb, user.id, 'budget.blocked', 'denied', scope, None, run.id, workflow_id=workflow.id, workflow_version=version_row.version)
+        emit(run.id, 'budget_blocked', {'scope': scope, 'node_id': None})
+        terminal(run.id, 'blocked_by_budget', 'budget_exceeded')
+        db.expire_all()
+        return run
     _start(run.id)
     return run
 
 
-def _start(run_id: str, resolved: dict | None = None):
-    task = asyncio.create_task(_drive(run_id, resolved))
+def _start(run_id: str, resolved: dict | None = None, retry: bool = False):
+    task = asyncio.create_task(_drive(run_id, resolved, retry))
     _tasks[run_id] = task
     task.add_done_callback(lambda t: _tasks.pop(run_id, None) if _tasks.get(run_id) is t else None)
 
@@ -332,10 +354,12 @@ def _load_ctx(run_id: str) -> RunCtx:
         user = db.get(User, run.owner_id)
         spec = dict(ver.spec)
         ctx = RunCtx(run_id=run_id, workflow_id=wf.id, version=run.workflow_version, workflow_name=wf.name, spec=spec, user=user,
-                     inputs=dict(run.inputs or {}), trace_id=run.trace_id or '', eff=effective_policy(spec['policies'], db))
+                     inputs=dict(run.inputs or {}), trace_id=run.trace_id or '',
+                     eff=effective_policy(spec['policies'], db, user=user, workflow_id=wf.id))
         for ns in db.scalars(select(NodeState).where(NodeState.run_id == run_id)):
             ctx.status[ns.node_id] = ns.status
-            if ns.output: ctx.mem[ns.node_id] = dict(ns.output)
+            if ns.output: ctx.mem[ns.node_id] = dict(ns.output); ctx.persisted[ns.node_id] = dict(ns.output)
+            if ns.logs: ctx.logs[ns.node_id] = list(ns.logs)
         for row in db.scalars(select(WorkflowEvent).where(WorkflowEvent.run_id == run_id, WorkflowEvent.type == 'edge_taken')):
             ctx.taken.add(row.data.get('edge_id'))
         # Evidence refs only (text is re-read under the invoker's identity if a later model step needs it).
@@ -439,7 +463,7 @@ def _run_parent_context(trace_id: str):
         return None
 
 
-async def _drive(run_id: str, resolved: dict | None = None):
+async def _drive(run_id: str, resolved: dict | None = None, retry: bool = False):
     with SessionLocal() as db:
         run = db.get(WorkflowRun, run_id)
         if run is None or run.status in TERMINAL_RUN:
@@ -447,7 +471,7 @@ async def _drive(run_id: str, resolved: dict | None = None):
         stored_trace = run.trace_id
     ctx = _load_ctx(run_id)
     attrs = {'workflow.id': ctx.workflow_id, 'workflow.name': ctx.workflow_name, 'workflow.version': ctx.version, 'run.id': run_id,
-             'run.segment': 'resume' if resolved else 'start'}
+             'run.segment': 'resume' if resolved else ('retry' if retry else 'start')}
     with tracer.start_as_current_span('workflow.run', context=_run_parent_context(stored_trace), attributes=attrs,
                                       record_exception=False, set_status_on_exception=False) as span:
         if not stored_trace:
@@ -464,7 +488,7 @@ async def _drive(run_id: str, resolved: dict | None = None):
                 emit(run_id, 'run_resumed', {'node_id': node['id'], 'decision': resolved['output'].get('decision')})
                 emit(run_id, 'node_completed', {'node_id': node['id'], 'node_type': node['type'], 'summary': 'Decision: ' + str(resolved['output'].get('decision'))})
                 _take_edges(ctx, node, None)
-            else:
+            elif not retry:
                 emit(run_id, 'run_started', {'workflow_id': ctx.workflow_id, 'workflow_version': ctx.version, 'workflow_name': ctx.workflow_name})
                 _audit(ctx, 'workflow.run.started')
             await _loop(ctx)
@@ -546,7 +570,7 @@ async def _run_node(ctx: RunCtx, node: dict):
     nid, ntype = node['id'], node['type']
     started = time.monotonic()
     ctx.status[nid] = 'running'
-    set_node(ctx.run_id, nid, status='running', started_at=now(), error_code=None)
+    set_node(ctx.run_id, nid, status='running', started_at=now(), finished_at=None, error_code=None, input=debug_input(ctx, node))
     emit(ctx.run_id, 'node_started', {'node_id': nid, 'node_type': ntype})
     attrs = {'workflow.id': ctx.workflow_id, 'workflow.name': ctx.workflow_name, 'node.id': nid, 'node.type': ntype}
     with tracer.start_as_current_span('workflow.node', attributes=attrs, record_exception=False, set_status_on_exception=False) as span:
@@ -556,13 +580,15 @@ async def _run_node(ctx: RunCtx, node: dict):
         except BudgetBlocked as exc:
             exc.node_id = nid
             ctx.status[nid] = 'failed'
-            set_node(ctx.run_id, nid, status='failed', error_code='budget_exceeded', finished_at=now())
+            ctx.log(nid, f'Blocked by budget ({exc.scope})', 'error')
+            set_node(ctx.run_id, nid, status='failed', error_code='budget_exceeded', finished_at=now(), logs=ctx.logs.get(nid, []))
             span.set_attribute('node.status', 'blocked')
             record_node(workflow=ctx.workflow_name, node_type=ntype, status='blocked', duration_ms=(time.monotonic() - started) * 1000)
             raise
         except NodeFailure as exc:
             ctx.status[nid] = 'failed'
-            set_node(ctx.run_id, nid, status='failed', error_code=exc.code, finished_at=now())
+            ctx.log(nid, 'Failed: ' + error_message(exc.code), 'error')
+            set_node(ctx.run_id, nid, status='failed', error_code=exc.code, finished_at=now(), logs=ctx.logs.get(nid, []))
             emit(ctx.run_id, 'node_failed', {'node_id': nid, 'node_type': ntype, 'code': exc.code})
             _audit(ctx, 'workflow.node', 'error', exc.code, node_id=nid, details={'node_type': ntype})
             span.set_attribute('node.status', 'failed')
@@ -572,7 +598,8 @@ async def _run_node(ctx: RunCtx, node: dict):
             raise
         except Exception:
             ctx.status[nid] = 'failed'
-            set_node(ctx.run_id, nid, status='failed', error_code='node_unavailable', finished_at=now())
+            ctx.log(nid, 'Failed: ' + error_message('node_unavailable'), 'error')
+            set_node(ctx.run_id, nid, status='failed', error_code='node_unavailable', finished_at=now(), logs=ctx.logs.get(nid, []))
             emit(ctx.run_id, 'node_failed', {'node_id': nid, 'node_type': ntype, 'code': 'node_unavailable'})
             _audit(ctx, 'workflow.node', 'error', 'node_unavailable', node_id=nid, details={'node_type': ntype})
             span.set_attribute('node.status', 'failed')
@@ -584,7 +611,11 @@ async def _run_node(ctx: RunCtx, node: dict):
         persist = result.persist if result.persist is not None else result.output
         if result.warnings:
             persist = {**persist, '_warnings': sorted(set(result.warnings))[:20]}
-        set_node(ctx.run_id, nid, status=result.status, output=persist, usage=result.usage,
+        ctx.persisted[nid] = persist
+        usage = dict(result.usage or {})
+        if usage and ctx.node_models.get(nid):
+            usage['model'] = ctx.node_models[nid]
+        set_node(ctx.run_id, nid, status=result.status, output=persist, usage=usage, logs=ctx.logs.get(nid, []),
                  finished_at=None if result.status == 'awaiting_approval' else now())
         span.set_attribute('node.status', result.status)
         record_node(workflow=ctx.workflow_name, node_type=ntype, status=result.status, duration_ms=duration)
@@ -628,12 +659,35 @@ def resume_after_decision(run_id: str, node_id: str, output: dict):
     _start(run_id, {'node_id': node_id, 'output': output})
 
 
-def recover_on_startup():
-    """running/pending -> failed(app_restarted); paused runs stay resumable (approvals stay pending)."""
+STALE_AFTER_S = 180
+
+
+def recover_on_startup(_again: bool = True):
+    """running/pending -> failed(app_restarted); paused runs stay resumable (approvals stay pending).
+    Only runs with no event for STALE_AFTER_S are failed: another API process sharing the database (e.g. a second local
+    instance) may still be executing the rest. Those are checked again once the window has passed."""
+    from datetime import timedelta
+    cutoff = now() - timedelta(seconds=STALE_AFTER_S)
+    recent = []
     with SessionLocal() as db:
         ids = list(db.scalars(select(WorkflowRun.id).where(WorkflowRun.status.in_(('running', 'pending')))))
-    for rid in ids:
-        terminal(rid, 'failed', 'app_restarted')
+        for rid in ids:
+            if rid in _tasks:
+                continue
+            last = db.scalar(select(func.max(WorkflowEvent.timestamp)).where(WorkflowEvent.run_id == rid))
+            run = db.get(WorkflowRun, rid)
+            last = last or run.created_at
+            if last is not None and last.tzinfo is None:
+                last = last.replace(tzinfo=now().tzinfo)
+            if last and last > cutoff:
+                recent.append(rid)
+            else:
+                terminal(rid, 'failed', 'app_restarted')
+    if recent and _again:
+        try:
+            asyncio.get_running_loop().call_later(STALE_AFTER_S + 5, lambda: recover_on_startup(False) if not _shutting_down else None)
+        except RuntimeError:
+            pass
 
 
 async def shutdown():
@@ -650,3 +704,121 @@ async def shutdown():
 
 def idempotency_key(run_id: str, node_id: str, index: int) -> str:
     return hashlib.sha256(f'{run_id}|{node_id}|{index}'.encode()).hexdigest()
+
+
+# ------------------------------------------------------------------ run debug (iteration 3)
+ERROR_MESSAGES = {
+    'budget_exceeded': 'A budget limit was reached.', 'max_steps_exceeded': 'The run reached its step limit.',
+    'model_not_allowed': 'The model is disabled or not allowed by policy.', 'model_not_configured': 'No model is configured.',
+    'provider_unavailable': 'The model provider did not respond.', 'provider_request_rejected': 'The model provider rejected the request.',
+    'output_truncated': 'The model reply was cut off at the token limit.', 'empty_model_response': 'The model returned an empty reply.',
+    'output_schema_invalid': 'The model reply did not match the output schema.', 'source_not_connected': 'The source is not connected for you.',
+    'source_not_available': 'The item is not available with your access.', 'source_not_allowed': 'The source is not allowed for this agent.',
+    'connector_unavailable': 'The connector is unavailable.', 'tool_not_allowed': 'The tool is not allowed by policy.',
+    'mcp_tool_unavailable': 'The MCP tool is unavailable.', 'mcp_tool_not_read_only': 'Only read-only MCP tools can run in agents.',
+    'mcp_timeout': 'The MCP tool timed out.', 'mcp_unreachable': 'The MCP server is unreachable.', 'mcp_tool_error': 'The MCP tool returned an error.',
+    'mcp_invalid_arguments': 'The MCP tool arguments are invalid.', 'mcp_server_disabled': 'The MCP server is disabled.',
+    'injection_blocked': 'Instruction-like content was found and the step is set to block.', 'grounding_failed': 'Claims could not be verified against the evidence.',
+    'guardrail_target_missing': 'The checked step produced no output.', 'approval_missing': 'A write action ran without an approval.',
+    'destination_not_allowed': 'The destination is not allowed.', 'invalid_issue_key': 'The issue key is not valid.',
+    'empty_query': 'The search query was empty.', 'app_restarted': 'The app restarted while this step was running.',
+    'node_unavailable': 'The step failed unexpectedly.', 'node_failed': 'A step failed.', 'run_unavailable': 'The run failed unexpectedly.',
+}
+
+
+def error_message(code: str | None) -> str:
+    if not code:
+        return 'This step failed.'
+    if code.startswith('action_failed_'):
+        return 'The approved action could not be executed (' + code[len('action_failed_'):][:40] + ').'
+    return ERROR_MESSAGES.get(code, 'This step failed.')
+
+
+_PII_KINDS = ['nric', 'iban', 'card', 'phone', 'email']
+
+
+def _clip(value, limit=1500):
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + ' [truncated]'
+    if isinstance(value, list):
+        return [_clip(v, limit) for v in value[:50]]
+    if isinstance(value, dict):
+        return {k: _clip(v, limit) for k, v in list(value.items())[:60]}
+    return value
+
+
+def debug_input(ctx: RunCtx, node: dict) -> dict:
+    """Redacted rendered config: templates resolved against PERSISTED node outputs (never in-memory source excerpts),
+    PII masked, long strings truncated. Model steps list the evidence labels they receive (excerpts are not stored)."""
+    try:
+        env = ctx.env()
+        env['nodes'] = {nid: {'output': ctx.persisted.get(nid, {}), 'status': ctx.status.get(nid, 'idle')} for nid in ctx.nodes}
+        value = render(node.get('config') or {}, env, [])
+        if not isinstance(value, dict):
+            value = {'config': value}
+        value = ctx.masker.mask_obj(value, _PII_KINDS)
+        if node['type'] in ('llm.generate', 'agent') and (node.get('config') or {}).get('include_evidence', True):
+            value['evidence'] = [e['label'] for e in ctx.evidence]
+        if node['type'].startswith('trigger.'):
+            value = {'inputs': ctx.masker.mask_obj(dict(ctx.inputs), _PII_KINDS)}
+        return _clip(value)
+    except Exception:  # noqa: BLE001 - debug detail never breaks a run
+        return {}
+
+
+def descendants(spec: dict, node_id: str) -> set[str]:
+    succ: dict[str, list[str]] = {}
+    for e in spec.get('edges', []):
+        succ.setdefault(e['source'], []).append(e['target'])
+    seen, stack = set(), [node_id]
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        seen.add(n); stack.extend(succ.get(n, []))
+    return seen
+
+
+def retry_from(run_id: str, node_id: str) -> None:
+    """Re-run a failed run from `node_id` under the same invoker. Upstream outputs come from persisted node state; evidence
+    references are re-read with the invoker's CURRENT delegated identity when a later step needs them (reauthorization).
+    Raises ValueError(code)."""
+    with SessionLocal() as db:
+        run = db.get(WorkflowRun, run_id)
+        if run is None or run.status != 'failed':
+            raise ValueError('run_not_failed')
+        ver = db.scalar(select(WorkflowVersion).where(WorkflowVersion.workflow_id == run.workflow_id, WorkflowVersion.version == run.workflow_version))
+        user = db.get(User, run.owner_id)
+        spec = dict(ver.spec)
+        if node_id not in {n['id'] for n in spec['nodes']}:
+            raise ValueError('node_not_found')
+        target = _node_state(db, run_id, node_id)
+        if target is None or target.status != 'failed':
+            raise ValueError('node_not_failed')
+        result = validate_spec(spec, db, user=user)
+        if not result['ok']:
+            raise ValueError('validation_failed')
+        from ..governance.budgets import start_block
+        if start_block(db, workflow_id=run.workflow_id, user=user):
+            raise ValueError('budget_exceeded')
+        reset = descendants(spec, node_id)
+        for ns in db.scalars(select(NodeState).where(NodeState.run_id == run_id, NodeState.node_id.in_(reset))):
+            if ns.node_id == node_id:
+                ns.attempt = (ns.attempt or 1) + 1
+            elif ns.status == 'idle':
+                continue
+            ns.status = 'idle'; ns.output = {}; ns.error_code = None; ns.started_at = None; ns.finished_at = None; ns.logs = []; ns.input = {}
+        run.status = 'pending'; run.error_code = None; run.finished_at = None; run.latency_ms = None; run.paused_node_id = None
+        audit(db, run.owner_id, 'workflow.run.retry', 'allowed', 'ok', None, run_id, workflow_id=run.workflow_id,
+              workflow_version=run.workflow_version, node_id=node_id, details={'reset_nodes': len(reset)}, commit=False)
+        db.commit()
+    _contexts.pop(run_id, None)
+    ctx = _load_ctx(run_id)
+    ctx.taken = {e for e in ctx.taken if not any(x['id'] == e and x['source'] in reset for x in ctx.spec['edges'])}
+    for nid in reset:
+        ctx.mem.pop(nid, None); ctx.persisted.pop(nid, None); ctx.logs.pop(nid, None); ctx.status[nid] = 'idle'
+    # Evidence gathered by reset steps is gathered again; keep earlier steps' references (text re-read on demand).
+    ctx.evidence = [e for e in ctx.evidence if e.get('node_id') not in reset]
+    persist_evidence(ctx)
+    emit(run_id, 'run_resumed', {'node_id': node_id, 'retry': True})
+    _start(run_id, None, retry=True)

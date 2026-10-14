@@ -75,7 +75,7 @@ def browser_session(request: Request, db: DBSession) -> Session:
 def current_user(request: Request, db: DBSession = Depends(get_db)) -> User:
     session = browser_session(request, db)
     user = db.get(User, session.user_id)
-    if user is None:
+    if user is None or user.status == 'disabled':
         raise HTTPException(401, 'sign_in_required')
     return user
 
@@ -94,8 +94,31 @@ def require_mutation(request: Request, user: User, db: DBSession):
 
 
 def user_payload(user: User, token: str):
-    return {'id': user.id, 'username': user.username, 'name': user.name,
-            'capabilities': sorted(effective_capabilities(user)), 'csrf_token': csrf_token(token)}
+    caps = effective_capabilities(user)
+    words = [w for w in (user.name or user.username).split() if w]
+    return {'id': user.id, 'username': user.username, 'name': user.name, 'title': user.title or '', 'email': user.email or '',
+            'initials': ((words[0][0] + (words[-1][0] if len(words) > 1 else '')) if words else '?').upper(),
+            'roles': [r for r in ('admin', 'builder', 'auditor', 'user') if r in caps],
+            'capabilities': sorted(caps), 'csrf_token': csrf_token(token),
+            'pages': _pages(user), 'groups': _groups(user), 'demo_mode': bool(settings().demo_mode)}
+
+
+def _groups(user: User) -> list[dict]:
+    from .admin.directory import user_groups
+    from .db import SessionLocal
+    try:
+        with SessionLocal() as db:
+            return [{'id': g.id, 'name': g.name} for g in user_groups(db, user.id)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _pages(user: User) -> list[str]:
+    from .admin.directory import pages_for
+    try:
+        return pages_for(user)
+    except Exception:  # noqa: BLE001 - the shell still loads; the API keeps enforcing page access
+        return ['workspace']
 
 
 class Login(BaseModel):
@@ -122,25 +145,34 @@ def login(body: Login, request: Request, response: Response, db: DBSession = Dep
                 del _attempts[old_key]
     user = db.scalar(select(User).where(User.username == body.username.lower()))
     valid = verify_password(body.password, user.password_hash if user else _dummy_hash)
-    if user is None or not valid:
+    if user is None or not valid or user.status == 'disabled':
         db.add(AuditEvent(actor_id=user.id if user else 'unknown', operation='session.login', outcome='denied', reason='invalid_credentials'))
         db.commit()
         raise HTTPException(401, 'invalid_credentials')
     if _hasher.check_needs_rehash(user.password_hash):
         user.password_hash = _hasher.hash(body.password)
+    token = _new_session(db, request, response, user)
+    db.add(AuditEvent(actor_id=user.id, operation='session.login', outcome='allowed', reason='authenticated'))
+    db.commit()
+    return user_payload(user, token)
+
+
+def _new_session(db: DBSession, request: Request, response: Response, user: User) -> str:
+    """Replace the browser's current session (and its OAuth states) with a fresh one for `user`. Caller commits."""
     previous = request.cookies.get(COOKIE)
-    if previous:
+    if previous and len(previous) <= 256:
         old_id = digest(previous)
         db.execute(delete(OAuthState).where(OAuthState.session_id == old_id))
         db.execute(delete(Session).where(Session.id == old_id))
     token = secrets.token_urlsafe(32)
     db.add(Session(id=digest(token), user_id=user.id, expires_at=now() + timedelta(hours=settings().session_hours), csrf_hash=digest(csrf_token(token))))
-    db.add(AuditEvent(actor_id=user.id, operation='session.login', outcome='allowed', reason='authenticated'))
-    db.commit()
+    user.last_active_at = now()
+    if user.status == 'invited':
+        user.status = 'active'  # first sign-in completes the invitation
     response.set_cookie(COOKIE, token, httponly=True, secure=settings().cookie_secure,
                         samesite='lax', max_age=settings().session_hours * 3600, path='/')
     response.headers['Cache-Control'] = 'no-store'
-    return user_payload(user, token)
+    return token
 
 
 @router.get('/me')
@@ -159,3 +191,57 @@ def logout(request: Request, response: Response, user: User = Depends(current_us
     db.commit()
     response.delete_cookie(COOKIE, path='/', httponly=True, secure=settings().cookie_secure, samesite='lax')
     return {'ok': True}
+
+
+# ---- Iteration 3: demo user switcher (DEMO_MODE=true and loopback only; otherwise 404) ----
+DEMO_USERS = [('priya', 'compliance'), ('daniel', 'operations'), ('wei', 'admin'), ('aisha', 'auditor')]
+_LOOPBACK = {'127.0.0.1', '::1', 'localhost'}
+
+
+def _demo_allowed(request: Request) -> bool:
+    from urllib.parse import urlsplit
+    if not settings().demo_mode:
+        return False
+    client = request.client.host if request.client else ''
+    try:
+        host = urlsplit('//' + request.headers.get('host', '')).hostname or ''
+    except ValueError:
+        return False
+    return client in _LOOPBACK and host in _LOOPBACK
+
+
+def _demo_gate(request: Request):
+    if not _demo_allowed(request):
+        raise HTTPException(404, 'not_found')
+
+
+@router.get('/demo-users')
+def demo_users(_gate: None = Depends(_demo_gate), user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    from .admin.directory import ROLE_LABEL, assigned_roles, initials
+    out = []
+    for key, username in DEMO_USERS:
+        u = db.scalar(select(User).where(User.username == username))
+        if u is None or u.status == 'disabled':
+            continue
+        out.append({'key': key, 'name': u.name, 'title': u.title or '', 'role_label': ROLE_LABEL[assigned_roles(u)[0]],
+                    'initials': initials(u.name or u.username)})
+    return out
+
+
+class DemoSwitch(BaseModel):
+    key: str = Field(min_length=1, max_length=20)
+
+
+@router.post('/demo-switch')
+def demo_switch(body: DemoSwitch, request: Request, response: Response, _gate: None = Depends(_demo_gate),
+                user: User = Depends(current_user), db: DBSession = Depends(get_db)):
+    require_mutation(request, user, db)
+    username = dict(DEMO_USERS).get(body.key)
+    target = db.scalar(select(User).where(User.username == username)) if username else None
+    if target is None or target.status == 'disabled':
+        raise HTTPException(404, 'not_found')
+    token = _new_session(db, request, response, target)
+    from .telemetry import audit
+    audit(db, user.id, 'session.demo_switch', 'allowed', 'demo_mode', details={'from_user': user.id, 'to_user': target.id}, commit=False)
+    db.commit()
+    return user_payload(target, token)

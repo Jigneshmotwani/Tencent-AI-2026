@@ -1,147 +1,316 @@
-// Studio editor: palette | canvas | inspector/copilot/versions, with toolbar, validation and the Test panel.
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ApiError, api, date, safeError } from '../api'
-import type { CopilotProposal, StudioRegistry, ValidationIssue, WfNode, WorkflowDetail, WorkflowSpec } from '../contracts'
+// Studio editor (prototype #stEditor): title row, React Flow canvas with the pill toolbar, Add-step palette, step
+// settings sheet, floating Copilot, test-run popover + run drawer, versions sheet and the submit-for-review modal.
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ReactFlowProvider } from '@xyflow/react'
+import { safeError } from '../api'
+import type { CopilotProposal, StudioRegistry, WfEdge, WfNode, WorkflowSpec } from '../contracts'
 import CopilotPanel from '../copilot/CopilotPanel'
-import Canvas from './Canvas'
-import { Inspector } from './Inspector'
-import { layoutSpec, newNode, paletteItems, NODE_H, NODE_W } from './model'
-import { Palette } from './Palette'
-import { TestPanel } from './TestPanel'
-import { Badge, Button, Notice, StatusChip } from './ui'
-import { useRunStream } from './useRunStream'
-import { WorkflowSettings } from './WorkflowSettings'
+import { Icon } from '../ui/icons'
+import { Button, Field, IconButton, Input, Pill, Select, StatusPill, cx, toast, useDismiss } from '../ui/kit'
+import { navigate, useRoute } from '../ui/router'
+import { AddStep } from './AddStep'
+import { type Detail, type Group, getVersion, getWorkflow, listGroups, retryFrom, saveSpec, serverUndo } from './api'
+import Canvas, { useView } from './Canvas'
+import { BRANCH_EXTRA, NODE_W, PITCH, edgeId, isRouter, layoutSpec, needsLayout, nodeSubtitle, paletteGroups, routerHandles, uniqueNodeId, type PaletteItem } from './model'
+import { RunDrawer } from './RunDrawer'
+import { StepSheet } from './StepSheet'
+import { SubmitModal } from './SubmitModal'
+import { TERMINAL_RUN, useRunStream } from './useRunStream'
+import { VersionsSheet } from './VersionsSheet'
 
-type RightTab = 'inspect' | 'copilot' | 'versions'
+export function StudioEditor({ workflowId, registry }: { workflowId: string; registry: StudioRegistry }) {
+  return <ReactFlowProvider><Editor workflowId={workflowId} registry={registry} /></ReactFlowProvider>
+}
 
-export function StudioEditor({ workflowId, registry, onBack }: { workflowId: string; registry: StudioRegistry; onBack: () => void }) {
-  const [detail, setDetail] = useState<WorkflowDetail | null>(null)
-  const [spec, setSpec] = useState<WorkflowSpec | null>(null)
-  const [dirty, setDirty] = useState(false)
+const inputLabel = (name: string) => name.split('_').filter(Boolean).map((w, i) => w.toLowerCase() === 'id' ? 'ID' : i === 0 ? w[0].toUpperCase() + w.slice(1) : w).join(' ')
+const structural = (p: CopilotProposal) => !!(p.diff && (p.diff.added_nodes.length || p.diff.removed_nodes.length || p.diff.added_edges.length || p.diff.removed_edges.length))
+function uniqueEdgeId(edges: WfEdge[], s: string, t: string, h?: string | null) {
+  const base = edgeId(s, t, h); if (!edges.some(e => e.id === base)) return base
+  for (let i = 2; ; i++) if (!edges.some(e => e.id === `${base}_${i}`.slice(0, 100))) return `${base}_${i}`.slice(0, 100)
+}
+const shift = (nodes: WfNode[], from: { x: number; y: number }, dy: number, strict = false) =>
+  nodes.map(n => ((strict ? n.position.y > from.y : n.position.y >= from.y - 1) && Math.abs(n.position.x - from.x) < NODE_W) ? { ...n, position: { x: n.position.x, y: n.position.y + dy } } : n)
+
+function Editor({ workflowId, registry }: { workflowId: string; registry: StudioRegistry }) {
+  const route = useRoute()
+  const [detail, setDetail] = useState<Detail | null>(null)
+  const [spec, setSpecState] = useState<WorkflowSpec | null>(null)
+  const specRef = useRef<WorkflowSpec | null>(null)
+  const [hist, setHist] = useState<{ past: WorkflowSpec[]; future: WorkflowSpec[] }>({ past: [], future: [] })
+  const [error, setError] = useState('')
+  const [groups, setGroups] = useState<Group[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [tab, setTab] = useState<RightTab>('inspect')
+  const [sheet, setSheet] = useState<'step' | 'versions' | null>(null)
   const [proposal, setProposal] = useState<CopilotProposal | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
-  const [error, setError] = useState(''), [notice, setNotice] = useState('')
-  const [testOpen, setTestOpen] = useState(true)
-  const [fitKey, setFitKey] = useState('initial')
+  const [viewing, setViewing] = useState<{ version: number; spec: WorkflowSpec } | null>(null)
+  const [copMin, setCopMin] = useState(false)
+  const [add, setAdd] = useState<{ edge: WfEdge | null } | null>(null)
+  const [runPop, setRunPop] = useState(false)
+  const [drawer, setDrawer] = useState({ open: false, col: false, h: 300 })
+  const [runSel, setRunSel] = useState<string | null>(null)
+  const [submit, setSubmit] = useState(false)
+  const [narrow, setNarrow] = useState(false)
   const stream = useRunStream()
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const addBtn = useRef<HTMLButtonElement>(null), testBtn = useRef<HTMLButtonElement>(null), rpopRef = useRef<HTMLDivElement>(null)
+  const autoV = useRef(true)
 
-  const load = useCallback(async (refit = false) => {
-    try {
-      const value = await api<WorkflowDetail>(`/workflows/${encodeURIComponent(workflowId)}`)
-      setDetail(value); setSpec(value.spec); setDirty(false); setError('')
-      if (refit) setFitKey(`v${value.draft_version}-${Date.now()}`)
-      return value
-    } catch (failure) { setError(safeError(failure)); return null }
+  // ------------------------------------------------------------ load + debounced save
+  const pending = useRef<WorkflowSpec | null>(null)
+  const saving = useRef<Promise<boolean> | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const flush = useCallback(async (): Promise<boolean> => {
+    clearTimeout(timer.current)
+    if (saving.current) await saving.current
+    const s = pending.current
+    if (!s) return true
+    pending.current = null
+    const p = saveSpec(workflowId, s).then(d => { setDetail(d); return true }).catch(e => { toast(safeError(e)); return false }).finally(() => { saving.current = null })
+    saving.current = p
+    return p
   }, [workflowId])
-  useEffect(() => { void load(true) }, [load])
+  const schedule = useCallback((s: WorkflowSpec) => { pending.current = s; clearTimeout(timer.current); timer.current = setTimeout(() => void flush(), 600) }, [flush])
+  useEffect(() => () => { clearTimeout(timer.current); if (pending.current) void saveSpec(workflowId, pending.current).catch(() => undefined) }, [workflowId])
 
-  const readOnly = !detail?.can_edit
-  const update = useCallback((change: (current: WorkflowSpec) => WorkflowSpec) => { setSpec(current => { if (!current) return current; const next = change(current); if (next !== current) setDirty(true); return next }) }, [])
-
-  const save = useCallback(async (): Promise<boolean> => {
-    if (!spec || readOnly) return false
-    setBusy('save'); setError(''); setNotice('')
+  const load = useCallback(async (forceLayout = false) => {
     try {
-      const value = await api<Partial<WorkflowDetail>>(`/workflows/${encodeURIComponent(workflowId)}`, 'PUT', { spec })
-      if (value && value.spec && value.validation) { setDetail(previous => ({ ...(previous as WorkflowDetail), ...value } as WorkflowDetail)); setSpec(value.spec); setDirty(false) } else await load()
-      setNotice('Draft saved.'); return true
-    } catch (failure) { setError(failure instanceof ApiError && failure.status === 422 ? 'The draft could not be saved because the spec is malformed (check input names, node ids and JSON fields).' : safeError(failure)); return false } finally { setBusy(null) }
-  }, [spec, readOnly, workflowId, load])
+      const d = await getWorkflow(workflowId)
+      let s = d.spec
+      const draftRow = d.versions.find(v => v.version === d.draft_version)
+      if (forceLayout || needsLayout(s)) {
+        s = layoutSpec(s, registry)
+        if (d.can_edit && draftRow?.status !== 'published' && d.status !== 'archived') { pending.current = s; void flush() }
+      }
+      setDetail(d); specRef.current = s; setSpecState(s); setError('')
+      return d
+    } catch (e) { setError(safeError(e)); return null }
+  }, [workflowId, registry, flush])
+  useEffect(() => { void load(); void listGroups().then(setGroups) }, [load])
 
-  const action = async (key: string, path: string, success: string, body?: unknown) => {
-    setBusy(key); setError(''); setNotice('')
-    try { await api(path, 'POST', body); await load(key === 'undo' || key.startsWith('restore')); setNotice(success) } catch (failure) {
-      // Structured 422 details (validation) are not surfaced by api(); reload so the saved draft's validation is shown.
-      if (failure instanceof ApiError && failure.status === 422 && key === 'publish') { await load(); setError('Publishing was blocked by validation. Fix the highlighted issues and try again.') }
-      else if (failure instanceof ApiError && failure.code === 'nothing_to_undo') setError('There is no earlier draft version to undo to.')
-      else setError(safeError(failure))
-    } finally { setBusy(null) }
+  const commit = useCallback((next: WorkflowSpec, record = true) => {
+    const prev = specRef.current
+    if (!prev || next === prev) return
+    if (record) setHist(h => ({ past: [...h.past.slice(-49), prev], future: [] }))
+    specRef.current = next; setSpecState(next); schedule(next)
+  }, [schedule])
+  const undo = () => { const prev = hist.past[hist.past.length - 1], cur = specRef.current; if (!prev || !cur) { toast('Nothing to undo'); return } setHist(h => ({ past: h.past.slice(0, -1), future: [cur, ...h.future] })); specRef.current = prev; setSpecState(prev); schedule(prev) }
+  const redo = () => { const next = hist.future[0], cur = specRef.current; if (!next || !cur) return; setHist(h => ({ past: [...h.past, cur], future: h.future.slice(1) })); specRef.current = next; setSpecState(next); schedule(next) }
+
+  // ------------------------------------------------------------ derived
+  const groupName = useCallback((id: string) => groups?.find(g => g.id === id)?.name, [groups])
+  const subtitle = useCallback((node: WfNode, s: WorkflowSpec) => nodeSubtitle(node, s, groupName), [groupName])
+  const preview = useMemo(() => proposal ? (needsLayout(proposal.preview_spec) || structural(proposal) ? layoutSpec(proposal.preview_spec, registry) : proposal.preview_spec) : null, [proposal, registry])
+  const viewSpec = useMemo(() => viewing ? (needsLayout(viewing.spec) ? layoutSpec(viewing.spec, registry) : viewing.spec) : null, [viewing, registry])
+  const display = viewSpec ?? preview ?? spec
+  const canEdit = !!detail?.can_edit
+  const locked = !canEdit || !!proposal || !!viewing
+  const overlay = stream.runId && !proposal && !viewing ? stream.overlay : null
+  const palette = useMemo(() => paletteGroups(registry), [registry])
+  const copVisible = canEdit && !copMin && !sheet
+  const dh = drawer.open ? (drawer.col ? 44 : drawer.h) : 0
+  const view = useView(display ?? { nodes: [] } as unknown as WorkflowSpec, { right: (sheet ? 372 : 0) + (copVisible ? 396 : 0), bottom: dh }, canvasRef)
+  const reserveKey = `${sheet ? 1 : 0}${copVisible ? 1 : 0}${dh}${narrow ? 1 : 0}`
+  const shapeKey = display ? display.nodes.length + ':' + display.edges.length + ':' + (proposal?.proposal_id ?? '') + (viewing?.version ?? '') : ''
+  useEffect(() => { if (display && autoV.current) requestAnimationFrame(() => view.autoView(true)) }, [reserveKey, shapeKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const el = canvasRef.current; if (!el) return
+    const ro = new ResizeObserver(() => { setNarrow(el.clientWidth < 1000); if (autoV.current) view.autoView(false) })
+    ro.observe(el); return () => ro.disconnect()
+  }, [detail !== null]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (stream.error) toast(stream.error) }, [stream.error])
+  useEffect(() => { if (route.query.has('copilot')) setCopMin(false) }, [route.query])
+
+  // ------------------------------------------------------------ canvas actions
+  const select = useCallback((id: string | null) => {
+    if (!id) { setSelectedId(null); setSheet(s => (s === 'step' ? null : s)); return }
+    setSelectedId(id); setSheet('step')
+    if (drawer.open) { setRunSel(id); if (drawer.col) setDrawer(d => ({ ...d, col: false })) }
+  }, [drawer.open, drawer.col])
+  const onMoved = useCallback((positions: Map<string, { x: number; y: number }>) => {
+    const cur = specRef.current; if (!cur) return
+    autoV.current = false
+    commit({ ...cur, nodes: cur.nodes.map(n => positions.has(n.id) ? { ...n, position: positions.get(n.id)! } : n) })
+  }, [commit])
+  const onConnect = useCallback((source: string, target: string, handle: string | null) => {
+    const cur = specRef.current; if (!cur) return
+    if (cur.edges.some(e => e.source === source && e.target === target && (e.sourceHandle ?? null) === handle)) return
+    commit({ ...cur, edges: [...cur.edges, { id: uniqueEdgeId(cur.edges, source, target, handle), source, target, ...(handle ? { sourceHandle: handle } : {}) }] })
+  }, [commit])
+  const onInsert = useCallback((edge: WfEdge) => setAdd({ edge }), [])
+
+  const pick = (item: PaletteItem) => {
+    const cur = specRef.current; if (!cur) return
+    const ctx = add?.edge ?? null
+    setAdd(null)
+    const id = uniqueNodeId(cur, item.idHint)
+    const config = structuredClone(item.config)
+    let nodes = [...cur.nodes], edges = [...cur.edges]
+    const byId = (x: string | null | undefined) => nodes.find(n => n.id === x)
+    let via: WfEdge | null = ctx, anchor: WfNode | undefined
+    if (!via) {
+      anchor = byId(selectedId) ?? [...nodes].sort((a, b) => b.position.y - a.position.y || a.position.x - b.position.x)[0]
+      const outs = anchor ? edges.filter(e => e.source === anchor!.id) : []
+      if (anchor && outs.length === 1 && !isRouter(registry, anchor)) via = outs[0]
+    }
+    let position = { x: -NODE_W / 2, y: 0 }
+    const newEdges: WfEdge[] = []
+    if (via) {
+      const a = byId(via.source)!, b = byId(via.target)!
+      position = { ...b.position }
+      nodes = shift(nodes, b.position, PITCH)
+      edges = edges.filter(e => e.id !== via!.id)
+      newEdges.push({ id: '', source: a.id, target: id, ...(via.sourceHandle ? { sourceHandle: via.sourceHandle } : {}), ...(via.condition ? { condition: via.condition } : {}) })
+      const firstCase = item.type === 'logic.router' ? (config.cases as string[] | undefined)?.[0] : undefined
+      newEdges.push({ id: '', source: id, target: b.id, ...(firstCase ? { sourceHandle: firstCase } : {}) })
+    } else if (anchor) {
+      position = { x: anchor.position.x, y: anchor.position.y + PITCH + (isRouter(registry, anchor) ? BRANCH_EXTRA : 0) }
+      nodes = shift(nodes, anchor.position, PITCH, true)
+      let handle: string | undefined
+      if (isRouter(registry, anchor)) { const used = new Set(edges.filter(e => e.source === anchor!.id).map(e => e.sourceHandle)); handle = routerHandles(anchor).find(h => !used.has(h)) ?? routerHandles(anchor)[0] }
+      newEdges.push({ id: '', source: anchor.id, target: id, ...(handle ? { sourceHandle: handle } : {}) })
+    }
+    if (item.type === 'guardrail.output' && !config.target) {
+      const seen = new Set<string>(), queue = newEdges.filter(e => e.target === id).map(e => e.source)
+      while (queue.length) { const x = queue.shift()!; if (seen.has(x)) continue; seen.add(x); const n = byId(x); if (n && (n.type === 'llm.generate' || n.type === 'agent')) { config.target = n.id; break } edges.filter(e => e.target === x).forEach(e => queue.push(e.source)) }
+    }
+    nodes.push({ id, type: item.type, label: item.label, config, position })
+    for (const e of newEdges) edges.push({ ...e, id: uniqueEdgeId(edges, e.source, e.target, e.sourceHandle) })
+    commit({ ...cur, nodes, edges })
+    setSelectedId(id); setSheet('step')
+    toast(`Added “${item.label}”`)
   }
-  const confirmDiscard = () => !dirty || window.confirm('Discard unsaved canvas changes?')
 
-  const items = useMemo(() => new Map(paletteItems(registry).flatMap(group => group.items).map(item => [item.key, item])), [registry])
-  const addItem = (key: string, position?: { x: number; y: number }) => {
-    const item = items.get(key)
-    if (!item || !spec || readOnly || proposal) return
-    const anchor = spec.nodes.find(node => node.id === selectedId) ?? spec.nodes[spec.nodes.length - 1]
-    const at = position ?? (anchor ? { x: anchor.position.x + NODE_W + 60, y: anchor.position.y } : { x: 40, y: 40 + NODE_H })
-    const node = newNode(spec, item, at)
-    update(current => ({ ...current, nodes: [...current.nodes, node] }))
-    setSelectedId(node.id); setTab('inspect')
+  const saveNode = (node: WfNode) => {
+    const cur = specRef.current; if (!cur) return
+    commit({ ...cur, nodes: cur.nodes.map(n => n.id === node.id ? node : n) })
+    setSheet(null); setSelectedId(null); toast('Step saved')
+  }
+  const deleteNode = (id: string) => {
+    const cur = specRef.current; if (!cur) return
+    const node = cur.nodes.find(n => n.id === id); if (!node) return
+    const ins = cur.edges.filter(e => e.target === id), outs = cur.edges.filter(e => e.source === id)
+    let edges = cur.edges.filter(e => e.source !== id && e.target !== id), nodes = cur.nodes.filter(n => n.id !== id)
+    if (ins.length === 1 && outs.length === 1 && !edges.some(e => e.source === ins[0].source && e.target === outs[0].target)) {
+      const i = ins[0]
+      edges = [...edges, { id: uniqueEdgeId(edges, i.source, outs[0].target, i.sourceHandle), source: i.source, target: outs[0].target, ...(i.sourceHandle ? { sourceHandle: i.sourceHandle } : {}), ...(i.condition ? { condition: i.condition } : {}) }]
+      nodes = shift(nodes, node.position, -PITCH, true)
+    }
+    commit({ ...cur, nodes, edges })
+    setSheet(null); setSelectedId(null); toast('Step deleted')
   }
 
-  const issues = useMemo(() => {
-    const map: Record<string, 'error' | 'warning'> = {}, byNode: Record<string, { level: 'error' | 'warning'; issue: ValidationIssue }[]> = {}
-    for (const issue of detail?.validation?.warnings ?? []) if (issue.node_id) { map[issue.node_id] = 'warning'; (byNode[issue.node_id] ??= []).push({ level: 'warning', issue }) }
-    for (const issue of detail?.validation?.errors ?? []) if (issue.node_id) { map[issue.node_id] = 'error'; (byNode[issue.node_id] ??= []).push({ level: 'error', issue }) }
-    return { map, byNode }
-  }, [detail?.validation])
+  // ------------------------------------------------------------ runs
+  const runActive = stream.active && stream.status !== 'paused'
+  const openDrawer = () => {
+    const H = canvasRef.current?.clientHeight ?? 600
+    setDrawer({ open: true, col: false, h: Math.round(Math.max(200, Math.min(Math.max(200, H - 140), H * (innerWidth <= 700 ? 0.55 : 0.4)))) })
+  }
+  const startRun = async (inputs: Record<string, unknown>) => {
+    setRunPop(false)
+    if (!(await flush())) return
+    const id = await stream.start(workflowId, inputs, canEdit ? 'draft' : 'published')
+    if (!id) return
+    setRunSel(null); openDrawer(); setCopMin(true)
+  }
+  const retry = async (nodeId: string) => {
+    if (!stream.runId) return
+    try { const r = await retryFrom(stream.runId, nodeId); stream.attach(r.run_id); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
+  }
+  const resetRun = () => { stream.attach(null); setDrawer(d => ({ ...d, open: false })); setRunSel(null) }
+  const waitingNode = overlay && stream.status === 'paused' ? display?.nodes.find(n => overlay.nodeStates[n.id] === 'awaiting_approval') : undefined
+  const waitText = waitingNode ? `Waiting for ${(waitingNode.label || 'approval')[0].toLowerCase()}${(waitingNode.label || 'approval').slice(1)}` : 'Waiting for approval'
 
-  // Refresh stored node outputs on selection and as nodes finish, so the inspector shows real results.
-  const finishedCount = Object.values(stream.overlay.nodeStates).filter(state => state !== 'running').length
-  useEffect(() => { if (stream.runId && selectedId) void stream.refresh() }, [finishedCount, stream.runId, selectedId, stream.refresh])
-
-  const run = async (inputs: Record<string, unknown>) => {
-    if (dirty && !(await save())) return
-    setTestOpen(true)
-    // Builders test their draft; audience members (view only) run the published version.
-    await stream.start(workflowId, inputs, detail?.can_edit ? 'draft' : 'published')
+  // ------------------------------------------------------------ copilot
+  const onApplied = async (p: CopilotProposal) => { setHist({ past: [], future: [] }); autoV.current = true; await load(structural(p)) }
+  const onUndo = async () => {
+    try { await flush(); await serverUndo(workflowId); setHist({ past: [], future: [] }); await load(); return true }
+    catch (e) { toast(safeError(e)); return false }
   }
 
-  if (!detail || !spec) return <div className="content-stack"><button className="text-button" onClick={onBack}>← All workflows</button>{error ? <Notice tone="error">{error}</Notice> : <p className="muted">Loading workflow…</p>}</div>
+  if (!detail || !spec || !display) return <div className="stscr st-editor">
+    <div className="trow st-title gut"><div className="st-left"><IconButton icon="back" small={false} label="Back to agents" onClick={() => navigate('/studio')} />{error && <span className="muted">{error}</span>}</div></div>
+  </div>
 
-  const selected = spec.nodes.find(node => node.id === selectedId) ?? null
-  const runNode = selected ? stream.detail?.nodes.find(item => item.node_id === selected.id) ?? null : null
-  const validation = detail.validation ?? { ok: true, errors: [], warnings: [] }
-  const generalIssues = [...validation.errors.map(issue => ({ level: 'error' as const, issue })), ...validation.warnings.map(issue => ({ level: 'warning' as const, issue }))]
-  const labelOf = (id?: string) => spec.nodes.find(node => node.id === id)?.label || id
-  const status = detail.status
-  const canPublish = !readOnly && !dirty && validation.ok
-  const diff = proposal?.diff
+  const draftRow = detail.versions.find(v => v.version === detail.draft_version)
+  const inReview = (detail.review_state ?? '') === 'in_review' || detail.display_status === 'in_review'
+  const pillStatus = detail.display_status ?? (inReview ? 'in_review' : detail.review_state === 'changes_requested' ? 'changes_requested' : detail.status === 'suspended' ? 'suspended' : draftRow?.status === 'published' ? 'published' : 'draft')
+  const selNode = selectedId ? display.nodes.find(n => n.id === selectedId) : undefined
+  const anySheet = !!sheet
 
-  return <div className="studio-editor">
-    <div className="studio-toolbar">
-      <button className="text-button" onClick={() => { if (confirmDiscard()) onBack() }}>← Workflows</button>
-      <div className="toolbar-title"><strong>{spec.name || 'Untitled workflow'}</strong><StatusChip status={status} /><small className="muted">Draft v{detail.draft_version}{detail.published_version ? ` · published v${detail.published_version}` : ''}{dirty ? ' · unsaved changes' : ''}</small></div>
-      <div className="button-row">
-        {!readOnly && <Button className="primary" disabled={!dirty || busy !== null || !!proposal} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save draft'}</Button>}
-        {!readOnly && <Button className="subtle" disabled={!!proposal || !spec.nodes.length} onClick={() => { update(layoutSpec); setFitKey(`layout-${Date.now()}`) }}>Auto-layout</Button>}
-        {!readOnly && <Button className="subtle" disabled={busy !== null || !!proposal} title="Revert the last applied Copilot change" onClick={() => { if (confirmDiscard()) void action('undo', `/workflows/${encodeURIComponent(workflowId)}/undo`, 'Last Copilot change undone.') }}>{busy === 'undo' ? 'Undoing…' : 'Undo'}</Button>}
-        {!readOnly && <Button disabled={!canPublish || busy !== null || !!proposal} title={dirty ? 'Save the draft first' : !validation.ok ? 'Fix validation errors first' : 'Create an immutable published version'} onClick={() => void action('publish', `/workflows/${encodeURIComponent(workflowId)}/publish`, 'Published. The catalog now offers this version to its audience.')}>{busy === 'publish' ? 'Publishing…' : 'Publish'}</Button>}
-        {!readOnly && status === 'published' && <Button className="subtle danger" disabled={busy !== null} onClick={() => void action('suspend', `/workflows/${encodeURIComponent(workflowId)}/suspend`, 'Suspended. New runs are blocked.')}>Suspend</Button>}
-        {!readOnly && status === 'suspended' && <Button className="subtle" disabled={busy !== null} onClick={() => void action('resume', `/workflows/${encodeURIComponent(workflowId)}/resume`, 'Resumed.')}>Resume</Button>}
+  return <div className="stscr st-editor">
+    <div className="trow st-title gut">
+      <div className="st-left">
+        <IconButton icon="back" small={false} label="Back to agents" onClick={() => navigate('/studio')} />
+        <h1>{display.name || detail.name}</h1>
+        {viewing ? <Pill>v{viewing.version} · Read-only</Pill> : <StatusPill status={pillStatus} prefix={`v${detail.draft_version}`} />}
+      </div>
+      <div className="st-right">
+        <Button size="sm" icon="history" aria-label="Versions" onClick={() => setSheet(s => s === 'versions' ? null : 'versions')}><span className="tl">Versions</span></Button>
+        <Button size="sm" icon="play" aria-label="Test run" ref={testBtn} disabled={runActive || !detail.can_run} onClick={() => setRunPop(o => !o)}><span className="tl">{runActive ? 'Running…' : 'Test run'}</span></Button>
+        {canEdit && <Button variant="primary" size="sm" disabled={inReview} title={inReview ? 'Already submitted for review' : undefined} onClick={async () => { await flush(); setSubmit(true) }}>
+          <span className="lg">Submit for review</span><span className="sm-l">Submit</span></Button>}
       </div>
     </div>
-    {error && <Notice tone="error">{error}</Notice>}
-    {notice && !error && <Notice tone="success">{notice}</Notice>}
-    {readOnly && <Notice>You can view and test this workflow but not edit it.</Notice>}
-    {!proposal && generalIssues.length > 0 && <details className={`validation ${validation.ok ? 'warn' : 'error'}`} open={!validation.ok}><summary>{validation.errors.length} error(s), {validation.warnings.length} warning(s) in the saved draft{dirty ? ' (save to re-validate)' : ''}</summary><ul>{generalIssues.map(({ level, issue }, index) => <li key={index} className={`issue-${level}`}>{issue.node_id ? <button className="text-button" onClick={() => { setSelectedId(issue.node_id!); setTab('inspect') }}>{labelOf(issue.node_id)}</button> : issue.edge_id ? <code>{issue.edge_id}</code> : null} {issue.message}</li>)}</ul></details>}
-    {proposal && diff && <div className="diff-banner" role="status"><strong>Copilot preview</strong><span className="diff-tag diff-added">+{diff.added_nodes.length} nodes</span><span className="diff-tag diff-changed">~{diff.changed_nodes.length} changed</span><span className="diff-tag diff-removed">−{diff.removed_nodes.length} removed</span><span>{diff.added_edges.length} edges added, {diff.removed_edges.length} removed{diff.policies_changed ? ' · policies changed' : ''}{diff.inputs_changed ? ' · inputs changed' : ''}{diff.renamed ? ' · renamed' : ''}</span>{!proposal.validation.ok && <span className="field-error">{proposal.validation.errors.length} validation error(s)</span>}<small className="muted">Apply or discard in the Copilot panel.</small></div>}
-
-    <div className="studio-body">
-      <Palette registry={registry} disabled={readOnly || !!proposal} onAdd={key => addItem(key)} />
-      <div className="canvas-wrap">
-        <Canvas spec={spec} registry={registry} selectedId={selectedId} onSelect={id => { setSelectedId(id); if (id) setTab('inspect') }} onSpecChange={update} onDropItem={(key, position) => addItem(key, position)}
-          overlay={stream.runId ? stream.overlay : null} issues={issues.map} proposal={proposal} readOnly={readOnly} fitKey={fitKey} />
-        {stream.runId && !stream.active && <button className="clear-run text-button" onClick={() => stream.attach(null)}>Clear run overlay</button>}
+    {runPop && <RunPopover ref={rpopRef} spec={spec} workflowId={workflowId} onCancel={() => setRunPop(false)} onRun={inputs => void startRun(inputs)} ignore={[testBtn]} />}
+    <div ref={canvasRef} className={cx('canvas', narrow && 'studio-narrow', anySheet && 'sheet-open')} style={{ ['--dh' as string]: dh + 'px', ['--dhh' as string]: (drawer.col ? 44 : drawer.h) + 'px' }}>
+      <Canvas spec={display} base={proposal ? spec : null} diff={proposal?.diff ?? null} registry={registry} overlay={overlay} selectedId={selectedId ?? (drawer.open ? runSel : null)}
+        locked={locked} subtitle={subtitle} onSelect={select} onMoved={onMoved} onConnect={onConnect} onInsert={onInsert} onUserMove={() => { autoV.current = false }} />
+      {viewing && <div className="rtoast"><span className="t">Viewing v{viewing.version} (read-only)</span><a href="#" onClick={e => { e.preventDefault(); setViewing(null) }}>Back to draft</a></div>}
+      {!viewing && stream.status === 'paused' && overlay && <div className="rtoast"><span className="dotx" /><span className="t">{waitText}</span>
+        <a href="/approvals" onClick={e => { e.preventDefault(); navigate('/approvals') }}>Review</a><a href="#" onClick={e => { e.preventDefault(); resetRun() }}>Reset</a></div>}
+      <div className="tb">
+        <Button ref={addBtn} icon="plus" aria-haspopup="true" disabled={locked} onClick={() => setAdd(a => a ? null : { edge: null })}>Add step</Button>
+        <span className="div" />
+        <IconButton icon="minus" label="Zoom out" onClick={() => { autoV.current = false; view.zoomBy(-0.1) }} />
+        <span className="zv">{Math.round(view.zoom * 100)}%</span>
+        <IconButton icon="plus" label="Zoom in" onClick={() => { autoV.current = false; view.zoomBy(0.1) }} />
+        <IconButton icon="fit" label="Fit to screen" onClick={() => { autoV.current = false; view.fit() }} />
+        <span className="div" />
+        <IconButton icon="undo" label="Undo" disabled={locked || !hist.past.length} onClick={undo} />
+        <IconButton icon="redo" label="Redo" disabled={locked || !hist.future.length} onClick={redo} />
       </div>
-      <aside className="right-panel">
-        <div className="tabs" role="tablist">{(['inspect', 'copilot', 'versions'] as const).map(item => <button key={item} role="tab" aria-selected={tab === item} className={`tab ${tab === item ? 'active' : ''}`} onClick={() => setTab(item)}>{item === 'inspect' ? (selected ? 'Inspector' : 'Settings') : item === 'copilot' ? 'Copilot' : 'Versions'}</button>)}</div>
-        <div className="right-body">
-          {tab === 'inspect' && (selected
-            ? <Inspector key={selected.id} node={selected} registry={registry} issues={issues.byNode[selected.id] ?? []} runNode={runNode} liveStatus={stream.runId ? stream.overlay.nodeStates[selected.id] ?? 'idle' : null} badges={stream.overlay.guardrails[selected.id] ?? []} readOnly={readOnly || !!proposal}
-                onChange={(node: WfNode) => update(current => ({ ...current, nodes: current.nodes.map(item => item.id === node.id ? node : item) }))}
-                onDelete={() => { update(current => ({ ...current, nodes: current.nodes.filter(item => item.id !== selected.id), edges: current.edges.filter(edge => edge.source !== selected.id && edge.target !== selected.id) })); setSelectedId(null) }}
-                onClose={() => setSelectedId(null)} />
-            : <WorkflowSettings spec={spec} registry={registry} readOnly={readOnly || !!proposal} onChange={update} />)}
-          {/* Copilot stays mounted so its conversation and pending proposal survive tab switches. */}
-          <div className="copilot-dock" hidden={tab !== 'copilot'}>{dirty && <Notice tone="warn">Copilot works on the saved draft. Save your canvas changes first.</Notice>}{readOnly ? <p className="small muted">Copilot edits require builder access to this workflow.</p> : <CopilotPanel workflowId={workflowId} spec={detail.spec} draftVersion={detail.draft_version} onPreview={value => setProposal(value)} onApplied={() => { setProposal(null); void load(true).then(() => setNotice('Copilot change applied as a new draft version. Use Undo to revert.')) }} />}</div>
-          {tab === 'versions' && <div className="versions"><h3>Versions</h3>{detail.versions.length === 0 ? <p className="small muted">No versions recorded.</p> : <ul>{[...detail.versions].sort((a, b) => b.version - a.version).map(version => <li key={version.version}><div><strong>v{version.version}</strong> <Badge tone={version.status === 'published' ? 'success' : undefined}>{version.status}</Badge>{version.version === detail.draft_version && <Badge>current draft</Badge>}<small>{date(version.created_at)} · {version.created_by}{version.parent_version ? ` · from v${version.parent_version}` : ''}</small>{version.note && <small>{version.note}</small>}</div>{!readOnly && version.version !== detail.draft_version && <Button className="subtle" disabled={busy !== null || !!proposal} onClick={() => { if (confirmDiscard()) void action(`restore-${version.version}`, `/workflows/${encodeURIComponent(workflowId)}/versions/${version.version}/restore`, `Restored v${version.version} as a new draft.`) }}>{busy === `restore-${version.version}` ? 'Restoring…' : 'Restore'}</Button>}</li>)}</ul>}</div>}
-        </div>
-      </aside>
+      {add && <AddStep groups={palette} onPick={pick} onClose={() => setAdd(null)} ignore={[addBtn]} />}
+      {canEdit && <div hidden={!copVisible}>
+        <CopilotPanel workflowId={workflowId} draftVersion={detail.draft_version} autoFocus={route.query.has('copilot')} beforeSend={flush}
+          onPreview={p => { setProposal(p); if (p) { autoV.current = true; setSheet(null) } }} onApplied={p => void onApplied(p)} onUndo={onUndo}
+          onTestRun={() => setRunPop(true)} onMinimise={() => setCopMin(true)} />
+      </div>}
+      {canEdit && copMin && !anySheet && <button type="button" className="fab" aria-label="Open Copilot" onClick={() => setCopMin(false)}><Icon name="spark" /></button>}
+      {sheet === 'step' && selNode && <StepSheet key={selNode.id + (viewing?.version ?? '') + (proposal?.proposal_id ?? '')} node={selNode} spec={display} registry={registry} groups={groups} readOnly={locked}
+        onSave={saveNode} onDelete={() => deleteNode(selNode.id)} onClose={() => { setSheet(null); setSelectedId(null) }} />}
+      {sheet === 'versions' && <VersionsSheet detail={detail} readOnly={!canEdit} onClose={() => setSheet(null)}
+        onView={async v => { if (v == null) { setViewing(null); setSheet(null); return } try { const r = await getVersion(workflowId, v); autoV.current = true; setViewing({ version: v, spec: r.spec }); setSheet(null) } catch (e) { toast(safeError(e)) } }}
+        onRestored={() => { setViewing(null); setSheet(null); setHist({ past: [], future: [] }); void load() }} />}
+      {drawer.open && stream.runId && <RunDrawer spec={spec} stream={stream} groupName={groupName} selected={runSel} onSelect={setRunSel} canvasRef={canvasRef}
+        collapsed={drawer.col} onCollapse={() => setDrawer(d => ({ ...d, col: !d.col }))} onResize={h => setDrawer(d => ({ ...d, col: false, h }))}
+        onClose={() => { setDrawer(d => ({ ...d, open: false })); if (TERMINAL_RUN.has(stream.status)) stream.attach(null) }} onRetry={id => void retry(id)} />}
     </div>
-    <TestPanel spec={spec} stream={stream} open={testOpen} onToggle={() => setTestOpen(value => !value)} onRun={inputs => void run(inputs)} running={busy === 'save'} runLabel={detail.can_edit ? 'Run draft' : 'Run published'} disabledReason={proposal ? 'Finish the Copilot preview first' : !detail.can_run ? 'You cannot run this workflow' : undefined} />
+    {submit && <SubmitModal detail={detail} onClose={() => setSubmit(false)} onDone={() => { setSubmit(false); void load() }} />}
+  </div>
+}
+
+function RunPopover({ spec, workflowId, onCancel, onRun, ignore, ref }: { spec: WorkflowSpec; workflowId: string; onCancel: () => void; onRun: (inputs: Record<string, unknown>) => void; ignore: React.RefObject<HTMLElement | null>[]; ref: React.RefObject<HTMLDivElement | null> }) {
+  const key = 'studio.run.' + workflowId
+  const [values, setValues] = useState<Record<string, string>>(() => { try { return JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string> } catch { return {} } })
+  useDismiss(true, onCancel, [ref, ...ignore])
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    try { localStorage.setItem(key, JSON.stringify(values)) } catch { /* per-viewer convenience only */ }
+    const out: Record<string, unknown> = {}
+    for (const i of spec.inputs) { const v = (values[i.name] ?? '').trim(); if (v === '') continue; out[i.name] = i.type === 'number' ? Number(v) : i.type === 'boolean' ? v === 'true' : v }
+    onRun(out)
+  }
+  const missing = spec.inputs.some(i => i.required && !(values[i.name] ?? '').trim())
+  return <div className="rpop" ref={ref} role="dialog" aria-label="Test run inputs">
+    <form onSubmit={submit}>
+      {spec.inputs.map((i, n) => <Field key={i.name} label={inputLabel(i.name)} htmlFor={'ri-' + i.name}>
+        {i.type === 'boolean'
+          ? <Select id={'ri-' + i.name} value={values[i.name] ?? ''} onChange={e => setValues(v => ({ ...v, [i.name]: e.target.value }))} options={[{ value: '', label: 'Choose' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]} />
+          : <Input id={'ri-' + i.name} mono={i.type === 'string' && /(_id|_key)$/.test(i.name)} type={i.type === 'number' ? 'number' : 'text'} autoFocus={n === 0} placeholder={i.description || undefined}
+              value={values[i.name] ?? ''} onChange={e => setValues(v => ({ ...v, [i.name]: e.target.value }))} />}
+      </Field>)}
+      {!spec.inputs.length && <p className="muted" style={{ margin: '0 0 12px' }}>This agent takes no inputs.</p>}
+      <div className="acts"><Button size="sm" onClick={onCancel}>Cancel</Button><Button variant="primary" size="sm" type="submit" disabled={missing}>Run</Button></div>
+    </form>
   </div>
 }

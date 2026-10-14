@@ -14,6 +14,12 @@ class User(Base):
     name: Mapped[str] = mapped_column(String)
     password_hash: Mapped[str] = mapped_column(Text)
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    # Migration 3: directory profile. Roles (capabilities) and groups never grant document access.
+    email: Mapped[str] = mapped_column(String, default='')
+    title: Mapped[str] = mapped_column(String, default='')  # job label shown in the UI, e.g. "Compliance lead"
+    status: Mapped[str] = mapped_column(String, default='active')  # active|invited|disabled
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=now, nullable=True)
 class Session(Base):
     __tablename__ = 'sessions'
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -143,6 +149,9 @@ class Workflow(Base):
     budget_key_ref: Mapped[str | None] = mapped_column(ForeignKey('credentials.id'), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Migration 3: publish review. '' | in_review | changes_requested, for review_version (the draft under review).
+    review_state: Mapped[str] = mapped_column(String, default='')
+    review_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 class WorkflowVersion(Base):
     __tablename__ = 'workflow_versions'
     __table_args__ = (UniqueConstraint('workflow_id', 'version'),)
@@ -199,10 +208,15 @@ class NodeState(Base):
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 3: run debug detail. Redacted rendered input and safe log lines; never source excerpts or secrets.
+    input: Mapped[dict] = mapped_column(JSON, default=dict)
+    logs: Mapped[list] = mapped_column(JSON, default=list)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
 class Approval(Base):
     __tablename__ = 'approvals'
     id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
-    run_id: Mapped[str] = mapped_column(ForeignKey('workflow_runs.id'))
+    # Migration 3: run_id is NULL for publish requests.
+    run_id: Mapped[str | None] = mapped_column(ForeignKey('workflow_runs.id'), nullable=True)
     workflow_id: Mapped[str] = mapped_column(ForeignKey('workflows.id'))
     workflow_version: Mapped[int] = mapped_column(Integer)
     node_id: Mapped[str] = mapped_column(String)
@@ -216,6 +230,10 @@ class Approval(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reason: Mapped[str] = mapped_column(String, default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Migration 3: run_action (paused run, exact write previews) | publish_request (version review; node_id '').
+    kind: Mapped[str] = mapped_column(String, default='run_action')
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)  # publish_request: diff, test summary, sources/tools, audience, note
+    approver_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
 class ActionExecution(Base):
     __tablename__ = 'action_executions'
     id: Mapped[str] = mapped_column(String, primary_key=True)  # idempotency key = sha256(run_id|node_id|index)
@@ -251,6 +269,10 @@ class McpServer(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Migration 3: builder-added servers start pending; usable only by their creator until an admin approves.
+    approval_status: Mapped[str] = mapped_column(String, default='approved')  # approved|pending_admin_approval|rejected
+    approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default='')
 class PlatformPolicy(Base):
     __tablename__ = 'platform_policies'
     key: Mapped[str] = mapped_column(String, primary_key=True)
@@ -272,6 +294,48 @@ class TriggerState(Base):
     __tablename__ = 'trigger_states'
     workflow_id: Mapped[str] = mapped_column(ForeignKey('workflows.id'), primary_key=True)
     value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+# ---- Iteration 3 (migration 3). Lead-owned contract. ----
+class Group(Base):
+    __tablename__ = 'groups'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String, unique=True)
+    description: Mapped[str] = mapped_column(String, default='')
+    used_for: Mapped[list] = mapped_column(JSON, default=list)  # audiences|approvers|tool_access|budgets
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+class GroupMember(Base):
+    __tablename__ = 'group_members'
+    group_id: Mapped[str] = mapped_column(ForeignKey('groups.id', ondelete='CASCADE'), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+class ModelConfig(Base):
+    __tablename__ = 'model_configs'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    alias: Mapped[str] = mapped_column(String, unique=True)  # gateway model_name
+    label: Mapped[str] = mapped_column(String, default='')
+    provider: Mapped[str] = mapped_column(String, default='')
+    model_id: Mapped[str] = mapped_column(String, default='')
+    api_base: Mapped[str] = mapped_column(String, default='')
+    credential_ref: Mapped[str | None] = mapped_column(ForeignKey('credentials.id'), nullable=True)  # encrypted key; never returned
+    input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_groups: Mapped[list] = mapped_column(JSON, default=list)  # group ids; [] = everyone
+    source: Mapped[str] = mapped_column(String, default='admin')  # env|admin
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+class BudgetLimit(Base):
+    __tablename__ = 'budget_limits'
+    __table_args__ = (UniqueConstraint('scope_type', 'scope_id'),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    scope_type: Mapped[str] = mapped_column(String)  # org|group|workflow|user
+    scope_id: Mapped[str] = mapped_column(String, default='')  # '' for org
+    limit_usd: Mapped[float] = mapped_column(Float)
+    threshold_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 class Migration(Base):
     __tablename__ = 'schema_migrations'

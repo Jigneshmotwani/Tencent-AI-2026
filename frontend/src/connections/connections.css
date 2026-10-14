@@ -1,0 +1,7 @@
+/* Connections rows: the prototype's .lrow with actions that wrap under the text on narrow screens. */
+.conn .lrow{flex-wrap:wrap}
+.conn .lrow .lacts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+.conn .lrow .st{font-size:13px;color:var(--ink2)}
+@media (max-width:700px){
+  .conn .lrow .lacts{flex:1 0 100%;justify-content:flex-start;padding-left:40px}
+}

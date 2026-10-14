@@ -33,6 +33,7 @@ class AuditQuery(BaseModel):
     workflow: str | None = Field(default=None, min_length=1, max_length=100, description='workflow id or exact name')
     operation: str | None = Field(default=None, max_length=80, description="exact name or prefix wildcard, e.g. 'source.*'")
     run_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9-]{1,64}$')
+    topic: str | None = Field(default=None, min_length=1, max_length=80, description='a named topic from the audit_labels policy')
     last_days: int | None = Field(default=None, ge=1, le=366)
     since: datetime | None = None
     until: datetime | None = None
@@ -77,6 +78,15 @@ def _filters(db, q: AuditQuery):
             conditions.append(AuditEvent.operation == q.operation)
     if q.run_id:
         conditions.append(AuditEvent.run_id == q.run_id)
+    if q.topic:
+        from .labels import load_labels
+        topics = {k.lower(): v for k, v in load_labels(db)['topics'].items()}
+        topic = topics.get(q.topic.lower())
+        if topic is None:
+            raise ValueError('unknown_topic')
+        parts = [func.lower(AuditEvent.container).in_([c.lower() for c in topic.get('containers') or []])]
+        parts += [cast(AuditEvent.resource_ids, JSONB).contains([r]) for r in topic.get('resource_ids') or []]
+        conditions.append(or_(*parts))
     since = q.since
     if q.last_days:
         window = datetime.now(timezone.utc) - timedelta(days=q.last_days)
@@ -88,8 +98,14 @@ def _filters(db, q: AuditQuery):
     return and_(*conditions) if conditions else None
 
 
-def event_row(row: AuditEvent, username: str | None) -> dict:
-    return {'seq': row.seq, 'timestamp': row.timestamp, 'actor': username or row.actor_id, 'operation': row.operation,
+def event_row(row: AuditEvent, user: User | None, ctx: tuple | None = None) -> dict:
+    from .labels import action_label, resource_label
+    labels, workflows, inputs = ctx or ({'containers': {}, 'resources': {}, 'topics': {}}, {}, {})
+    res, mono = resource_label(row, labels, workflows, inputs)
+    return {'seq': row.seq, 'timestamp': row.timestamp, 'actor': user.username if user else row.actor_id,
+            'actor_name': user.name if user else ('Unknown' if row.actor_id == 'unknown' else row.actor_id),
+            'actor_title': (user.title if user else '') or '', 'label': action_label(row.operation, row.outcome),
+            'resource_label': res, 'resource_mono': mono, 'hash': row.hash, 'operation': row.operation,
             'provider': row.provider, 'outcome': row.outcome, 'reason': row.reason, 'container': row.container,
             'resource_ids': list(row.resource_ids or []), 'decision': dict(row.decision or {}), 'workflow_id': row.workflow_id,
             'workflow_version': row.workflow_version, 'node_id': row.node_id, 'run_id': row.run_id, 'trace_id': row.trace_id,
@@ -98,13 +114,15 @@ def event_row(row: AuditEvent, username: str | None) -> dict:
 
 def execute(db, q: AuditQuery) -> dict:
     where = _filters(db, q)
-    base = select(AuditEvent, User.username).outerjoin(User, User.id == AuditEvent.actor_id)
+    base = select(AuditEvent, User).outerjoin(User, User.id == AuditEvent.actor_id)
     count = select(func.count()).select_from(AuditEvent)
     if where is not None:
         base, count = base.where(where), count.where(where)
     total = db.scalar(count) or 0
     rows = db.execute(base.order_by(AuditEvent.seq.desc()).limit(q.limit).offset(q.offset)).all()
-    events = [event_row(r, u) for r, u in rows]
+    from .labels import load_labels, page_context
+    ctx = (load_labels(db), *page_context(db, [r for r, _ in rows]))
+    events = [event_row(r, u, ctx) for r, u in rows]
     run_ids = list(dict.fromkeys(e['run_id'] for e in events if e['run_id']))[:MAX_RUNS]
     return {'total': total, 'limit': q.limit, 'offset': q.offset, 'events': events, 'runs': reconstruct(db, run_ids)}
 
@@ -206,7 +224,9 @@ def reconstruct(db, run_ids: list[str]) -> list[dict]:
 
 # ---- Natural language -> AuditQuery (validated JSON only) ----
 def _system_prompt(db) -> str:
-    users = list(db.scalars(select(User.username).order_by(User.username)))
+    users = [f'{u.username} ({u.name}{", " + u.title if u.title else ""})' for u in db.scalars(select(User).order_by(User.username))]
+    from .labels import load_labels
+    topics = sorted(load_labels(db)['topics'])
     workflows = list(db.scalars(select(Workflow.name).where(Workflow.status != 'archived').order_by(Workflow.name).limit(50)))
     operations = list(db.scalars(select(AuditEvent.operation).distinct().order_by(AuditEvent.operation).limit(80)))
     providers = sorted(set(PROVIDERS[:4]) | set(db.scalars(select(AuditEvent.provider).where(AuditEvent.provider.is_not(None)).distinct().limit(30))))
@@ -223,6 +243,7 @@ def _system_prompt(db) -> str:
         '  workflow: workflow name or id\n'
         '  operation: exact operation name or a prefix wildcard such as "source.*"\n'
         '  run_id: one run id\n'
+        '  topic: exact name of a known topic when the request is about it (e.g. a kind of case file)\n'
         '  last_days: integer 1-366 for relative windows ("last 30 days" -> 30, "this week" -> 7, "today" -> 1)\n'
         '  since / until: ISO-8601 UTC timestamps for absolute windows\n'
         '  limit: integer 1-200 (default 50)\n'
@@ -230,11 +251,15 @@ def _system_prompt(db) -> str:
         '"denied" or "blocked" access means outcome "denied". A "space" is a Confluence container; a "project" is Jira; '
         'a "channel" is Slack; a "folder" is Drive. Use only the known usernames when the request names a person.\n'
         f'Today (UTC): {today}\n'
-        f'Known usernames: {json.dumps(users)}\n'
+        f'Known users as "username (Name, Title)"; always output the username: {json.dumps(users)}\n'
+        f'Known topics: {json.dumps(topics)}\n'
         f'Known workflows: {json.dumps(workflows)}\n'
         f'Known operations: {json.dumps(operations)}\n'
         'Example: "everything operations accessed in the NSDEMO space in the last 30 days" -> '
         '{"actor":"operations","operation":"source.*","container":"NSDEMO","last_days":30}\n'
+        '"Opened" or "viewed" a file or case means operation "source.read". '
+        'Example: "who opened STR case files this week" (with a known topic "STR case files") -> '
+        '{"operation":"source.read","topic":"STR case files","last_days":7}\n'
         'Example: "denied Slack reads by compliance this week" -> '
         '{"actor":"compliance","provider":"slack","operation":"source.read","outcome":"denied","last_days":7}'
     )
@@ -278,3 +303,32 @@ async def translate(db, user, text: str, trace_id: str) -> AuditQuery:
         messages += [{'role': 'assistant', 'content': completion.text[:2000]},
                      {'role': 'user', 'content': 'That object was rejected (' + '; '.join(problems) + '). Reply with a corrected JSON object only.'}]
     raise ValueError(last)
+
+
+def describe(db, q: AuditQuery) -> str:
+    """Short human label for a filter chip, e.g. "STR case files · this week". Metadata only."""
+    from .labels import action_label
+    parts = []
+    if q.topic:
+        parts.append(q.topic)
+    if q.actor:
+        user = db.scalar(select(User).where(func.lower(User.username) == q.actor.lower()))
+        parts.append(user.name if user else q.actor)
+    if q.operation and not q.topic:
+        if q.operation == 'source.*':
+            parts.append('Source access')
+        elif q.operation.endswith('.*'):
+            parts.append(q.operation[:-2].replace('_', ' ').replace('.', ' ').capitalize())
+        else:
+            parts.append(action_label(q.operation, 'allowed'))
+    if q.container:
+        parts.append(q.container)
+    if q.provider and not q.container:
+        parts.append(q.provider.capitalize())
+    if q.workflow:
+        parts.append(q.workflow)
+    if q.outcome:
+        parts.append({'allowed': 'Allowed', 'denied': 'Denied', 'error': 'Errors'}[q.outcome])
+    if q.last_days:
+        parts.append('today' if q.last_days == 1 else 'this week' if q.last_days == 7 else f'last {q.last_days} days')
+    return ' · '.join(parts) or 'All events'

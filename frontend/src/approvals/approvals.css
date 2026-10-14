@@ -1,0 +1,16 @@
+/* Approvals additions on top of the prototype classes (.apc, .kv, .dif, .empty) in ui/app.css. Tokens only. */
+.ap-body{padding:0 0 24px}
+.ap-body .card{margin-bottom:16px}
+.apc .kv b{font-weight:500}
+.ap-act{display:grid;gap:12px;padding-top:12px;border-top:1px solid var(--line)}
+.ap-dest{font-weight:500}
+.ap-long{display:grid;gap:6px}
+.ap-long .draft-txt{background:var(--surface);max-height:180px;overflow:auto}
+.ap-raw summary{cursor:pointer;font-size:12.5px;color:var(--ink2);width:fit-content}
+.ap-raw summary:hover{color:var(--ink)}
+.ap-raw pre.json{margin:8px 0 0;background:var(--surface)}
+.ap-test{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ap-test .mono{font-size:12.5px}
+.ap-wait{display:flex;align-items:center;gap:8px;margin:0;color:var(--ink2);font-size:13px}
+.ap-wait .dotx{background:var(--amber)}
+.apc .chips.ro .chip{background:var(--surface)}

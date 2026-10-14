@@ -1,0 +1,7 @@
+{
+  "_label": "SYNTHETIC DEMO: Jira project for STR cases. No issues are seeded: FINCRIME cases are created only by approved Transaction Investigator actions.",
+  "project_key": "FINCRIME",
+  "name": "FinCrime cases",
+  "description": "SYNTHETIC DEMO project for the Northstar Pay STR scenario. Cases are created only through approved agent actions.",
+  "issue_type": "Task"
+}

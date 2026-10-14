@@ -1,0 +1,8 @@
+SYNTHETIC DEMO: RESTRICTED COMPLIANCE (Northstar Pay, fictional). Store in the limited-access Drive folder "FinCrime cases" (compliance identity only).
+Case file: FC-2026-014, Harbourline Trading Pte. Ltd. (customer CUS-48213). Status: closed, STR filed.
+
+Alert ALR-2207 (11 March 2026): 6 inbound transfers totalling S$310,000 from 4 new overseas senders within 48 hours; S$295,000 moved onward within 2 days.
+MLRO escalation: 11 March 2026 (same business day).
+STR filed with STRO via SONAR: 13 March 2026, reference SONAR-SYN-0314 (synthetic).
+Outcome: enhanced monitoring for 6 months from 13 March 2026, with monthly reviews by Compliance. Customer not informed (no tipping-off).
+Lesson recorded: inbound bursts from new overseas senders on this account are a repeat pattern.

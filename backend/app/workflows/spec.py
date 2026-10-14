@@ -79,6 +79,10 @@ class Policies(Strict):
 
 
 class Audience(Strict):
+    # Iteration 3: kind selects the rule. legacy = the iteration-2 roles/users rules below; only_me = owner only;
+    # group = member of one of `groups` (group ids); everyone = any account with the `user` capability.
+    kind: Literal['legacy', 'only_me', 'group', 'everyone'] = 'legacy'
+    groups: list[str] = Field(default_factory=list)  # group ids (kind=group)
     roles: list[str] = Field(default_factory=list)  # capability names: user|builder|admin
     users: list[str] = Field(default_factory=list)  # usernames
 

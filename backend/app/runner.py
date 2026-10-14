@@ -81,7 +81,9 @@ async def execute(run_id,user):
             event(run_id,'retrieval_completed',{'evidence_count':len(evidence),'limitations':limitations})
             span.set_attribute('evidence.count',len(evidence))
             if not evidence:
-                text = 'Answer\nThere is insufficient accessible information to answer this question.\n\nMissing information\n'+'\n'.join(limitations)+'\n\nSuggested next steps\nConnect your own source accounts and confirm the selected demo folder and space contain readable relevant documents.'
+                # Calm, generic copy: never hints that a restricted item exists (limitations stay on the run record).
+                from .prompt import NO_EVIDENCE_ANSWER
+                text = NO_EVIDENCE_ANSWER
                 event(run_id,'answer_delta',{'text':text})
                 with SessionLocal() as db:
                     assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant')); assistant.text=text

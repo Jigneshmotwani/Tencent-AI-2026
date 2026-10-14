@@ -1,0 +1,50 @@
+/* Studio: React Flow restyled to the prototype canvas (tokens only; prototype classes live in ui/app.css). */
+.studio-home{background:var(--bg)}
+.tpl .d{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tpl:disabled{opacity:.6;cursor:default}
+.ag-tbl td .muted{color:var(--ink2)}
+
+/* canvas */
+.st-flow .react-flow{background:transparent}
+.st-flow .react-flow__pane{cursor:grab}
+.st-flow .react-flow__pane.dragging{cursor:grabbing}
+.st-flow .react-flow__node{cursor:grab;border-radius:var(--r-card)}
+.st-flow .react-flow__node.dragging .node{cursor:grabbing;box-shadow:var(--sh2)}
+.st-flow .react-flow__node.dragging{z-index:4!important}
+.st-flow .react-flow__node .node{position:relative}
+.st-flow .react-flow__node:focus-visible{outline:none}
+.st-flow .react-flow__edges{overflow:visible}
+.st-flow .react-flow__edge{pointer-events:none}
+.st-flow .react-flow__edge .ehit{pointer-events:stroke}
+.st-flow .react-flow__edgelabel-renderer{z-index:3}
+.st-flow .react-flow__edgelabel-renderer .plus,.st-flow .react-flow__edgelabel-renderer .elabel{left:0;top:0}
+.st-flow .react-flow__edgelabel-renderer .plus{pointer-events:all;transform-origin:center}
+.st-flow .react-flow__edgelabel-renderer .plus:not(.show):not(:focus-visible){opacity:0}
+.st-flow .react-flow__edgelabel-renderer .plus.show,.st-flow .react-flow__edgelabel-renderer .plus:focus-visible{opacity:1}
+.st-flow .react-flow__connectionline{z-index:5}
+
+/* handles: output dot at the bottom centre (router branches spread along the bottom); invisible input target at the top */
+.st-flow .react-flow__handle.handle{width:8px;height:8px;min-width:0;min-height:0;top:auto;bottom:-5px;margin-left:-4px;transform:none;border-radius:50%;
+  background:var(--surface);border:1.5px solid var(--line2);cursor:crosshair;z-index:2;transition:transform .12s,border-color .12s,background .12s}
+.st-flow .react-flow__handle.handle:hover{transform:scale(1.7);border-color:var(--ink);background:var(--mint)}
+.st-flow .react-flow__handle.tgt{width:48px;height:12px;min-width:0;min-height:0;top:-6px;left:50%;transform:translateX(-50%);border:0;border-radius:6px;background:transparent;opacity:1}
+.st-flow .react-flow__handle.tgt.connectingto,.st-flow .react-flow__handle.tgt.valid{background:rgba(190,255,207,.6);box-shadow:0 0 0 1px var(--ink)}
+
+/* Copilot preview diff: added green, changed amber, removed red */
+.node.df-add{border-color:var(--green);box-shadow:0 0 0 1px var(--green),0 0 0 4px var(--green-soft)}
+.node.df-chg{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber),0 0 0 4px var(--amber-soft)}
+.node.df-rem{border-color:var(--danger);border-style:dashed;opacity:.55;box-shadow:none}
+.eg.df-add .eb{stroke:var(--green);stroke-width:2}
+.eg.df-rem .eb{stroke:var(--danger);stroke-dasharray:4 4}
+
+/* run drawer bits */
+.rot180{transform:rotate(180deg)}
+.dsum .dst .dotx.green{background:var(--green)}
+.si.run svg,.si.wait svg,.si.pend svg,.si.skip svg{display:none}
+.ddet .draft-txt .markdown p{margin:0 0 10px}
+.ddet .draft-txt .markdown>*:last-child{margin-bottom:0}
+.ddet .draft-txt h1,.ddet .draft-txt h2,.ddet .draft-txt h3{font-size:14px;margin:0 0 8px}
+.cop-b .m.muted{color:var(--ink2)}
+.cop .cop-f{margin-bottom:14px}
+.cop .send:disabled{cursor:default}
+.rtoast a{cursor:pointer}

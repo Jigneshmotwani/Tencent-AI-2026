@@ -30,6 +30,34 @@ async def lifespan(app):
     provider.shutdown()
 
 app=FastAPI(title='Knowledge Assistant', lifespan=lifespan, docs_url=None, redoc_url=None)
+
+# Iteration 3 (W4): page access is enforced in the API by route family (403 page_forbidden). Added first, so it runs
+# inside TrustedHost/CORS. Unauthenticated requests pass through and the route answers 401 as before.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+
+def _page_denied(path, method, token):
+    from .admin.directory import page_for, pages_for
+    page = page_for(path, method)
+    if page is None or not token or len(token) > 256:
+        return None
+    with SessionLocal() as db:
+        from .db import Session as BrowserSession
+        session = db.get(BrowserSession, identity.digest(token))
+        user = db.get(User, session.user_id) if session is not None else None
+        if user is None or page in pages_for(user):
+            return None
+        audit(db, user.id, 'access.page', 'denied', 'page_forbidden', details={'page': page, 'method': method})
+        return page
+
+async def page_access_guard(request, call_next):
+    if request.url.path.startswith('/api/'):
+        denied = await run_in_threadpool(_page_denied, request.url.path, request.method, request.cookies.get(identity.COOKIE, ''))
+        if denied:
+            return JSONResponse({'detail': 'page_forbidden'}, status_code=403)
+    return await call_next(request)
+app.add_middleware(BaseHTTPMiddleware, dispatch=page_access_guard)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','[::1]'])
 app.add_middleware(CORSMiddleware,allow_origins=[settings().app_origin],allow_credentials=True,
     allow_methods=['GET','POST','PUT','PATCH','DELETE'],allow_headers=['Content-Type','X-CSRF-Token'])
@@ -40,7 +68,11 @@ from .workflows.api import router as workflows_router
 from .copilot.api import router as copilot_router
 from .mcp.api import router as mcp_router
 from .audit.api import router as audit_router
-for _router in (workflows_router, copilot_router, mcp_router, audit_router): app.include_router(_router, prefix='/api')
+# Iteration 3 (W4): admin router before the audit router so its GET /policies (lead payload + extras) is the one served.
+from .admin.api import router as admin_router
+from .workflows.debug import router as workflow_debug_router
+from .sources_api import router as sources_router
+for _router in (admin_router, workflows_router, workflow_debug_router, copilot_router, mcp_router, audit_router, sources_router): app.include_router(_router, prefix='/api')
 
 @app.get('/api/studio/registry')
 def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
@@ -49,13 +81,14 @@ def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depend
     from .workflows.registry import public_registry
     from .mcp.registry import list_tools
     from .governance.policies import get_policy
-    from .gateway import model_aliases
+    from .governance.models import enabled_aliases
+    from .admin.directory import user_group_ids
     policy=get_policy(db)
-    models=[m for m in model_aliases() if not policy.get('allowed_models') or m in policy['allowed_models']]
+    models=[m for m in enabled_aliases(user_group_ids(db,user.id)) if not policy.get('allowed_models') or m in policy['allowed_models']]
     reg=public_registry(); cfg=settings()
     if not cfg.slack_enabled:  # hide Slack tools until Slack is configured
         reg={**reg,'builtin_tools':[t for t in reg['builtin_tools'] if not t.startswith('slack.')],'write_tools':[t for t in reg['write_tools'] if not t.startswith('slack.')]}
-    return {**reg,'mcp_tools':list_tools(db),'models':models,'sources':cfg.enabled_sources,'policy':policy}
+    return {**reg,'mcp_tools':list_tools(db,user_id=user.id),'models':models,'sources':cfg.enabled_sources,'policy':policy}
 
 @app.middleware('http')
 async def response_security(request, call_next):
@@ -197,3 +230,35 @@ def activity_detail(id:str,user:User=Depends(identity.current_user),db:DBSession
 def audit_metadata(user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
     if not ({'admin','auditor'} & set(identity.effective_capabilities(user))): raise HTTPException(403,'capability_required')
     return [audit_summary(r) for r in db.scalars(select(AuditEvent).order_by(AuditEvent.timestamp.desc()).limit(200))]
+
+# ---- Iteration 3 (W4): invoke an agent from Workspace chat; the chat history keeps an inline run card ----
+class AgentRunBody(BaseModel):
+    workflow_id: str = Field(min_length=1, max_length=64)
+    inputs: dict = Field(default_factory=dict)
+@app.post('/api/conversations/{id}/agent-runs',status_code=202)
+async def conversation_agent_run(id:str,body:AgentRunBody,request:Request,user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
+    consumer(user); identity.require_mutation(request,user,db); conv=owned(db,Conversation,id,user)
+    from .db import Workflow, WorkflowVersion
+    from .workflows import engine as workflow_engine
+    from .workflows.api import _published_for
+    wf=db.get(Workflow,body.workflow_id)
+    row=_published_for(db,wf,user) if wf is not None else None
+    if row is None and wf is not None and wf.owner_id==user.id and 'builder' in identity.effective_capabilities(user) and wf.status!='archived':
+        row=db.scalar(select(WorkflowVersion).where(WorkflowVersion.workflow_id==wf.id,WorkflowVersion.version==wf.draft_version))
+    if wf is None or row is None:
+        audit(db,user.id,'access.workflows','denied','not_available'); raise HTTPException(404,'not_found')
+    if workflow_engine.active_count()>=settings().workflow_max_active: raise HTTPException(429,'run_capacity_reached')
+    try:
+        run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=(row.spec.get('trigger') or {}).get('type','manual'))
+    except ValueError as exc:
+        code=str(exc)
+        if code=='validation_failed': raise HTTPException(422,{'code':'validation_failed','validation':getattr(exc,'validation',None)}) from None
+        if code.startswith('missing_input:'): raise HTTPException(422,{'code':'missing_input','input':code.split(':',1)[1]}) from None
+        raise HTTPException(422,'invalid_input') from None
+    shown=', '.join(str(v) for v in (run.inputs or {}).values() if str(v).strip())[:600]
+    text_=f'@{wf.name}'+(f' · {shown}' if shown else '')
+    db.add(Message(conversation_id=conv.id,role='user',text=text_))
+    reply=Message(conversation_id=conv.id,role='assistant',text=wf.name,status='agent_run',run_id=run.id); db.add(reply)
+    if conv.title=='New conversation': conv.title=text_[:70]
+    db.commit()
+    return {'run_id':run.id,'message_id':reply.id}

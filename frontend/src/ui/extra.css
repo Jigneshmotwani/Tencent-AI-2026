@@ -1,0 +1,19 @@
+/* App-level additions not covered by the prototype classes (kept minimal; same tokens). */
+#root{height:100%}
+.tipw{position:relative;display:inline-flex}
+.tipw:hover::after,.tipw:focus-within::after{content:attr(data-tipx);position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);background:#fff;color:var(--ink);box-shadow:var(--sh2);font-size:12px;font-weight:500;padding:4px 8px;border-radius:6px;white-space:nowrap;pointer-events:none;z-index:60}
+.page-center{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--alt)}
+.login{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sheet);box-shadow:var(--sh1);padding:28px 24px}
+.login .brand{display:flex;align-items:center;gap:10px;margin-bottom:24px}
+.login .brand .brand-mark{background:var(--ink);color:var(--mint)}
+.login .brand b{font:600 17px/1 var(--f-title)}
+.login h1{font-size:19px;margin-bottom:4px}
+.login p{margin:0 0 20px;color:var(--ink2);font-size:13px}
+.login .btn{width:100%}
+.err-t{color:var(--danger);font-size:13px;margin:0 0 12px}
+.ws-note{margin:0 auto;max-width:var(--wrap-narrow);color:var(--ink2);font-size:13px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.link{border:0;background:none;padding:0;color:var(--link);font-weight:500;text-decoration:none;cursor:pointer}
+.link:hover{text-decoration:underline}
+.au-tbl td{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.integ.broken b{color:var(--danger)}

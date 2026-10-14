@@ -16,10 +16,9 @@ import re
 from pydantic import ValidationError
 
 from ..workflows.registry import AGENT_READ_TOOLS, BUILTIN_TOOLS, NODE_TYPES, WRITE_TOOLS, public_registry
-from ..workflows.spec import ID, OPS, SOURCES, TEMPLATE, InputDef, OpError, Policies, WorkflowSpec, apply_operations, auto_layout
+from ..workflows.spec import ID, OPS, SOURCES, TEMPLATE, InputDef, OpError, Policies, WorkflowSpec, apply_operations
 
 MAX_OPS = 40
-DX, DY = 280, 140
 ID_RE = re.compile(ID)
 OP_KEYS = {'add_node': {'node'}, 'update_node_config': {'node_id', 'config', 'label'}, 'remove_node': {'node_id'},
            'connect': {'edge'}, 'disconnect': {'edge_id', 'source', 'target'}, 'set_policy': {'policies'},
@@ -42,8 +41,15 @@ def build_context(db) -> dict:
     mcp = [t for t in list_tools(db) if ok(t['qualified'])]
     builtin = [t for t in BUILTIN_TOOLS if ok(f'builtin:{t}')]
     models = [m for m in model_aliases() if not policy.get('allowed_models') or m in policy['allowed_models']]
+    try:
+        from ..db import Group
+        from sqlalchemy import select
+        groups = [{'id': g.id, 'name': g.name, 'used_for': list(g.used_for or [])} for g in db.scalars(select(Group).order_by(Group.name))]
+    except Exception:  # noqa: BLE001 - directory not migrated yet
+        groups = []
+    from ..config import settings
     return {'registry': public_registry(), 'mcp_tools': mcp, 'builtin_tools': builtin, 'models': models,
-            'sources': list(SOURCES), 'policy': policy}
+            'sources': list(settings().enabled_sources), 'policy': policy, 'groups': groups}
 
 
 def _compact_schema(schema: dict) -> dict:
@@ -81,7 +87,7 @@ You edit a WorkflowSpec (a DAG of typed nodes) by proposing graph operations. Yo
 every operation and rejects invalid ones.
 
 Return ONLY one JSON object (no markdown, no prose outside it):
-{"explanation": "<one short paragraph for the builder>", "operations": [<op>, ...], "unsupported": ["<requested capability that is not registered + the nearest registered alternative>"]}
+{"explanation": "<short plain reply to the builder>", "operations": [<op>, ...], "unsupported": ["<requested capability that is not registered + the nearest registered alternative>"]}
 
 Operation shapes (exact keys; applied in order):
 - {"op":"add_node","node":{"id":"snake_case_id","type":"<registered node type>","label":"Short label","config":{...}}}
@@ -90,42 +96,110 @@ Operation shapes (exact keys; applied in order):
 - {"op":"connect","edge":{"source":"<id>","target":"<id>","sourceHandle":"<router case; only on edges leaving a logic.router>"}}
 - {"op":"disconnect","edge_id":"<existing edge id>"}
 - {"op":"set_policy","policies":{"allowed_tools":["builtin:jira.comment","mcp:<server>/<tool>"]}}
-- {"op":"set_inputs","inputs":[{"name":"case_key","type":"string","required":true,"description":"..."}]}
+- {"op":"set_inputs","inputs":[{"name":"alert_id","type":"string","required":true,"description":"..."}]}
 - {"op":"rename","name":"...","description":"..."}
 
 Rules:
-1. Use ONLY node types listed in NODE_TYPES and tools listed in MCP_TOOLS / BUILTIN_TOOLS, models in MODELS, sources in SOURCES.
-   Never invent node types, MCP servers, tools, sources or models. If the user asks for a capability that is not available,
-   leave it out and add an "unsupported" entry that names the nearest registered alternative.
+1. Use ONLY node types listed in NODE_TYPES, tools in MCP_TOOLS / BUILTIN_TOOLS, models in MODELS, sources in SOURCES and
+   approver groups in GROUPS. Never invent node types, MCP servers, tools, sources, groups or models. If the user asks for
+   something that is not available, leave it out and add an "unsupported" entry that names the nearest registered alternative.
 2. To insert X between A and B: disconnect the A->B edge, add X, connect A->X, connect X->B. Keep one connected DAG that starts at
-   exactly one trigger node and whose paths end at an output node. No cycles.
-3. Write tools (jira.comment, jira.transition, jira.create_issue, slack.post) must have a human.approval node upstream on the
-   same path (put the approval immediately before the write actions). Agents never get write tools.
+   exactly one trigger node. No cycles. A path may end at an output node or at a write action.
+3. Write tools (jira.comment, jira.transition, jira.create_issue, slack.post) must have a human.approval node upstream on EVERY
+   path (put the approval immediately before the write actions). A write on a router branch needs its own approval on that
+   branch. Agents never get write tools. Set human.approval approver_group to a GROUPS name when the user names who approves
+   (e.g. "compliance approval" -> the compliance leads group if listed); set allow_requester false for those approvals.
 4. logic.router: config {"value":"{{nodes.<id>.output.<field>}}","cases":[...],"default":"<case>"} and exactly one outgoing edge
-   per case with sourceHandle=<case>. Edges leaving other node types have no sourceHandle.
+   per case with sourceHandle=<case>. Unmatched values take the default case, so for "if the risk is high" use
+   cases ["high","low_medium"] with default "low_medium" (wire "low_medium" only if the user wants something done otherwise).
+   Edges leaving other node types have no sourceHandle.
 5. Data flows through templates in string config values: {{inputs.<name>}}, {{nodes.<id>.output.<path>}}. A value that is exactly
    one template keeps its JSON type (use this to pass arrays/objects, e.g. MCP tool arguments). Only reference upstream nodes and
-   declared inputs. Output shapes: tool.mcp -> output.content.<field of the tool result> (kyb-registry lookup_company returns
-   all_names, directors, shareholders, ssic, ...); tool.builtin jira.get_issue -> output.fields.facts.<Key> (Company, UEN, Country)
-   and output.fields.status; llm.generate -> output.<field of its output_schema> (output.text when no schema);
-   guardrail.output -> output.result.<field of the checked node's output>; human.approval -> output.decision.
+   declared inputs. Output shapes: tool.mcp -> output.content.<field of the tool result>; tool.builtin jira.get_issue ->
+   output.fields.facts.<Key> and output.fields.status; llm.generate -> output.<field of its output_schema> (output.text when no
+   schema); guardrail.output -> output.result.<field of the checked node's output>; human.approval -> output.decision.
+   A Jira write about an alert targets the issue key from the alert data (txn-monitoring get_alert returns jira_issue), never
+   the alert id. A light approval for a routine note may allow the requester (allow_requester true, no approver_group).
 6. tool.mcp config is {"server":"<server>","tool":"<tool>","arguments":{...}} with arguments matching that tool's input_schema.
    tool.builtin config is {"tool":"<builtin tool>","params":{...}}.
-7. Good practice: knowledge.retrieve -> guardrail.input -> llm.generate (cites evidence) -> guardrail.output (target = the llm node)
-   -> output. Add guardrails when you add retrieval or generation. Keep prompts concise and instruct citing [E#] evidence labels.
-   Downstream nodes (output templates, routers, RFI prompts) must read the CHECKED result {{nodes.<guardrail_id>.output.result...}}
-   (e.g. output.result.text for free text), never the raw llm.generate output that the guardrail verified.
-8. Do not give positions (layout is computed). Use short, unique snake_case ids (^[a-z][a-z0-9_]*$). Labels <= 40 characters.
+7. Good practice: tool.mcp / knowledge.retrieve -> guardrail.input (mask PII) -> llm.generate (structured, cites evidence) ->
+   guardrail.output (target = the llm node) -> router / actions. Downstream nodes must read the CHECKED result
+   {{nodes.<guardrail_id>.output.result...}}, never the raw llm.generate output that the guardrail verified. Keep prompts concise
+   and instruct citing [E#] evidence labels. Only add an output node when the user asks for a summary or report.
+8. Do not give positions (layout is computed top to bottom). Use short, unique snake_case ids (^[a-z][a-z0-9_]*$).
+   Labels: 1 to 4 plain words in sentence case, like "Get alert", "Mask PII", "Check citations", "Risk ≥ high?". When a request
+   matches the WORKED EXAMPLE, reuse its ids, labels and configs exactly and only adapt what the request changes.
 9. Make minimal edits. Do not duplicate a capability that already exists in the spec; say so in the explanation instead.
    Never copy trimmed text that ends with "…".
 10. If the workflow's policies.allowed_tools is non-empty and you use a new tool, set_policy allowed_tools to the full new list.
-11. Never put credentials, secrets or real customer data into configs.'''
+11. Never put credentials, secrets or real customer data into configs.
+12. explanation: one or two short plain sentences for a business user, no node ids, no JSON, no jargon. When you build a whole
+    workflow start with "Done. I added N steps:" (N = nodes you added, the trigger included) and say what it does in one breath.
+    For an edit, say what changed, e.g. "Added a 'Close with note' branch for low and medium risk."'''
 
 CREATE_HINT = '''Build a complete NEW workflow from the user's description. The current spec only has a trigger node "trigger"
 (trigger.manual) and no inputs. If the workflow answers questions typed in chat, replace it: remove_node "trigger", then add_node
 {"id":"trigger","type":"trigger.chat"} and set_inputs [{"name":"question","type":"string","required":true,"description":"..."}].
-Otherwise keep trigger.manual and declare the needed inputs with set_inputs. Rename the workflow with a concise name and a
-one-sentence description. Restrict knowledge.retrieve sources to what the user asked for.'''
+Otherwise keep trigger.manual (relabel it with update_node_config) and declare the needed inputs with set_inputs. Rename the
+workflow with a concise name and a one-sentence description. Restrict knowledge.retrieve sources to what the user asked for
+(default: every source in SOURCES).'''
+
+EXAMPLE_REQUEST = ('Build an agent that investigates a flagged transaction alert, checks it against our AML policy, and drafts an STR '
+                   'for compliance approval if the risk is high')
+EXAMPLE_EXPLANATION = ('Done. I added 10 steps: it pulls the alert, finds policy and past cases, masks PII, assesses risk, and drafts '
+                       'an STR that waits for compliance approval before filing to Jira.')
+
+
+def worked_example(ctx: dict) -> str | None:
+    """One worked example (the STR scenario) built from the code-defined template, shaped as create-mode operations.
+    Only offered when the txn-monitoring tools and an approver group are actually available."""
+    if not any(t['server'] == 'txn-monitoring' and t['tool'] == 'get_alert' for t in ctx['mcp_tools']):
+        return None
+    from ..workflows.templates import APPROVER_GROUP, transaction_investigator
+    group = next((g['name'] for g in ctx.get('groups') or [] if g['name'] == APPROVER_GROUP), None)
+    spec = transaction_investigator(1, approver_group=group or '', sources=[s for s in ('confluence', 'drive', 'jira', 'slack') if s in ctx['sources']])
+    ops: list[dict] = [{'op': 'rename', 'name': spec['name'], 'description': spec['description']},
+                       {'op': 'set_inputs', 'inputs': spec['inputs']},
+                       {'op': 'update_node_config', 'node_id': 'trigger', 'config': {}, 'label': 'Alert received'}]
+    rename = {'alert': 'trigger'}
+    for n in spec['nodes']:
+        if n['id'] in rename:
+            continue
+        cfg = dict(n['config'])
+        if n['type'] == 'human.approval' and not group:
+            cfg.pop('approver_group', None)
+        ops.append({'op': 'add_node', 'node': {'id': n['id'], 'type': n['type'], 'label': n['label'], 'config': cfg}})
+    for e in spec['edges']:
+        edge = {'source': rename.get(e['source'], e['source']), 'target': e['target']}
+        if e.get('sourceHandle'):
+            edge['sourceHandle'] = e['sourceHandle']
+        ops.append({'op': 'connect', 'edge': edge})
+    ops.append({'op': 'set_policy', 'policies': {'allowed_tools': spec['policies']['allowed_tools']}})
+    return json.dumps({'explanation': EXAMPLE_EXPLANATION, 'operations': ops, 'unsupported': []}, ensure_ascii=False, separators=(',', ':'))
+
+
+EDIT_REQUEST = 'Also close low-risk alerts with a Jira note.'
+EDIT_EXPLANATION = "Added a 'Close with note' branch for low and medium risk."
+
+
+def edit_example(ctx: dict, spec: dict) -> str | None:
+    """Worked edit example (the v1 -> v2 'Close with note' branch), offered only for an alert-investigation graph that uses the
+    example's node ids. The comment goes to the Jira issue named in the alert data, behind its own light approval."""
+    ids = {n['id']: n for n in spec.get('nodes', [])}
+    if not ({'get_alert', 'check_citations', 'risk_router'} <= set(ids)) or ids['risk_router']['type'] != 'logic.router':
+        return None
+    from ..workflows.templates import transaction_investigator
+    v2 = {n['id']: n for n in transaction_investigator(2)['nodes']}
+    tools = list((spec.get('policies') or {}).get('allowed_tools') or [])
+    ops = [{'op': 'update_node_config', 'node_id': 'risk_router', 'config': {'cases': ['high', 'low_medium'], 'default': 'low_medium'}}]
+    for nid in ('confirm_close', 'close_note'):
+        n = v2[nid]
+        ops.append({'op': 'add_node', 'node': {'id': nid, 'type': n['type'], 'label': n['label'], 'config': n['config']}})
+    ops += [{'op': 'connect', 'edge': {'source': 'risk_router', 'target': 'confirm_close', 'sourceHandle': 'low_medium'}},
+            {'op': 'connect', 'edge': {'source': 'confirm_close', 'target': 'close_note'}}]
+    if tools and 'builtin:jira.comment' not in tools:
+        ops.append({'op': 'set_policy', 'policies': {'allowed_tools': tools + ['builtin:jira.comment']}})
+    return json.dumps({'explanation': EDIT_EXPLANATION, 'operations': ops, 'unsupported': []}, ensure_ascii=False, separators=(',', ':'))
 
 
 def build_messages(ctx: dict, spec: dict, history: list[dict], message: str, mode: str) -> list[dict]:
@@ -136,14 +210,26 @@ def build_messages(ctx: dict, spec: dict, history: list[dict], message: str, mod
                        'input_schema': _compact_schema(t.get('input_schema') or {}), 'synthetic_data': t['synthetic']} for t in ctx['mcp_tools']],
         'BUILTIN_TOOLS': ctx['builtin_tools'], 'WRITE_TOOLS': sorted(WRITE_TOOLS), 'AGENT_READ_TOOLS': AGENT_READ_TOOLS,
         'MODELS': ctx['models'], 'SOURCES': ctx['sources'],
+        'GROUPS': [g['name'] for g in ctx.get('groups') or []],
         'PLATFORM_POLICY': {k: ctx['policy'].get(k) for k in ('allowed_models', 'allowed_tools', 'approval_required_for') if k in ctx['policy']},
     }
     messages = [{'role': 'system', 'content': SYSTEM + ('\n\n' + CREATE_HINT if mode == 'create' else '')},
-                {'role': 'user', 'content': 'REGISTRY (the only things you may use):\n' + json.dumps(catalog, separators=(',', ':'))},
+                {'role': 'user', 'content': 'REGISTRY (the only things you may use):\n' + json.dumps(catalog, ensure_ascii=False, separators=(',', ':'))},
                 {'role': 'assistant', 'content': '{"explanation":"Registry loaded.","operations":[],"unsupported":[]}'}]
+    example = worked_example(ctx) if mode == 'create' else None
+    edit = edit_example(ctx, spec) if mode != 'create' else None
+    if edit:
+        messages += [{'role': 'user', 'content': 'WORKED EXAMPLE (edit). CURRENT SPEC: an alert investigation with nodes get_alert, '
+                                                 'check_citations and risk_router (cases ["high"]).\nREQUEST:\n' + EDIT_REQUEST +
+                                                 '\n\nReply with the JSON object only.'},
+                     {'role': 'assistant', 'content': edit}]
+    if example:
+        messages += [{'role': 'user', 'content': 'WORKED EXAMPLE. CURRENT SPEC: the new-workflow starting point (one trigger.manual node "trigger").\n'
+                                                 'REQUEST:\n' + EXAMPLE_REQUEST + '\n\nReply with the JSON object only.'},
+                     {'role': 'assistant', 'content': example}]
     for item in history[-6:]:
         messages.append({'role': item['role'], 'content': item['text'][:1500]})
-    messages.append({'role': 'user', 'content': 'CURRENT SPEC:\n' + json.dumps(spec_view(spec), separators=(',', ':')) +
+    messages.append({'role': 'user', 'content': 'CURRENT SPEC:\n' + json.dumps(spec_view(spec), ensure_ascii=False, separators=(',', ':')) +
                      '\n\nREQUEST:\n' + message.strip() + '\n\nReply with the JSON object only.'})
     return messages
 
@@ -157,7 +243,7 @@ def parse_json(text: str) -> dict:
     start, end = text.find('{'), text.rfind('}')
     if start < 0 or end <= start:
         raise ValueError('no_json')
-    data = json.loads(text[start:end + 1])
+    data = json.loads(text[start:end + 1], strict=False)  # tolerate raw newlines inside long prompt strings
     if not isinstance(data, dict):
         raise ValueError('not_object')
     return data
@@ -226,6 +312,15 @@ class Sanitizer:
         if ntype in ('llm.generate', 'agent') and config.get('model_alias') and config['model_alias'] not in self.ctx['models']:
             self._unsupported(f'Model "{config["model_alias"]}"', _nearest(config['model_alias'], self.ctx['models']))
             config.pop('model_alias')
+        if ntype == 'human.approval' and config.get('approver_group'):
+            ref = str(config['approver_group']).strip()
+            groups = self.ctx.get('groups') or []
+            match = next((g for g in groups if g['id'] == ref or g['name'].lower() == ref.lower()), None)
+            if match is None:
+                self._unsupported(f'Approver group "{ref[:60]}"', _nearest(ref, [g['name'] for g in groups]))
+                config.pop('approver_group')
+            else:
+                config['approver_group'] = match['id']  # stored as the group id (the step sheet shows its name)
         if ntype == 'knowledge.retrieve' and isinstance(config.get('sources'), list):
             bad = [s for s in config['sources'] if s not in SOURCES]
             for s in bad:
@@ -348,54 +443,104 @@ def apply_sanitized(ctx: dict, base: dict, raw_ops, mode: str):
     return applied, working, san.warnings, san.unsupported
 
 
-# ---- placement --------------------------------------------------------------------------------------------------------
-def place_nodes(base: dict, spec: dict, added: list[str], full: bool = False) -> None:
+# ---- placement (top-to-bottom) ------------------------------------------------------------------------------------------
+COL, ROW = 280, 88  # branch spacing (x, branches at -140 / +140) and row pitch (y); the main column is x=0
+
+
+def _graph(spec: dict):
     nodes = {n['id']: n for n in spec['nodes']}
-    if full or not base.get('nodes') or len(added) > max(3, len(nodes) // 2):
-        auto_layout(spec)
-        return
     preds = {i: [] for i in nodes}; succs = {i: [] for i in nodes}
     for e in spec['edges']:
         if e['source'] in nodes and e['target'] in nodes:
-            preds[e['target']].append(e['source']); succs[e['source']].append(e['target'])
+            preds[e['target']].append(e); succs[e['source']].append(e)
+    return nodes, preds, succs
+
+
+def _branch_offset(spec: dict, router: dict, edge: dict, outgoing: list[dict]) -> float:
+    """Horizontal offset of a router branch: cases left to right in config order, centred under the router."""
+    cases = list((router.get('config') or {}).get('cases') or [])
+    handles = sorted({e.get('sourceHandle') or '' for e in outgoing}, key=lambda h: cases.index(h) if h in cases else len(cases))
+    if len(handles) < 2:
+        return 0.0
+    i = handles.index(edge.get('sourceHandle') or '')
+    return (i - (len(handles) - 1) / 2) * COL
+
+
+def vertical_layout(spec: dict) -> dict:
+    """Clean vertical layout: rows by longest path from the trigger, router branches side by side, merges re-centred."""
+    nodes, preds, succs = _graph(spec)
+    depth: dict[str, int] = {}
+
+    def d(i, seen=()):
+        if i in depth: return depth[i]
+        if i in seen: return 0
+        depth[i] = 0 if not preds[i] else 1 + max(d(e['source'], seen + (i,)) for e in preds[i])
+        return depth[i]
+    for i in nodes:
+        d(i)
+    x: dict[str, float] = {}
+    for i in sorted(nodes, key=lambda k: depth[k]):
+        xs = []
+        for e in preds[i]:
+            src = nodes[e['source']]
+            base = x.get(e['source'], 0.0)
+            xs.append(base + (_branch_offset(spec, src, e, succs[e['source']]) if src['type'] == 'logic.router' else 0.0))
+        x[i] = sum(xs) / len(xs) if xs else 0.0
+    taken: dict[tuple, str] = {}
+    for i in sorted(nodes, key=lambda k: (depth[k], x[k])):
+        col, row = round(x[i]), depth[i]
+        while (col, row) in taken:  # siblings that are not router branches: spread them out
+            col += COL
+        taken[(col, row)] = i
+        nodes[i]['position'] = {'x': col, 'y': row * ROW}
+    return spec
+
+
+def place_nodes(base: dict, spec: dict, added: list[str], full: bool = False) -> None:
+    nodes, preds, succs = _graph(spec)
+    new_branch = any(nodes[e['source']]['type'] == 'logic.router' for nid in added for e in preds[nid])
+    if full or new_branch or not base.get('nodes') or len(added) > max(3, len(nodes) // 2):
+        vertical_layout(spec)  # a new router branch re-centres all branches under the router
+        return
     placed = {i for i in nodes if i not in added}
     pos = {i: dict(nodes[i].get('position') or {'x': 0, 'y': 0}) for i in nodes}
 
     def descendants(start):
-        seen, stack = set(), list(succs[start])
+        seen, stack = set(), [e['target'] for e in succs[start]]
         while stack:
             cur = stack.pop()
             if cur not in seen:
-                seen.add(cur); stack += succs[cur]
+                seen.add(cur); stack += [e['target'] for e in succs[cur]]
         return seen
 
     pending = list(added)
     for _ in range(len(added) + 1):
         progressed = False
         for nid in list(pending):
-            waiting = [p for p in preds[nid] if p in pending]
-            if waiting and len(pending) > 1:
+            if any(e['source'] in pending for e in preds[nid]) and len(pending) > 1:
                 continue
-            ps = [p for p in preds[nid] if p in placed]
-            ss = [s for s in succs[nid] if s in placed]
+            ps = [e for e in preds[nid] if e['source'] in placed]
+            ss = [e['target'] for e in succs[nid] if e['target'] in placed]
             if ps:
-                x = max(pos[p]['x'] for p in ps) + DX
-                y = sum(pos[p]['y'] for p in ps) / len(ps)
-                if ss and min(pos[s]['x'] for s in ss) < x + DX - 20:
-                    shift = x + DX - min(pos[s]['x'] for s in ss)
-                    for d in descendants(nid):
-                        if d in placed:
-                            pos[d]['x'] += shift
+                xs = [pos[e['source']]['x'] + (_branch_offset(spec, nodes[e['source']], e, succs[e['source']])
+                                               if nodes[e['source']]['type'] == 'logic.router' else 0) for e in ps]
+                x = sum(xs) / len(xs)
+                y = max(pos[e['source']]['y'] for e in ps) + ROW
+                if ss and min(pos[s]['y'] for s in ss) < y + ROW - 20:
+                    shift = y + ROW - min(pos[s]['y'] for s in ss)
+                    for dsc in descendants(nid):
+                        if dsc in placed:
+                            pos[dsc]['y'] += shift
             elif ss:
-                x = min(pos[s]['x'] for s in ss) - DX
-                y = sum(pos[s]['y'] for s in ss) / len(ss)
+                x = sum(pos[s]['x'] for s in ss) / len(ss)
+                y = min(pos[s]['y'] for s in ss) - ROW
             else:
-                x = max([p['x'] for i, p in pos.items() if i in placed] or [0]) + DX
-                y = 40
+                x = 0
+                y = max([p['y'] for i, p in pos.items() if i in placed] or [0]) + ROW
             for _ in range(20):
-                if not any(abs(pos[m]['x'] - x) < 200 and abs(pos[m]['y'] - y) < 100 for m in placed):
+                if not any(abs(pos[m]['x'] - x) < 250 and abs(pos[m]['y'] - y) < 70 for m in placed):
                     break
-                y += DY
+                x += COL / 2
             pos[nid] = {'x': x, 'y': y}
             placed.add(nid); pending.remove(nid); progressed = True
         if not pending or not progressed:

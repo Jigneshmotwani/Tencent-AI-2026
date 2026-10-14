@@ -23,28 +23,52 @@ def _issue(code, message, node_id=None, edge_id=None):
     return out
 
 
-def effective_policy(spec_policies: dict, db) -> dict:
-    """Workflow policy ∩ platform policy. Platform approval requirements are a floor a workflow cannot lower."""
+def effective_policy(spec_policies: dict, db, user=None, workflow_id: str | None = None) -> dict:
+    """Workflow policy ∩ platform policy. Platform approval requirements are a floor a workflow cannot lower.
+    Models: enabled registry models only (and, for a known invoker, those not restricted to other groups).
+    Per-run caps: an admin budget limit for the workflow (max_steps / max_tokens) narrows them further."""
     from ..config import settings
-    from ..gateway import model_aliases
+    from ..governance.models import default_alias, enabled_aliases
     from ..governance.policies import get_policy
     platform = get_policy(db)
-    aliases = model_aliases()
+    gids = None
+    if user is not None:
+        from ..admin.directory import user_group_ids
+        gids = user_group_ids(db, user.id)
+    aliases = enabled_aliases(gids)
     models = [m for m in aliases if not platform.get('allowed_models') or m in platform['allowed_models']]
+    max_steps = min(int(spec_policies.get('max_steps') or 25), int(platform.get('max_steps_cap') or 40), settings().workflow_max_steps)
+    max_tokens = min(int(spec_policies.get('max_tokens_per_run') or 40000), int(platform.get('max_tokens_cap') or 60000), settings().workflow_max_tokens)
+    if workflow_id:
+        from sqlalchemy import select
+        from ..db import BudgetLimit
+        limit = db.scalar(select(BudgetLimit).where(BudgetLimit.scope_type == 'workflow', BudgetLimit.scope_id == workflow_id))
+        if limit is not None and limit.max_steps:
+            max_steps = min(max_steps, int(limit.max_steps))
+        if limit is not None and limit.max_tokens:
+            max_tokens = min(max_tokens, int(limit.max_tokens))
+    from ..db import PlatformPolicy
+    builtin = (db.get(PlatformPolicy, 'builtin_tools').value or {}) if db.get(PlatformPolicy, 'builtin_tools') is not None else {}
+    disabled = {'builtin:' + name for name, t in (builtin.get('tools') or {}).items() if t.get('enabled') is False}
+    if builtin.get('jira_enabled') is False:
+        disabled |= {'builtin:jira.' + t for t in ('get_issue', 'search', 'comment', 'transition', 'create_issue')}
     return {
         'models': models,
         'platform_tools': set(platform.get('allowed_tools') or []),
         'workflow_tools': set(spec_policies.get('allowed_tools') or []),
+        'disabled_tools': disabled,
         'approval_required_for': set(spec_policies.get('approval_required_for') or []) | set(platform.get('approval_required_for') or []),
         'allowed_sources': set(spec_policies.get('allowed_sources') or []),
-        'max_steps': min(int(spec_policies.get('max_steps') or 25), int(platform.get('max_steps_cap') or 40), settings().workflow_max_steps),
-        'max_tokens': min(int(spec_policies.get('max_tokens_per_run') or 40000), int(platform.get('max_tokens_cap') or 60000), settings().workflow_max_tokens),
-        'default_model': spec_policies.get('model_alias') or settings().model_alias,
+        'max_steps': max_steps,
+        'max_tokens': max_tokens,
+        'default_model': spec_policies.get('model_alias') or default_alias(),
     }
 
 
 def tool_allowed(qualified: str, eff: dict) -> bool:
     """Empty list = no restriction at that level (platform semantics; workflows inherit them)."""
+    if qualified in eff.get('disabled_tools', ()):
+        return False
     return (not eff['platform_tools'] or qualified in eff['platform_tools']) and (not eff['workflow_tools'] or qualified in eff['workflow_tools'])
 
 
@@ -94,7 +118,8 @@ def _port(ports, default='any'):
     return ports[0]['type'] if ports else default
 
 
-def validate_spec(spec: dict, db) -> dict:
+def validate_spec(spec: dict, db, user=None) -> dict:
+    """`user`: the editor/invoker; their own MCP servers that await admin approval count as available to them only."""
     errors, warnings = [], []
     try:
         model = WorkflowSpec.model_validate(spec)
@@ -125,10 +150,10 @@ def validate_spec(spec: dict, db) -> dict:
     spec_edges = {**spec, 'edges': edges}
     succ, pred = graph(spec_edges)
 
-    eff = effective_policy(spec['policies'], db)
+    eff = effective_policy(spec['policies'], db, user=user)
     try:
         from ..mcp.registry import list_tools
-        mcp_tools = {t['qualified']: t for t in list_tools(db, enabled_only=True)}
+        mcp_tools = {t['qualified']: t for t in list_tools(db, enabled_only=True, user_id=user.id if user is not None else None)}
     except Exception:
         mcp_tools = {}
     input_names = {i['name'] for i in spec['inputs']}
@@ -184,6 +209,10 @@ def validate_spec(spec: dict, db) -> dict:
                     errors.append(_issue('mcp_tool_unavailable', f'{t[:100]} is not a registered, enabled MCP tool', nid)); continue
                 if t != 'knowledge.search' and not tool_allowed(t, eff):
                     errors.append(_issue('tool_not_allowed', f'{t[:100]} is not allowed by workflow/platform policy', nid))
+        if ntype == 'human.approval' and cfg.get('approver_group'):
+            from ..admin.directory import resolve_group
+            if resolve_group(db, str(cfg['approver_group'])) is None:
+                errors.append(_issue('approver_group_unknown', 'Approver group does not exist', nid))
         if ntype == 'guardrail.output':
             target = cfg.get('target')
             if target not in by_id:
@@ -300,8 +329,15 @@ def validate_spec(spec: dict, db) -> dict:
         if not actions_after(n['id'], spec_edges, succ):
             warnings.append(_issue('approval_without_actions', 'Approval gates no write actions', n['id']))
 
-    if not spec['audience']['roles'] and not spec['audience']['users']:
+    aud = spec['audience']
+    if aud.get('kind', 'legacy') == 'legacy' and not aud['roles'] and not aud['users']:
         warnings.append(_issue('audience_empty', 'No audience: only the owner can run the published workflow'))
+    if aud.get('kind') == 'group':
+        from ..admin.directory import resolve_group
+        if not aud.get('groups'):
+            warnings.append(_issue('audience_empty', 'No audience group: only the owner can run the published workflow'))
+        elif any(resolve_group(db, g) is None for g in aud['groups']):
+            errors.append(_issue('audience_group_unknown', 'Audience group does not exist'))
     if not spec['policies'].get('allowed_tools'):
         warnings.append(_issue('allowed_tools_empty', 'allowed_tools is empty: every tool permitted by the platform policy is allowed'))
     if not any(n['type'] == 'output' for n in nodes):

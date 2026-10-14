@@ -46,8 +46,10 @@ class ModelGateway:
         if not cfg.model_id or not cfg.model_api_key: raise ModelError('model_not_configured')
         if urlparse(cfg.litellm_url).hostname not in {'127.0.0.1','localhost','::1'}:
             raise ModelError('gateway_must_be_local')
-        alias = model_alias or cfg.model_alias
-        if alias not in model_aliases(): raise ModelError('model_not_allowed')
+        # Model registry (iteration 3): env + enabled admin models; disabled models are refused here, before the gateway.
+        from .governance.models import default_alias, enabled_aliases
+        alias = model_alias or default_alias()
+        if alias not in enabled_aliases(): raise ModelError('model_not_allowed')
         headers = {'Authorization':f'Bearer {api_key or cfg.litellm_master_key}'}
         from opentelemetry.propagate import inject
         inject(headers)  # W3C traceparent so LiteLLM's spans can join the app trace

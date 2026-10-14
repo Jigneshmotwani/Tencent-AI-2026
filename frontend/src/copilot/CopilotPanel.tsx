@@ -1,160 +1,139 @@
-// W4 owns. Studio Copilot chat panel: message -> validated proposal -> canvas diff preview (via onPreview) -> Apply / Discard.
-import { useEffect, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
+// Floating Studio Copilot (prototype `.cop`): chat history, proposals previewed on the canvas (green/amber/red),
+// Apply / Discard, then Undo and a Test run shortcut. Minimises to the FAB.
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { safeError } from '../api'
-import type { CopilotPanelProps, CopilotProposal } from '../contracts'
-import { applyProposal, copilotHistory, describeOp, discardProposal, sendCopilotMessage } from './api'
-import type { CopilotHistoryItem } from './api'
+import type { CopilotProposal } from '../contracts'
+import { Icon } from '../ui/icons'
+import { Button, Spinner, toast } from '../ui/kit'
+import { applyProposal, copilotHistory, discardProposal, sendCopilotMessage, type CopilotHistoryItem } from './api'
 
-const SUGGESTIONS = [
-  'Add a sanctions check before the assessment and require approval for escalations',
-  'Add an output guardrail that checks grounding of the answer',
-  'Explain what this workflow does',
-]
-
-const styles: Record<string, CSSProperties> = {
-  panel: { display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 },
-  log: { display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 420, overflowY: 'auto', paddingRight: 4 },
-  user: { alignSelf: 'flex-end', maxWidth: '90%', padding: '6px 10px', borderRadius: 8, background: 'rgba(37, 99, 235, 0.10)', whiteSpace: 'pre-wrap' },
-  assistant: { alignSelf: 'stretch', padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(127, 127, 127, 0.25)' },
-  proposal: { padding: 10, borderRadius: 8, border: '1px solid rgba(37, 99, 235, 0.45)', display: 'flex', flexDirection: 'column', gap: 6 },
-  list: { margin: '2px 0 0', paddingLeft: 18 },
-  row: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' },
-  textarea: { width: '100%', minHeight: 64, resize: 'vertical', font: 'inherit', padding: 8, boxSizing: 'border-box' },
-  chip: { fontSize: 12, padding: '3px 8px' },
+export interface CopilotProps {
+  workflowId: string
+  draftVersion: number
+  autoFocus?: boolean
+  /** Flush local canvas edits before the Copilot reads the saved draft. */
+  beforeSend: () => Promise<boolean>
+  onPreview: (proposal: CopilotProposal | null) => void
+  onApplied: (proposal: CopilotProposal) => void
+  onUndo: () => Promise<boolean>
+  onTestRun: () => void
+  onMinimise: () => void
 }
 
-function DiffSummary({ proposal }: { proposal: CopilotProposal }) {
-  const d = proposal.diff
-  if (!d) return null
-  const parts = [
-    d.added_nodes.length ? `+${d.added_nodes.length} node${d.added_nodes.length > 1 ? 's' : ''}` : '',
-    d.changed_nodes.length ? `~${d.changed_nodes.length} changed` : '',
-    d.removed_nodes.length ? `−${d.removed_nodes.length} removed` : '',
-    d.added_edges.length || d.removed_edges.length ? `edges +${d.added_edges.length}/−${d.removed_edges.length}` : '',
-    d.policies_changed ? 'policy' : '', d.inputs_changed ? 'inputs' : '', d.renamed ? 'renamed' : '',
-  ].filter(Boolean)
-  return <p className="small muted" style={{ margin: 0 }}>Diff: {parts.length ? parts.join(' · ') : 'no graph changes'}</p>
+interface Msg { id: string; role: 'user' | 'assistant'; text: string; status: string; proposal?: CopilotProposal; note?: string }
+
+function noteFor(p: CopilotProposal | undefined) {
+  if (!p) return undefined
+  const parts: string[] = []
+  const cut = (t: string, n = 90) => (t.length > n ? t.slice(0, n).replace(/\s+\S*$/, '') + '…' : t)
+  if (p.unsupported?.length) parts.push(`Not available: ${cut(p.unsupported[0].split(/ — | - |;/)[0])}${p.unsupported.length > 1 ? ` (+${p.unsupported.length - 1} more)` : ''}.`)
+  if (p.validation && !p.validation.ok && p.validation.errors[0]) parts.push(`Needs a fix before it can be applied: ${cut(p.validation.errors[0].message)}`)
+  return parts.join(' ') || undefined
 }
 
-function ProposalCard({ proposal, stale, busy, onApply, onDiscard, onPreview, previewing }: {
-  proposal: CopilotProposal; stale: boolean; busy: boolean; previewing: boolean
-  onApply: () => void; onDiscard: () => void; onPreview: () => void
-}) {
-  const v = proposal.validation
-  return <div style={styles.proposal} aria-label="Copilot proposal">
-    <div style={styles.row}><strong>Proposed changes</strong>{v && <span className={`badge ${v.ok ? 'tone-success' : 'tone-error'}`}>{v.ok ? 'Valid' : `${v.errors.length} validation error${v.errors.length === 1 ? '' : 's'}`}</span>}</div>
-    <DiffSummary proposal={proposal} />
-    {proposal.operations.length > 0 && <ol style={styles.list} className="small">{proposal.operations.map((op, index) => <li key={index}>{describeOp(op)}</li>)}</ol>}
-    {proposal.unsupported.length > 0 && <div className="notice warn small" role="status"><strong>Not available:</strong><ul style={styles.list}>{proposal.unsupported.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
-    {proposal.warnings.length > 0 && <details className="small"><summary>{proposal.warnings.length} note{proposal.warnings.length === 1 ? '' : 's'}</summary><ul style={styles.list}>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}
-    {v && v.errors.length > 0 && <div className="notice error small" role="alert"><ul style={styles.list}>{v.errors.map((issue, index) => <li key={index}>{issue.message}{issue.node_id ? ` (${issue.node_id})` : ''}</li>)}</ul></div>}
-    {v && v.warnings.length > 0 && <details className="small"><summary>{v.warnings.length} validation warning{v.warnings.length === 1 ? '' : 's'}</summary><ul style={styles.list}>{v.warnings.map((issue, index) => <li key={index}>{issue.message}{issue.node_id ? ` (${issue.node_id})` : ''}</li>)}</ul></details>}
-    {stale && <div className="notice warn small" role="status">The draft changed since this proposal was made. Ask again to get a fresh proposal.</div>}
-    <div style={styles.row}>
-      <button type="button" className="button primary" disabled={busy || stale || proposal.operations.length === 0} onClick={onApply}>Apply as new draft</button>
-      <button type="button" className="button" disabled={busy} onClick={onPreview}>{previewing ? 'Hide preview' : 'Preview on canvas'}</button>
-      <button type="button" className="button" disabled={busy} onClick={onDiscard}>Discard</button>
+export default function CopilotPanel({ workflowId, draftVersion, autoFocus, beforeSend, onPreview, onApplied, onUndo, onTestRun, onMinimise }: CopilotProps) {
+  const [items, setItems] = useState<Msg[]>([])
+  const [active, setActive] = useState<CopilotProposal | null>(null)
+  const [appliedId, setAppliedId] = useState<string | null>(null)
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState<'' | 'send' | 'apply' | 'undo'>('')
+  const [error, setError] = useState('')
+  const body = useRef<HTMLDivElement>(null)
+  const input = useRef<HTMLInputElement>(null)
+  const preview = useRef(onPreview); preview.current = onPreview
+
+  useEffect(() => {
+    let off = false
+    copilotHistory(workflowId).then(rows => {
+      if (off) return
+      setItems(rows.map((r: CopilotHistoryItem) => ({ id: r.id, role: r.role, text: r.text, status: r.status, proposal: r.proposal, note: noteFor(r.proposal) })))
+      const last = rows[rows.length - 1]
+      if (last?.role === 'assistant' && last.status === 'proposed' && last.proposal && last.proposal.base_version === draftVersion) { setActive(last.proposal); preview.current(last.proposal) }
+      else if (last?.role === 'assistant' && last.status === 'applied' && last.created_version === draftVersion) setAppliedId(last.id)
+    }).catch(() => { /* a fresh agent has no history */ })
+    return () => { off = true; preview.current(null) }
+  }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (autoFocus) input.current?.focus() }, [autoFocus])
+  useEffect(() => { body.current?.scrollTo({ top: body.current.scrollHeight }) }, [items, busy, active, error])
+
+  const send = async (e: FormEvent) => {
+    e.preventDefault()
+    const msg = text.trim()
+    if (!msg || busy) return
+    setBusy('send'); setError(''); setText('')
+    if (active) { void discardProposal(workflowId, active.proposal_id).catch(() => undefined); setActive(null); onPreview(null) }
+    const local: Msg = { id: 'u' + Date.now(), role: 'user', text: msg, status: 'info' }
+    setItems(rows => [...rows.map(r => r.status === 'proposed' ? { ...r, status: 'discarded' } : r), local])
+    try {
+      if (!(await beforeSend())) throw new Error('save')
+      const p = await sendCopilotMessage(workflowId, msg)
+      const has = p.operations.length > 0
+      setItems(rows => [...rows, { id: p.proposal_id, role: 'assistant', text: p.explanation, status: has ? 'proposed' : 'info', proposal: p, note: noteFor(p) }])
+      setAppliedId(null)
+      if (has) { setActive(p); onPreview(p) }
+    } catch (err) {
+      setItems(rows => rows.filter(r => r.id !== local.id)); setText(msg)
+      setError(err instanceof Error && err.message === 'save' ? 'Your canvas changes could not be saved, so Copilot did not run.' : safeError(err))
+    } finally { setBusy('') }
+  }
+  const apply = async () => {
+    if (!active) return
+    setBusy('apply'); setError('')
+    try {
+      await applyProposal(workflowId, active.proposal_id)
+      setItems(rows => rows.map(r => r.id === active.proposal_id ? { ...r, status: 'applied' } : r))
+      setAppliedId(active.proposal_id); const p = active; setActive(null); onPreview(null); onApplied(p)
+    } catch (err) { setError(safeError(err)) } finally { setBusy('') }
+  }
+  const discard = () => {
+    if (!active) return
+    const id = active.proposal_id
+    setItems(rows => rows.map(r => r.id === id ? { ...r, status: 'discarded' } : r))
+    setActive(null); onPreview(null)
+    void discardProposal(workflowId, id).catch(() => undefined)
+  }
+  const undo = async () => {
+    setBusy('undo')
+    try { if (await onUndo()) { setAppliedId(null); toast('Change undone') } } finally { setBusy('') }
+  }
+  const stale = !!active && active.base_version !== draftVersion
+
+  return <div className="cop" role="region" aria-label="Copilot">
+    <div className="cop-h"><b><Icon name="spark" small />Copilot</b><button type="button" className="ibtn" aria-label="Minimise Copilot" onClick={onMinimise}><Icon name="minus" small /></button></div>
+    <div className="cop-b" ref={body} aria-live="polite">
+      {!items.length && !busy && <div className="m a">Describe the agent you want, or a change to this one.</div>}
+      {items.map(m => <MsgView key={m.id} m={m}>
+        {active?.proposal_id === m.id && <div className="m-act">
+          <Button size="sm" onClick={discard} disabled={!!busy}>Discard</Button>
+          <Button size="sm" variant="primary" onClick={() => void apply()} disabled={!!busy || stale || !active.validation?.ok}>{busy === 'apply' ? 'Applying…' : 'Apply'}</Button>
+        </div>}
+        {appliedId === m.id && !active && <div className="m-act">
+          <Button size="sm" onClick={() => void undo()} disabled={!!busy}>{busy === 'undo' ? 'Undoing…' : 'Undo'}</Button>
+          <Button size="sm" variant="primary" onClick={onTestRun}>Test run</Button>
+        </div>}
+      </MsgView>)}
+      {stale && <div className="m a muted">The draft changed since this proposal. Ask again for a fresh one.</div>}
+      {busy === 'send' && <div className="m a" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Spinner />Drafting…</div>}
+      {error && <div className="m a" role="alert" style={{ color: 'var(--danger)' }}>{error}</div>}
     </div>
+    <form className="cop-f" onSubmit={send}>
+      <input ref={input} className="input" placeholder="Describe a change…" aria-label="Describe a change" autoComplete="off" value={text} maxLength={4000} onChange={e => setText(e.target.value)} disabled={busy === 'send'} />
+      <button className="send" aria-label="Send" disabled={!!busy}><Icon name="send" small /></button>
+    </form>
   </div>
 }
 
-export default function CopilotPanel({ workflowId, spec, draftVersion, onPreview, onApplied }: CopilotPanelProps) {
-  const [items, setItems] = useState<CopilotHistoryItem[]>([])
-  const [active, setActive] = useState<CopilotProposal | null>(null)
-  const [previewing, setPreviewing] = useState(false)
-  const [message, setMessage] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
-  const logRef = useRef<HTMLDivElement>(null)
-  const previewRef = useRef(onPreview)
-  previewRef.current = onPreview
-
-  useEffect(() => {
-    let cancelled = false
-    setActive(null); setPreviewing(false); setError(''); setNotice('')
-    copilotHistory(workflowId).then(rows => {
-      if (cancelled) return
-      setItems(rows)
-      const pending = [...rows].reverse().find(row => row.role === 'assistant' && row.status === 'proposed' && row.proposal)
-      if (pending?.proposal && pending.proposal.base_version === draftVersion) setActive(pending.proposal)
-    }).catch(err => { if (!cancelled) setError(safeError(err)) })
-    return () => { cancelled = true; previewRef.current(null) }
-  }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }) }, [items, active, busy])
-
-  const show = (proposal: CopilotProposal | null) => { setPreviewing(Boolean(proposal)); onPreview(proposal) }
-  const markStatus = (proposalId: string, status: CopilotHistoryItem['status'], version?: number) =>
-    setItems(rows => rows.map(row => row.id === proposalId ? { ...row, status, created_version: version ?? row.created_version } : row))
-
-  async function send(text: string) {
-    const trimmed = text.trim()
-    if (!trimmed || busy) return
-    setBusy(true); setError(''); setNotice('')
-    const optimistic: CopilotHistoryItem = { id: `local-${Date.now()}`, role: 'user', text: trimmed, status: 'info', created_version: null, created_at: new Date().toISOString() }
-    setItems(rows => [...rows, optimistic]); setMessage('')
-    try {
-      const proposal = await sendCopilotMessage(workflowId, trimmed)
-      const hasOps = proposal.operations.length > 0
-      setItems(rows => [...rows, { id: proposal.proposal_id, role: 'assistant', text: proposal.explanation, status: hasOps ? 'proposed' : 'info', created_version: null, created_at: new Date().toISOString(), proposal }])
-      if (hasOps) { setActive(proposal); show(proposal) } else { setActive(null); show(null) }
-    } catch (err) {
-      setError(safeError(err)); setItems(rows => rows.filter(row => row.id !== optimistic.id)); setMessage(trimmed)
-    } finally { setBusy(false) }
-  }
-
-  async function apply() {
-    if (!active) return
-    setBusy(true); setError('')
-    try {
-      const result = await applyProposal(workflowId, active.proposal_id)
-      markStatus(active.proposal_id, 'applied', result.version)
-      setActive(null); show(null)
-      setNotice(`Applied as draft version ${result.version}. Use Undo in the toolbar to revert.`)
-      onApplied(result.version)
-    } catch (err) { setError(safeError(err)) } finally { setBusy(false) }
-  }
-
-  async function discard() {
-    if (!active) return
-    const id = active.proposal_id
-    setActive(null); show(null)
-    markStatus(id, 'discarded')
-    try { await discardProposal(workflowId, id) } catch { /* discarding is best-effort; nothing was changed */ }
-  }
-
-  const submit = (event: FormEvent) => { event.preventDefault(); void send(message) }
-  const stale = Boolean(active && active.base_version !== draftVersion)
-
-  return <section style={styles.panel} aria-label="Studio Copilot">
-    <p className="small muted" style={{ margin: 0 }}>Describe a change to “{spec.name}”. The Copilot proposes graph operations that are validated before you apply them; it can only use registered nodes and tools.</p>
-    <div ref={logRef} style={styles.log} aria-live="polite">
-      {items.length === 0 && !busy && <div className="small muted">No messages yet. Try one of the suggestions below.</div>}
-      {items.map(item => item.role === 'user'
-        ? <div key={item.id} style={styles.user}>{item.text}</div>
-        : <div key={item.id} style={styles.assistant}>
-            <div className="small" style={{ whiteSpace: 'pre-wrap' }}>{item.text}</div>
-            {item.proposal && item.proposal.proposal_id !== active?.proposal_id && item.proposal.operations.length > 0 && <div className="small muted" style={{ marginTop: 4 }}>
-              {item.proposal.operations.length} operation{item.proposal.operations.length === 1 ? '' : 's'} · {item.status === 'applied' ? `applied${item.created_version ? ` as v${item.created_version}` : ''}` : item.status}
-            </div>}
-            {item.proposal && item.proposal.proposal_id !== active?.proposal_id && item.proposal.unsupported.length > 0 && <div className="small muted">Not available: {item.proposal.unsupported.join('; ')}</div>}
-          </div>)}
-      {active && <ProposalCard proposal={active} stale={stale} busy={busy} previewing={previewing} onApply={() => void apply()} onDiscard={() => void discard()} onPreview={() => show(previewing ? null : active)} />}
-      {busy && <div className="small muted" role="status">Copilot is working… (model call + validation)</div>}
-    </div>
-    {notice && <div className="notice success small" role="status">{notice}</div>}
-    {error && <div className="notice error small" role="alert">{error}</div>}
-    <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <label className="sr-only" htmlFor="copilot-input">Message to Copilot</label>
-      <textarea id="copilot-input" style={styles.textarea} value={message} maxLength={4000} disabled={busy} placeholder="e.g. Add a sanctions check before the assessment and require approval for escalations"
-        onChange={event => setMessage(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(message) } }} />
-      <div style={styles.row}>
-        <button type="submit" className="button primary" disabled={busy || !message.trim()}>{busy ? 'Working…' : 'Send'}</button>
-        <span className="small muted">Ctrl+Enter to send</span>
-      </div>
-      <div style={styles.row}>{SUGGESTIONS.map(text => <button key={text} type="button" className="button" style={styles.chip} disabled={busy} onClick={() => void send(text)}>{text}</button>)}</div>
-    </form>
-  </section>
+/** Keep replies short on screen: the first two sentences, with the rest behind "More". */
+function brief(text: string) {
+  if (text.length <= 240) return null
+  const parts = text.match(/[^.!?]+[.!?]+(\s|$)/g)
+  const head = parts && parts.length > 2 ? parts.slice(0, 2).join('').trim() : null
+  return head && head.length < text.length - 20 ? head : null
+}
+function MsgView({ m, children }: { m: Msg; children?: React.ReactNode }) {
+  const [more, setMore] = useState(false)
+  if (m.role === 'user') return <div className="m u">{m.text}</div>
+  const short = brief(m.text)
+  return <><div className="m a">{short && !more ? <>{short} <button type="button" className="lnk" onClick={() => setMore(true)}>More</button></> : m.text}
+    {m.note && <span className="muted" style={{ display: 'block', marginTop: 6 }}>{m.note}</span>}</div>{children}</>
 }

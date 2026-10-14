@@ -1,0 +1,16 @@
+SYNTHETIC DEMO: RESTRICTED COMPLIANCE (Northstar Pay, fictional). Store in the limited-access Drive folder "FinCrime cases" (compliance identity only).
+Case file: alert ALR-2291, Harbourline Trading Pte. Ltd. (customer CUS-48213, account ACC-7731-0042)
+Opened 14 October 2026 by Compliance.
+
+Alert facts (from transaction monitoring):
+- Rule TM-R07 rapid movement. Window 12 Oct 09:14 to 14 Oct 08:52 (48 hours).
+- 9 inbound transfers totalling S$480,000 from 6 counterparties first seen in the window, in Hong Kong SAR, the United Arab Emirates, Cyprus, Seychelles, Malaysia and the Czech Republic.
+- Onward transfer of S$462,000 on 14 Oct to Corvane Shipping Ltd (Marovia, fictional high-risk jurisdiction), reference "vessel charter deposit".
+- Expected monthly inbound value is S$60,000, so the burst is 8 times the expected level.
+
+Customer contact log:
+- 14 Oct: a caller said one sender is a director's relative and gave NRIC S7623418C and mobile +65 9876 5432. No supporting documents were provided.
+
+Prior related case: FC-2026-014 (March 2026), same typology, STR filed.
+
+Compliance assessment so far: matches the rapid_movement and new_counterparties typologies; repeat pattern within the enhanced-monitoring period. Next step: MLRO escalation within 1 business day and an STR draft.

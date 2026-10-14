@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     workflow_max_tokens: int = Field(default=60000,ge=1000,le=500000)
     workflow_max_active: int = Field(default=4,ge=1,le=8)
     mcp_stdio_dir: str = 'mcp_servers'  # stdio MCP commands must run modules/scripts under this repo directory
+    # ---- Iteration 3 ----
+    demo_mode: bool = False  # DEMO_MODE=true enables the loopback-only demo user switcher
 
     @property
     def slack_enabled(self) -> bool:
