@@ -1,0 +1,115 @@
+{
+  "_label": "SYNTHETIC DEMO DATA: fictional companies, people and jurisdictions for the Northstar Pay (fictional) KYB demo. Not a real company registry, sanctions list or PEP database.",
+  "registry_name": "KYB Registry (synthetic ACRA-style business profiles)",
+  "companies": {
+    "201912345K": {
+      "name": "Acme Trading Pte. Ltd.",
+      "uen": "201912345K",
+      "entity_type": "Private company limited by shares",
+      "status": "Live",
+      "incorporation_date": "2019-03-14",
+      "country": "SG",
+      "ssic": {"code": "46900", "industry": "Wholesale trade of a variety of goods without a dominant product"},
+      "registered_address": "10 Example Quay #08-01, Singapore 049000",
+      "paid_up_capital_sgd": 500000,
+      "directors": [
+        {"name": "Tan Mei Ling", "role": "Director", "nationality": "Singapore", "appointed": "2019-03-14"},
+        {"name": "Rajesh Kumar", "role": "Director", "nationality": "Singapore", "appointed": "2019-03-14"},
+        {"name": "Daniel Koh Wei Ming", "role": "Director", "nationality": "Singapore", "appointed": "2026-07-21"}
+      ],
+      "shareholders": [
+        {"name": "Tan Mei Ling", "type": "individual", "percent": 35, "jurisdiction": "Singapore"},
+        {"name": "Rajesh Kumar", "type": "individual", "percent": 25, "jurisdiction": "Singapore"},
+        {"name": "Bluewater Holdings Ltd", "type": "corporate", "percent": 40, "jurisdiction": "Marovia",
+         "registry_note": "Foreign corporate shareholder; its own shareholders/UBOs are not held in this registry."}
+      ],
+      "filings": {"last_annual_return": "2026-04-30", "profile_extracted_at": "2026-10-12"}
+    },
+    "202034567M": {
+      "name": "Lumen Analytics Pte. Ltd.",
+      "uen": "202034567M",
+      "entity_type": "Private company limited by shares",
+      "status": "Live",
+      "incorporation_date": "2020-08-03",
+      "country": "SG",
+      "ssic": {"code": "62011", "industry": "Development of software and applications (except games and cybersecurity)"},
+      "registered_address": "88 Example Science Park Road #03-12, Singapore 118000",
+      "paid_up_capital_sgd": 150000,
+      "directors": [
+        {"name": "Sarah Lim", "role": "Director", "nationality": "Singapore", "appointed": "2020-08-03"},
+        {"name": "Arjun Mehta", "role": "Director", "nationality": "Singapore", "appointed": "2020-08-03"}
+      ],
+      "shareholders": [
+        {"name": "Sarah Lim", "type": "individual", "percent": 60, "jurisdiction": "Singapore"},
+        {"name": "Arjun Mehta", "type": "individual", "percent": 40, "jurisdiction": "Singapore"}
+      ],
+      "filings": {"last_annual_return": "2026-03-15", "profile_extracted_at": "2026-10-12"}
+    },
+    "201845678N": {
+      "name": "Orion Freight Services Pte. Ltd.",
+      "uen": "201845678N",
+      "entity_type": "Private company limited by shares",
+      "status": "Live",
+      "incorporation_date": "2018-11-20",
+      "country": "SG",
+      "ssic": {"code": "52291", "industry": "Freight forwarding and other freight transport agencies"},
+      "registered_address": "5 Example Logistics Way #02-07, Singapore 628000",
+      "paid_up_capital_sgd": 300000,
+      "directors": [
+        {"name": "Viktor Branko", "role": "Director", "nationality": "Eastland Federation", "appointed": "2018-11-20"},
+        {"name": "Goh Siew Lan", "role": "Director", "nationality": "Singapore", "appointed": "2021-02-01"}
+      ],
+      "shareholders": [
+        {"name": "Viktor Branko", "type": "individual", "percent": 70, "jurisdiction": "Eastland Federation"},
+        {"name": "Goh Siew Lan", "type": "individual", "percent": 30, "jurisdiction": "Singapore"}
+      ],
+      "filings": {"last_annual_return": "2026-05-31", "profile_extracted_at": "2026-10-12"}
+    }
+  },
+  "screening": {
+    "lists": ["SYN-SANCTIONS (synthetic consolidated sanctions list)", "SYN-PEP (synthetic PEP register)", "SYN-MEDIA (synthetic adverse-media index)"],
+    "entries": [
+      {"entry_id": "SYN-PEP-0417", "list": "pep", "name": "Daniel Koh Wei Min",
+       "category": "PEP-adjacent (relative/close associate)",
+       "summary": "Synthetic record: close associate of a former municipal official (fictional). Partial name match; date of birth not available for comparison.",
+       "match_score": {"daniel koh wei ming": 0.62}},
+      {"entry_id": "SYN-SAN-1093", "list": "sanctions", "name": "Viktor Brankov",
+       "category": "Sanctions potential match",
+       "summary": "Synthetic record: individual listed on a synthetic consolidated sanctions list for sanctions-evasion shipping services (fictional). Nationality Eastland Federation matches.",
+       "match_score": {"viktor branko": 0.91}},
+      {"entry_id": "SYN-SAN-2201", "list": "sanctions", "name": "Marovia Maritime Trust", "category": "Sanctioned entity",
+       "summary": "Synthetic record: fictional entity on a synthetic sanctions list.", "match_score": {}},
+      {"entry_id": "SYN-MEDIA-0088", "list": "adverse_media", "name": "Northgate Bullion Exchange", "category": "Adverse media",
+       "summary": "Synthetic record: fictional dealer named in synthetic press coverage about unlicensed money services.", "match_score": {}}
+    ],
+    "review_guidance": {"escalate_at_or_above": 0.85, "review_band": [0.5, 0.84], "no_action_below": 0.5,
+                        "note": "Any sanctions potential match escalates regardless of score."}
+  },
+  "risk_rules": {
+    "SG": {
+      "country": "SG",
+      "high_risk_jurisdictions": [
+        {"name": "Marovia", "reason": "Synthetic: secrecy jurisdiction under increased monitoring (fictional)."},
+        {"name": "Eastland Federation", "reason": "Synthetic: subject to synthetic sanctions programme (fictional)."}
+      ],
+      "high_risk_industries": [
+        {"ssic_prefix": "6612", "industry": "Money services (remittance, money-changing)"},
+        {"ssic_prefix": "6619", "industry": "Virtual assets / digital payment token services"},
+        {"ssic_prefix": "4662", "industry": "Precious metals and stones dealing"},
+        {"ssic_prefix": "2520", "industry": "Arms, ammunition and defence"}
+      ],
+      "elevated_monitoring_industries": [
+        {"ssic_prefix": "469", "industry": "General wholesale trading (trade-based money-laundering typologies)"},
+        {"ssic_prefix": "5229", "industry": "Freight forwarding (sanctions-evasion typologies)"}
+      ],
+      "ubo": {
+        "threshold_percent": 25,
+        "look_through": "For every corporate shareholder holding 25% or more, obtain that entity's own shareholder register and identify natural-person owners until all UBOs at or above 25% (direct or indirect) are known.",
+        "corporate_shareholder_high_risk_jurisdiction": "A corporate shareholder of 25% or more incorporated in a high-risk jurisdiction requires escalation to Compliance (EDD) before approval."
+      },
+      "screening_thresholds": {"escalate_at_or_above": 0.85, "review_band": [0.5, 0.84], "sanctions_potential_match": "escalate"},
+      "documents": {"registry_extract_max_age_days": 30, "proof_of_address_max_age_days": 90,
+                    "director_id_required_for_every_registry_director": true}
+    }
+  }
+}

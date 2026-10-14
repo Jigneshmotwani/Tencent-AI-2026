@@ -1,4 +1,4 @@
-export type Provider = 'drive' | 'confluence'
+export type Provider = 'drive' | 'confluence' | 'jira' | 'slack'
 export interface User { id: string; username: string; name: string; capabilities: string[]; csrf_token: string }
 export interface Connection { id: string; provider: Provider; identity_label: string; provider_subject: string; tenant_id: string; collection: string; status: string; checked_at: string | null }
 export interface ConnectionList { connections: Connection[]; availability: Record<Provider, { configured: boolean; collection: string }> }
@@ -14,13 +14,13 @@ export interface ActivityDetail { run: Run; events: AuditEvent[] }
 
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
-export class ApiError extends Error { constructor(public code: string, public status: number) { super(code) } }
+export class ApiError extends Error { constructor(public code: string, public status: number, public detail: unknown = undefined) { super(code) } }
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, { method, credentials: 'same-origin', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': csrf }) }, body: body === undefined ? undefined : JSON.stringify(body) })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { detail?: unknown }
     if (response.status === 401 && path !== '/auth/login') window.dispatchEvent(new Event('session-expired'))
-    throw new ApiError(typeof payload.detail === 'string' ? payload.detail : 'request_failed', response.status)
+    throw new ApiError(typeof payload.detail === 'string' ? payload.detail : (payload.detail && typeof payload.detail === 'object' && typeof (payload.detail as { code?: unknown }).code === 'string' ? (payload.detail as { code: string }).code : 'request_failed'), response.status, payload.detail)
   }
   return response.json() as Promise<T>
 }
@@ -31,7 +31,7 @@ export function safeError(error: unknown): string {
   return messages[error.code] ?? providerMessages[error.code] ?? `Request could not complete (${error.code.replace(/[^a-zA-Z0-9_ -]/g, '').slice(0, 80)}).`
 }
 export function date(value: string | null | undefined) { return value ? new Date(value).toLocaleString() : 'Not recorded' }
-export function sourceName(provider: string) { return provider === 'drive' ? 'Google Drive' : provider === 'confluence' ? 'Confluence' : provider }
+export function sourceName(provider: string) { return ({ drive: 'Google Drive', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' } as Record<string, string>)[provider] ?? provider }
 export function usageLabel(usage: Usage | null) {
   const tokens = usage?.total_tokens == null ? 'Tokens unknown' : `${usage.total_tokens.toLocaleString()} tokens`
   const money = usage?.cost == null ? 'Cost unknown' : `${usage.currency ?? 'USD'} ${Number(usage.cost).toFixed(6)}`

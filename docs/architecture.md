@@ -1,27 +1,84 @@
-# Iteration 1 architecture
+# Architecture (iteration 2)
 
-Browser React/TypeScript → Vite `/api` proxy → local FastAPI → per-user authorization service → source-native Google Drive/Confluence APIs → fresh bounded evidence → fixed AgentRunner → localhost LiteLLM → configured external inference provider. PostgreSQL stores application records and a separate LiteLLM database stores gateway accounting. OTel run/source/model spans export to a localhost OTLP receiver; that receiver retains allowlisted metadata in ignored mode-600 `.local/traces.jsonl`. Persistent audit decisions are separate PostgreSQL records and are not dependent on trace sampling/export.
+Browser (React/TypeScript, React Flow Studio) → Vite `/api` proxy → local FastAPI (single process) → per-user authorization (`connections.access_context`) → source-native Drive / Confluence / Jira / Slack APIs with the **invoking user's delegated token** → fresh, bounded evidence → workflow engine or the fixed chat runner → guardrails → local LiteLLM gateway → configured inference provider. MCP tools (local synthetic `kyb-registry` over stdio, or registered HTTP servers) are called by the engine through the MCP registry. PostgreSQL holds application records and the hash-chained audit trail; a separate LiteLLM database holds gateway accounting and virtual keys. Traces and metrics flow app/LiteLLM → OTel Collector (allowlist redaction) → Tempo / Prometheus → Grafana, which also reads metadata views through a read-only role.
 
-## Permission boundaries
+## Trust boundaries
 
-The server hashes passwords with Argon2 and stores only hashes of random session cookies. All consumer handlers validate the server session/capability, all object handlers check owner ID, and the event stream rechecks session expiry/logout on every delivery. Origin and session-bound CSRF validation protect mutations. Admin capabilities include User/Builder; Auditor only sees allowlisted audit metadata. Neither role grants source evidence access or impersonation.
+```mermaid
+flowchart LR
+  subgraph B[Browser - untrusted]
+    UI[Workspace / Studio canvas / Copilot / Approvals / Audit]
+  end
+  subgraph API[Local FastAPI - trusted, loopback]
+    AUTH{{"AuthZ: session + CSRF/Origin,<br/>capabilities, owner checks (404)"}}
+    ENG[Workflow engine<br/>DAG, budgets, step/token caps]
+    GIN{{"Guardrail IN: PII mask,<br/>injection quarantine"}}
+    GOUT{{"Guardrail OUT: grounding,<br/>schema, PII leak"}}
+    APR{{"Human approval gate +<br/>re-authorization, idempotent execution"}}
+    SRC{{"Source authorization:<br/>invoker's delegated token, collection checks,<br/>denied = not found"}}
+    COP[Studio Copilot<br/>LLM proposes ops, code validates]
+    MCPR[MCP registry<br/>allowlisted stdio / HTTP, schema-checked args]
+    AUD[(Audit store<br/>HMAC hash chain, append-only)]
+  end
+  subgraph SaaS[Source SaaS - delegated per-user OAuth]
+    GD[Google Drive]
+    CF[Confluence]
+    JR[Jira]
+    SL[Slack user tokens]
+  end
+  subgraph GW[LiteLLM gateway - loopback]
+    LL[Virtual keys + budgets<br/>spend accounting]
+  end
+  PROV[Inference provider]
+  subgraph MCP[MCP servers]
+    KYB[kyb-registry synthetic stdio]
+  end
+  subgraph OBS[Observability - loopback]
+    COL[OTel Collector<br/>allowlist redaction]
+    TMP[Tempo]
+    PRM[Prometheus]
+    GRF[Grafana anon viewer<br/>grafana_ro: views only]
+  end
+  UI -->|cookie session| AUTH --> ENG
+  AUTH --> COP
+  ENG --> SRC --> GD & CF & JR & SL
+  SRC -->|authorized evidence only| GIN --> ENG
+  ENG -->|attributed calls + pre-check| LL --> PROV
+  COP --> LL
+  ENG --> MCPR --> KYB
+  ENG --> GOUT --> ENG
+  ENG --> APR -->|approved preview, invoker token, once| JR & SL
+  ENG & SRC & APR & AUTH --> AUD
+  API -->|spans + metrics, safe attrs| COL --> TMP & PRM
+  LL -->|OTel spans| COL
+  GRF --> TMP & PRM
+  GRF -->|read-only views| AUD
+```
 
-OAuth state is hashed, one-time, expiring and bound to the initiating app user and session. Credentials are encrypted by Fernet with a local environment-held key; only normal credential references appear in connection records. Identity, tenant, granted scope and configured collection are checked by the connection service. Drive reads verify root or one-level child-folder membership under fresh delegated permission; Confluence reads verify selected-space membership. Both request actual bodies with that user's delegated token. Not-found and denied are indistinguishable. Failed reads never reach model input, source previews or citations. No global plaintext source cache exists.
+Authorization sits at the API edge (sessions, capabilities, ownership) and, independently, at every source read (delegated token, collection membership, fresh permission). Guardrails sit between authorized evidence and any model call (input) and between model output and anything shown or acted on (output). The approval gate sits before every source write; execution re-authorizes the approver and the invoker's source access and runs exactly once per idempotency key.
 
-Evidence metadata is an in-memory SourceDocument; PostgreSQL EvidenceRecord holds only run/connection/document/version/hash/time references. A source click checks run ownership, reference membership, current connection and fresh source body permission. Returned content is plain text rendered by React. Canonical links are adapter-generated, not arbitrary retrieved URLs. Citation buttons use server-issued run evidence mappings, never model URLs or invented labels. User-owned generated conversation answers persist; they are never fed into subsequent model requests. Recent user questions resolve follow-up topic only.
+## Permission model (unchanged invariants)
 
-## Contracts and execution
+Source access = invoker's delegated identity ∩ app scopes ∩ workflow-allowed sources/tools ∩ platform policy. Platform roles (`user`, `builder`, `admin`, `auditor`) never widen source access. A published workflow built by an Admin and run by Operations reads and writes with Operations' tokens. There are no service accounts. Not-found and denied are indistinguishable; denials never reveal titles, counts or existence. Builders' drafts are runnable only by their owner until published to an audience; foreign workflow/run/approval ids return 404.
 
-[Contracts/ownership](contracts.md) freeze SQLAlchemy records, AccessContext/SearchPage/SourceDocument and typed frontend API/SSE envelopes. One versioned seeded assistant is defined in `prompt.py`. Future adapters use `Connector`; future runtime changes use `ModelGateway` and runner without altering permission semantics. No Youtu-Agent migration was justified for this small explicit pipeline; Tencent inference remains configurable but unverified.
+## Workflow engine
 
-Retrieval queries both sources concurrently with bounded reads and simple lexical ranking, preserves both providers when available, and limits eight evidence documents. No embeddings/vector/graph service. The typed graph in the supplied brief is a review/prerequisite map, not runtime infrastructure. No evidence produces an explicit insufficient-information result without inference. Available evidence plus provider failure produces a failed run rather than canned business content. Partial source failure yields a scoped answer with limitations.
+`WorkflowSpec` (versioned JSON in `workflow_versions`; published versions immutable) is the single source of truth for canvas, Copilot and engine. The engine validates (schema, reachability, no cycles, handles, ports, policy-allowed tools/sources/models, approval domination of write nodes), then executes a DAG with join semantics (a node runs when all predecessors are terminal and at least one incoming edge was taken; otherwise skipped). Node configs read prior outputs via `{{...}}` templates; routers and edge conditions use a whitelisted AST evaluator (no `eval`). Every node transition is a persisted event streamed over SSE; the canvas animates only from these events. Runs pause at `human.approval` with an exact preview of downstream write actions; paused runs survive restart. Node state persists only generated content, tool data and evidence references, never source excerpts.
 
-Runs have monotonic persistent SSE events and terminal states. Stop cancels the task, source HTTP/PDF work and model stream; partial usage is labelled incomplete. Retry creates a fresh run. On process restart unfinished runs become failed with `app_restarted`; completed conversations/audit persist. A single process limits active runs and one active run per conversation. There are no autonomous loops or hard budget policies.
+Every model call goes through `ModelGateway` with user/workflow/version/node attribution, after an app-side budget pre-check (workflow budget and per-user monthly budget, warning at 80%) and per-run step/token caps; the workflow's LiteLLM virtual key enforces its budget again in the gateway. In-flight calls can overshoot a budget by at most one call.
 
-All assistant calls go through a localhost LiteLLM Chat Completions stream. Metadata binds user/agent/version/run/trace, final stream usage is merged once, and a matching proxy spend row may supply a labelled estimate. Unknown fields remain null. Pinned LiteLLM's bundled pricing map is used; unrecognized pricing stays unknown. Raw prompt/response capture and default external telemetry are disabled. API and proxy access logging are disabled/suppressed to keep OAuth query codes and body content out of ordinary logs. OTel spans use safe attributes and never record exception objects containing provider payloads.
+## Guardrails
 
-## Local runtime choices
+Deterministic first: PII masking with checksums (NRIC/FIN, UEN, IBAN mod-97, Luhn cards, phone, email) before model calls; prompt-injection heuristics quarantine instruction-like spans in retrieved content; grounding requires each factual sentence to cite valid evidence labels of the run and strips or repairs unsupported claims; JSON-schema validation of structured output; PII-leak check on output. Results are `guardrail_result` events and metrics.
 
-`./scripts/start.sh` runs locked uv dependencies and a Python process supervisor. Native installed PostgreSQL is the fallback for this host's stopped Docker daemon; an ignored relocation tree accommodates missing Homebrew prefixes without editing system files. Compose can provide PostgreSQL instead. Application and accounting use separate local databases, no cloud runtime/storage. Migration 1 is explicit and idempotent (`Base.metadata.create_all` plus schema_migrations); iteration 2 schema evolution must add versioned migrations rather than changing existing columns silently.
+## Audit
 
-The minimal OTLP collector deliberately drops all non-allowlisted attributes and exception events. This meets local trace correlation without a collector system installation. No unrelated personal repositories were inspected or modified; the workspace inherited a parent git repository, so work remains uncommitted in this folder.
+`audit_events` rows carry `seq`, `prev_hash`, `hash = HMAC_SHA256(AUDIT_HMAC_KEY, prev_hash || canonical_json(event))`, container (space/project/channel/folder), resource ids and per-resource decisions, workflow/version/node, and safe references (message/run ids), never excerpts. Inserts are sequenced under a transaction advisory lock by an ORM hook, so every module is chained. The API connects as `app_runtime`, which has no UPDATE/DELETE/TRUNCATE on the table; a trigger rejects them for everyone else. `GET /api/audit/verify` walks the chain and reports the first broken `seq`. Auditors query by filters or natural language (the LLM emits a validated AuditQuery JSON; code builds the query) and see questions/answers and per-resource decisions, never source excerpts. Auditor views are audited.
+
+## Freshness
+
+Retrieval is query-time and federated: no index, no source cache. Freshness is bounded by each provider's search indexing latency (measured values in the iteration 2 handoff). Revocation takes effect on the next run because every read uses the user's current delegated permission.
+
+## Local runtime
+
+`./scripts/start.sh --services compose` starts PostgreSQL, OTel Collector, Tempo, Prometheus and Grafana in Docker (loopback ports) and supervises LiteLLM, the API, the HTTPS OAuth callback shim (self-signed, for Slack's HTTPS redirect requirement) and Vite locally. Migrations are versioned (`backend/app/migrations.py`) and run as the database owner; the API runs as the runtime role. The native profile (no Docker) keeps the iteration 1 local OTLP receiver and has no Grafana.

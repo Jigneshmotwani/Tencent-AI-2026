@@ -17,6 +17,9 @@ dependencies = [
  "opentelemetry-exporter-otlp-proto-http==1.45.1",
  "litellm[proxy]==1.104.2",
  "prisma==0.15.0",
+ "mcp==2.3.0",
+ "jsonschema==4.26.0",
+ "pyyaml==6.0.3",
 ]
 [tool.uv]
 package = false

@@ -1,0 +1,52 @@
+{
+  "_note": "SYNTHETIC DEMO: Northstar Pay (fictional). Seeded into Jira project KYB by `python -m backend.app.seed`. Each description line 'Key: Value' becomes a structured fact.",
+  "project_key": "KYB",
+  "statuses": ["Open", "In Review", "Awaiting Customer", "Escalated", "Ready for Approval"],
+  "issues": [
+    {
+      "ref": "KYB-101",
+      "summary": "KYB review: Acme Trading Pte. Ltd. (blocked)",
+      "issue_type": "Task",
+      "status": "In Review",
+      "labels": ["kyb", "sg", "synthetic-demo"],
+      "description": "SYNTHETIC DEMO case.\nCompany: Acme Trading Pte. Ltd.\nUEN: 201912345K\nCountry: SG\nProduct: Business account\nApplication date: 2026-10-06\nAnalyst: Olivia Operations\nCustomer contact: Maya Chen\nSubmitted documents: see Drive 'Acme Trading Pte. Ltd.: submitted KYB documents summary'\nStatus note: onboarding blocked pending KYB review.",
+      "comments": ["SYNTHETIC: Docs received via portal on 8 Oct. Starting review against SG KYB Policy v3. (Olivia)"]
+    },
+    {
+      "ref": "KYB-102",
+      "summary": "KYB review: Lumen Analytics Pte. Ltd.",
+      "issue_type": "Task",
+      "status": "Open",
+      "labels": ["kyb", "sg", "synthetic-demo"],
+      "description": "SYNTHETIC DEMO case.\nCompany: Lumen Analytics Pte. Ltd.\nUEN: 202034567M\nCountry: SG\nProduct: Business account\nApplication date: 2026-10-09\nAnalyst: Olivia Operations\nSubmitted documents: application form, registry extract dated 2026-10-05, director IDs for Sarah Lim and Arjun Mehta, shareholder register (Sarah Lim 60%, Arjun Mehta 40%), proof of address dated 2026-09-20.",
+      "comments": []
+    },
+    {
+      "ref": "KYB-103",
+      "summary": "KYB review: Orion Freight Services Pte. Ltd. (screening hit)",
+      "issue_type": "Task",
+      "status": "Open",
+      "labels": ["kyb", "sg", "synthetic-demo", "screening"],
+      "description": "SYNTHETIC DEMO case.\nCompany: Orion Freight Services Pte. Ltd.\nUEN: 201845678N\nCountry: SG\nProduct: Business account\nApplication date: 2026-10-10\nAnalyst: Olivia Operations\nSubmitted documents: complete set received 2026-10-10.\nStatus note: automated pre-screen flagged director Viktor Branko.",
+      "comments": []
+    },
+    {
+      "ref": "INC-FOLLOWUP-1",
+      "summary": "Incident INC-2026-1002 follow-up: certificate-expiry alerting for card processor TLS",
+      "issue_type": "Task",
+      "status": "In Review",
+      "labels": ["incident-followup", "synthetic-demo"],
+      "description": "SYNTHETIC DEMO follow-up from the 2 October 2026 payment outage (INC-2026-1002).\nRoot cause: expired TLS client certificate on the primary card processor connection.\nAction: alert 30 days and 7 days before certificate expiry.\nOwner: Payments SRE",
+      "comments": []
+    },
+    {
+      "ref": "INC-FOLLOWUP-2",
+      "summary": "Incident INC-2026-1002 follow-up: re-enable automated certificate renewal",
+      "issue_type": "Task",
+      "status": "Open",
+      "labels": ["incident-followup", "synthetic-demo"],
+      "description": "SYNTHETIC DEMO follow-up from INC-2026-1002.\nAutomated renewal was disabled during a configuration migration and never re-enabled.\nOwner: Platform team",
+      "comments": []
+    }
+  ]
+}

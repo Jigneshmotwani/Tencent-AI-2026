@@ -1,0 +1,34 @@
+/* W5-owned styles for the Audit and Policies pages (prefixed gov-). */
+.gov-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 14px}
+.gov-grid .field{margin:0}
+.gov-grid .wide{grid-column:span 2}
+.gov-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.gov-row.spread{justify-content:space-between}
+.gov-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.gov-card-head h2{margin-bottom:4px}
+.gov-card-head p{margin:0}
+.gov-integrity{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.gov-integrity .mono{word-break:break-all}
+.gov-nl textarea{width:100%;min-height:60px;border:1px solid #c9d7dc;border-radius:7px;padding:8px 10px;font-size:13px;resize:vertical}
+.gov-run{border:1px solid var(--border);border-radius:10px;padding:16px 18px;background:#fff;display:flex;flex-direction:column;gap:10px}
+.gov-run h3{margin:0;font-size:15px}
+.gov-run .gov-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:650;margin-bottom:3px}
+.gov-run .gov-question{background:#f7fafb;border-radius:8px;padding:10px 12px;font-size:13px;overflow-wrap:anywhere;white-space:pre-wrap}
+.gov-run .gov-answer{border-left:3px solid #cfe0e4;padding:4px 12px;max-height:340px;overflow:auto}
+.gov-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;color:var(--muted)}
+.gov-meta strong{color:#18323b;font-weight:600}
+.gov-table td,.gov-table th{padding:8px 10px}
+.gov-table td{vertical-align:top}
+.gov-table .mono{white-space:nowrap}
+.gov-ellipsis{max-width:220px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.gov-tabs{display:flex;gap:6px;margin-bottom:12px}
+.gov-tabs button{border:1px solid var(--border);background:#fff;border-radius:999px;padding:5px 12px;font-size:12px;font-weight:600;color:#3e5a63}
+.gov-tabs button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.gov-checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 14px;max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:#fbfdfd}
+.gov-checks label{display:flex;align-items:center;gap:7px;font-size:12px;overflow-wrap:anywhere}
+.gov-checks label.locked{color:var(--muted)}
+.gov-bar{height:6px;border-radius:3px;background:#e8eef0;overflow:hidden;min-width:90px}
+.gov-bar>span{display:block;height:100%;background:var(--accent)}
+.gov-bar.warn>span{background:#c88a12}
+.gov-bar.over>span{background:#a3362f}
+@media (max-width:1100px){.gov-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}

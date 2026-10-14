@@ -1,0 +1,108 @@
+# W5-owned. App + LiteLLM export OTLP/HTTP here; traces -> Tempo (OTLP gRPC), metrics -> Prometheus scrape endpoint.
+# Component names are the non-deprecated ones for otelcol-contrib 0.161.0 (`otlp` exporter alias -> `otlp_grpc`).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch: {}
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 256
+  # Allowlist only: every span AND resource attribute not listed is dropped (prompts, completions, payloads, URLs with
+  # codes/queries, emails, LiteLLM metadata/hidden params, key hashes...). Values matching a secret pattern are masked.
+  redaction:
+    allow_all_keys: false
+    allowed_keys:
+      # resource
+      - service.name
+      - service.version
+      - telemetry.sdk.language
+      - telemetry.sdk.name
+      - telemetry.sdk.version
+      - deployment.environment
+      # app spans (backend/app/*)
+      - run.id
+      - user.id
+      - agent.id
+      - agent.version
+      - source.provider
+      - source.outcome
+      - evidence.count
+      - model.alias
+      - run.status
+      - workflow.id
+      - workflow.name
+      - workflow.version
+      - node.id
+      - node.type
+      - node.status
+      - tool.name
+      - guardrail.name
+      - guardrail.outcome
+      - approval.id
+      - budget.scope
+      # HTTP server spans (method/route template/status only; never url.full / url.query / headers)
+      - http.request.method
+      - http.route
+      - http.response.status_code
+      - http.method
+      - http.status_code
+      # LiteLLM litellm_request spans (litellm 1.104.2 OTel callback; observed names, counts/model ids only)
+      - gen_ai.system
+      - gen_ai.operation.name
+      - gen_ai.request.model
+      - gen_ai.response.model
+      - gen_ai.request.max_tokens
+      - gen_ai.request.temperature
+      - gen_ai.response.finish_reasons
+      - gen_ai.usage.input_tokens
+      - gen_ai.usage.output_tokens
+      - gen_ai.usage.prompt_tokens
+      - gen_ai.usage.completion_tokens
+      - gen_ai.usage.total_tokens
+      - llm.request.type
+      - llm.is_streaming
+      - llm.usage.total_tokens
+      - gen_ai.cost.total_cost
+      - gen_ai.cost.input_cost
+      - gen_ai.cost.output_cost
+      - litellm.model_group
+      - call_type
+      - db.system
+      - db.system.name
+      - db.operation.name
+      # Workflow budget key alias ("workflow-<id>") and its spend/limit; never the key hash, emails, IPs or metadata blobs.
+      - metadata.user_api_key_alias
+      - metadata.user_api_key_spend
+      - metadata.user_api_key_max_budget
+    blocked_values:
+      - "sk-[A-Za-z0-9_-]{8,}"
+      - "xox[abposre]-[A-Za-z0-9-]+"
+      - 'ya29[.][A-Za-z0-9_-]+'
+      - 'eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]+'
+    # 'info' adds redaction.redacted.count to each span (no key names, no values).
+    summary: info
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: false
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [otlp_grpc/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

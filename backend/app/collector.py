@@ -7,6 +7,11 @@ app = FastAPI(docs_url=None, redoc_url=None)
 ALLOWED = {'run.id','user.id','agent.id','agent.version','source.provider','source.outcome','evidence.count','model.alias','run.status'}
 @app.get('/health')
 def health(): return {'status':'ok'}
+@app.post('/v1/metrics')
+async def metrics_sink(request: Request):
+    # Native profile has no Prometheus; metrics are accepted and dropped (use --services compose for Grafana).
+    await request.body()
+    return Response(content=b'', media_type='application/x-protobuf')
 @app.post('/v1/traces')
 async def receive(request: Request):
     body = await request.body()

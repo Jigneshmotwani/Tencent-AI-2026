@@ -1,0 +1,7 @@
+SYNTHETIC DEMO: RESTRICTED COMPLIANCE (Northstar Pay, fictional). Store in the limited-access Drive child folder (compliance identity only).
+Acme Trading Pte. Ltd. (KYB-101): enhanced due diligence note, Compliance, 9 October 2026
+
+Bluewater Holdings Ltd (40% shareholder, Marovia) appeared in a 2025 internal investigation note about circular invoicing between related trading companies. The note found no confirmed wrongdoing, but Compliance requires source-of-funds evidence for Bluewater and an EDD interview with the UBOs before any approval.
+
+Treat the case as an escalation. Do not disclose this note or its contents to the customer or to Operations.
+Owner: Casey Compliance.

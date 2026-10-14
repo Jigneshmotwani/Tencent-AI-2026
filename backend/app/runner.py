@@ -6,7 +6,7 @@ from .config import settings
 from .prompt import AGENT_ID, AGENT_VERSION, INSTRUCTIONS
 from .knowledge import retrieve, search_topic
 from .gateway import ModelGateway, ModelError
-from .telemetry import tracer, audit
+from .telemetry import tracer, audit, record_model_call
 TERMINAL = {'completed','failed','cancelled'}
 tasks: dict[str, asyncio.Task] = {}
 
@@ -74,7 +74,7 @@ async def execute(run_id,user):
                         content_hash=doc.content_hash,version=doc.version)
                     db.add(rec); db.flush()
                     evidence.append({'id':rec.id,'label':f'E{i}','provider':provider,'title':doc.title,
-                        'text':doc.text[:settings().max_excerpt_chars]})
+                        'text':doc.text[:settings().max_excerpt_chars],'modified_at':doc.modified_at,'fetched_at':doc.fetched_at.isoformat()})
                 assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant'))
                 assistant.evidence_refs=[{'evidence_id':e['id'],'label':e['label'],'provider':e['provider']} for e in evidence]
                 db.commit()
@@ -98,7 +98,7 @@ async def execute(run_id,user):
                     if not conn or conn.owner_id!=user.id or conn.status!='connected' or not conn.credential_ref:
                         raise ModelError('source_disconnected')
             payload = {'question':question,'prior_user_topic':prior,'limitations':limitations,
-                'evidence':[{'id':e['label'],'title':e['title'],'text':e['text']} for e in evidence]}
+                'evidence':[{'id':e['label'],'source':e['provider'],'modified_at':e['modified_at'],'title':e['title'],'text':e['text']} for e in evidence]}
             messages=[{'role':'system','content':INSTRUCTIONS},{'role':'user','content':json.dumps(payload)}]
             answer=''; received=False
             with tracer.start_as_current_span('model.request', attributes={'model.alias':settings().model_alias}, record_exception=False, set_status_on_exception=False):
@@ -117,9 +117,15 @@ async def execute(run_id,user):
                         with SessionLocal() as db:
                             run=db.get(Run,run_id); run.usage={**run.usage,**data}; db.commit(); metering=run.usage
                         event(run_id,'usage',{'usage':metering})
+            with SessionLocal() as db:
+                from .db import User
+                metered=db.get(Run,run_id).usage; owner=db.get(User,user.id)
+            record_model_call(user=owner.username if owner else user.id, workflow='chat', model=settings().model_alias,
+                prompt_tokens=metered.get('prompt_tokens'), completion_tokens=metered.get('completion_tokens'),
+                cost_usd=metered.get('cost'), latency_ms=metered.get('model_latency_ms'), outcome='ok' if received else 'empty')
             if not received: raise ModelError('empty_model_response')
             used = {m.group(1) for m in re.finditer(r'\[(E\d+)\]',answer)}
-            citations=[{k:e[k] for k in ('label','provider')} | {'evidence_id':e['id']} for e in evidence if e['label'] in used]
+            citations=[{k:e[k] for k in ('label','provider','modified_at','fetched_at')} | {'evidence_id':e['id']} for e in evidence if e['label'] in used]
             with SessionLocal() as db:
                 assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant'))
                 assistant.evidence_refs=citations

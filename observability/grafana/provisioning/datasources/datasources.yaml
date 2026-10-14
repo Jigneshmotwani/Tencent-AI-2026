@@ -1,0 +1,40 @@
+# W5-owned. Postgres uses the read-only grafana_ro role, which can SELECT only the v_* metadata views
+# (v_usage, v_workflow_runs, v_node_runs, v_audit, v_approvals): ids, roles, providers, counts, tokens, cost; never text.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 10s
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      search:
+        hide: false
+      nodeGraph:
+        enabled: true
+      tracesToMetrics:
+        datasourceUid: prometheus
+  - name: AppMetadata
+    uid: appdb
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: grafana_ro
+    editable: false
+    jsonData:
+      database: app
+      sslmode: disable
+      postgresVersion: 1600
+      maxOpenConns: 5
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD
