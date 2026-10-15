@@ -257,7 +257,7 @@ Tracker* (schedule + subscriptions) and *Contractor Offboarding Sweep* (Jira tri
 
 - **Workspace**: ask questions (cited answers, source sheet with the cited passage highlighted), or pick an agent with **Answer with ▾** or **@mention**; agents with inputs show an inline form and an inline run card with live steps and the approval status.
 - **Studio** (builder):
-  - Open a template or create from a description.
+  - Open a template or create from a description. The bin icon on a row deletes an agent (owner or admin; runs and audit are kept).
   - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
   - Test run: the run panel shows each step's input, output and logs from `GET /api/workflow-runs/{id}/debug`, with **Retry from this step** on failures.
   - **Submit for review** with an audience (Only me publishes immediately; a group or everyone needs a reviewer in *Compliance leads* or an admin). Users keep the live version until the review is approved. Versions shows the diff against live and restores any version as a new draft.

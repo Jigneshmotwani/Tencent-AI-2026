@@ -12,7 +12,7 @@ http://localhost:8100/api/health · HTTPS callback shim https://localhost:8543. 
 | 2 | Demo-pack loader | Done | `python -m backend.app.demo_pack load <pack> --reset` / `export` / `list`; backup, disable-not-delete, `audit.reset` chain segment; `legacy-kyb` + `example-payments`. |
 | 3 | Guardrail fixes | Done | Few-shot intent classifier (access_change, malicious, out_of_scope, knowledge_question); blocks never search or call the answer model; `guardrail.blocked` audited; one not-found sentence for documents. |
 | 4 | Audit fixes | Done | Rolling days/hours, container key-or-name matching with display names, "who retrieved <document>" via the auditor's own access, Blocked decision filter. |
-| 5 | Slack live | Partly | Keys detected, shim + authorize URL correct, Slack shown in Connections/Tools/Policies/retrieval, `slack.read_channel` + approval-gated `slack.post_message`. **No account connected**: the Slack consent page did not load in the automated browser. |
+| 5 | Slack live | Partly | Slack shown in Connections/Tools/Policies/retrieval, `slack.read_channel` + approval-gated `slack.post_message`. After the run: PKCE fix, and the human connected Slack for **admin**. **Not verified**: the workspace has none of the allowed channels and no messages, so channel filtering, private-channel exclusion and revocation time are still unmeasured. |
 | 6 | Triggers, run-as, subscriptions | Done | Jira/Drive/schedule triggers on one advisory-locked loop; owner or per-subscriber run-as; trigger recorded on run, audit, cards. New Jira issue / Drive file were **simulated** (no external writes allowed). |
 | 7 | Tools and templates | Done | `access.inventory`, `audit.user_activity`, `drive.get_file`; four generic templates that validate and run end to end. |
 | 8 | Copilot builds the Partner Change Radar | Done | 4/5 on the final prompt (strict check incl. Jira search); edit prompt 4/4 adds approval-gated `slack.post_message`. |
@@ -80,16 +80,30 @@ requires `jira.search`): 2/5. Final (8,192-token output cap + sharper rule): **4
 
 **Build.** `npm --prefix frontend run build` (tsc + vite) passes.
 
+## Added after the autonomous run (on request)
+
+- **Slack OAuth uses PKCE.** The Slack app has PKCE enabled, which makes a `localhost` redirect a "desktop" redirect: the
+  authorize URL now sends an S256 `code_challenge`, and the token exchange sends `code_verifier` without `client_secret`
+  (refresh too). PKCE refresh tokens expire after 30 days, so Slack needs reconnecting about monthly. Slack is now connected
+  for `admin` (identity check and channel listing work).
+- **Four models in Studio**, all on aiand (`api.aiand.com`) with the existing key, each checked with a live gateway call:
+  `knowledge-model` (deepseek-v4.1-flash, default), `deepseek-v4-pro`, `kimi-k3`, `qwen3.8-27b`. They come from
+  `EXTRA_MODELS` in `.env` (format in `.env.example`); the launcher now writes them into the LiteLLM config and bootstrap
+  lists them in Policies → Models. GLM-5.3 was left out: it cannot turn reasoning off and timed out on aiand.
+- **Delete agents in Studio.** A bin icon per row (owner with builder, or admin) opens a confirm dialog. Soft delete: the
+  agent leaves Studio, Workspace and the catalog and its link returns 404; in-flight runs are stopped, pending approvals
+  and publish requests cancelled, triggers and subscriptions removed; runs and audit are kept (`workflow.delete`, "Deleted
+  agent"). Checked: owner delete, non-owner builder 404, user 403, second delete 404, Escape does not delete.
+
 ## What the human must do next
 
-1. **Connect Slack** (Task 5 is blocked here):
-   - Slack app → OAuth & Permissions → Redirect URLs: `https://localhost:8543/api/connections/slack/callback` (this host's
-     `LOCAL_PORT_API_TLS` is 8543). User Token Scopes: `search:read channels:history channels:read groups:history groups:read
-     users:read chat:write`; add `users:read.email` if `access.inventory` should check Slack membership.
-   - `.env`: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_TEAM_ID` (already set). Channels come from the pack's
-     `scopes.slack_channels` / `slack_write_channels` (or `SLACK_CHANNELS` / `SLACK_WRITE_CHANNELS`).
-   - Open https://localhost:8543/health once and accept the certificate; then Connections → Slack → Connect.
-   - Measure revocation: remove the user from a channel and re-ask every 5 s until that channel's messages stop appearing.
+1. **Finish the Slack checks** (Task 5). The connected workspace has only `#all-tencent-ai-2026`, `#social`, `#new-channel`
+   (no messages) and none of the allowed channels. Create `#kyb-ops` (public) and `#compliance-escalations` (private) with
+   the admin's Slack account in them, plus one private channel the admin is **not** in; put a few messages in each (or allow
+   `python -m backend.app.seed --as admin --only slack`, which posts labelled SYNTHETIC messages as the admin). Then:
+   search as admin and confirm results only come from member channels; remove the admin from `#kyb-ops` and time how long
+   until its messages stop appearing (expected ≈20 s, the member-channel cache). Add `users:read.email` if `access.inventory`
+   should check Slack membership.
 2. **Check a live trigger:** create one Jira issue matching an agent's JQL (or add a file to the watched folder) and watch the
    trigger step's Last fired within ~60 s.
 3. **Write the iteration 5 demo pack:**
@@ -104,7 +118,9 @@ requires `jira.search`): 2/5. Final (8,192-token output cap + sharper rule): **4
 
 ## Known limits
 
-- Slack: no account connected yet; channel filtering, private-channel exclusion and revocation time are unverified.
+- Slack: connected (admin) but unverified against real channels; channel filtering, private-channel exclusion and revocation
+  time are not measured yet. PKCE refresh tokens expire after 30 days.
+- Agent delete is a soft delete with no restore in the app.
 - Live Jira/Drive trigger firing was simulated (un-marking an existing item), not seen with a newly created item.
 - Triggers poll every 60 s (no webhooks); a run that hits the active-run cap is retried on the next poll.
 - `access.inventory`: Confluence is never checked; Jira roles need Jira admin rights and an email visible to the admin; Slack
