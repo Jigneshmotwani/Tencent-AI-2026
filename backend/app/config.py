@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     atlassian_client_secret: str = ''
     google_folder_id: str = ''
     confluence_space_key: str = ''
+    # Iteration 4: comma-separated scope lists (the active demo pack overrides them; see backend/app/scopes.py).
+    google_folder_ids: str = ''
+    confluence_space_keys: str = ''
     confluence_cloud_id: str = ''
     model_id: str = ''
     model_api_key: str = ''
@@ -70,7 +73,8 @@ class Settings(BaseSettings):
 
     @property
     def jira_projects(self) -> list[str]:
-        return [p.strip().upper() for p in self.jira_project_keys.split(',') if p.strip()]
+        from .scopes import allowed
+        return allowed('jira')
 
     @field_validator('database_url','app_database_url','litellm_url','otel_endpoint','app_origin','api_origin','api_tls_origin','grafana_url')
     @classmethod

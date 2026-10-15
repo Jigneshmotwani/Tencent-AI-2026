@@ -138,10 +138,7 @@ async def health():
                 services[name]='ready' if response.is_success or (name=='collector' and response.status_code<500) else 'unavailable'
             except httpx.HTTPError: services[name]='unavailable'
     return {'status':'ready' if database=='ready' else 'degraded','database':database,**services,
-        'integrations':{'drive':bool(cfg.google_client_id and cfg.google_client_secret and cfg.google_folder_id),
-        'confluence':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.confluence_space_key),
-        'jira':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.jira_projects),
-        'slack':bool(cfg.slack_client_id and cfg.slack_client_secret and cfg.slack_team_id),
+        'integrations':{**{p:v['configured'] for p,v in connections.availability().items()},
         'model':bool(cfg.model_id and cfg.model_api_key)},'model_alias':cfg.model_alias,
         'inference_verified':inference_verified,'runtime':'local LiteLLM; provider configured by MODEL_ID'}
 class NewConversation(BaseModel): title:str=Field(default='New conversation',max_length=100)

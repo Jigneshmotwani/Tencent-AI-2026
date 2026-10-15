@@ -263,7 +263,8 @@ async def writable_channel(context: AccessContext, channel) -> str:
     if not isinstance(channel, str) or not channel.strip() or len(channel) > 100:
         raise SourceError('denied')
     wanted = channel.strip().lstrip('#').lower()
-    writable = set(normalize(settings().slack_write_channels))
+    from ..scopes import slack_write_channels
+    writable = set(slack_write_channels())
     for cid, name in (await collection(context)).items():
         if (cid.lower() == wanted or name == wanted) and (cid.lower() in writable or name in writable):
             return cid

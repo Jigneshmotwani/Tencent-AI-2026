@@ -435,9 +435,8 @@ def _destination(tool: str, params: dict) -> str:
 
 
 def _channel_allowed(channel: str, write=False) -> bool:
-    cfg = settings()
-    allowed = [c.strip().lstrip('#').lower() for c in (cfg.slack_write_channels if write else cfg.slack_channels).split(',') if c.strip()]
-    return str(channel).lstrip('#').lower() in allowed
+    from ..scopes import allowed as scope_allowed, slack_write_channels
+    return str(channel).lstrip('#').lower() in (slack_write_channels() if write else scope_allowed('slack'))
 
 
 async def tool_builtin(ctx: RunCtx, node):

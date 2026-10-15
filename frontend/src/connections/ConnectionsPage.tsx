@@ -13,13 +13,23 @@ import './connections.css'
 // Shapes of GET /api/connections/hub (backend/app/connections.py). Never contains tokens or secrets.
 type SourceProvider = 'drive' | 'confluence' | 'jira' | 'slack'
 interface HubConnection { id: string; provider: SourceProvider; identity_label: string; status: string; checked_at: string | null; collection: string }
-interface HubSource { provider: SourceProvider; configured: boolean; configured_collection: string; connection: HubConnection | null; freshness: { last_successful_fetch: string | null; last_attempt: string | null } }
+interface HubScope { id: string; name: string }
+interface HubSource { provider: SourceProvider; configured: boolean; configured_collection: string; scopes?: HubScope[]; connection: HubConnection | null; freshness: { last_successful_fetch: string | null; last_attempt: string | null } }
 interface HubMcpServer { id: string; name: string; transport: string; enabled: boolean; status: string; checked_at: string | null; tool_count?: number; tools?: unknown[] }
 interface HubModels { gateway: { status: string }; default_alias: string; aliases: { alias: string; allowed: boolean; default: boolean }[] }
 interface Hub { sources: HubSource[]; mcp_servers: HubMcpServer[]; models: HubModels }
 
 const NAMES: Record<SourceProvider, string> = { drive: 'Google Drive', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' }
-const COLLECTION: Record<SourceProvider, string> = { drive: 'Folder', confluence: 'Space', jira: 'Projects', slack: 'Channels' }
+const COLLECTION: Record<SourceProvider, [string, string]> = { drive: ['Folder', 'Folders'], confluence: ['Space', 'Spaces'], jira: ['Project', 'Projects'], slack: ['Channel', 'Channels'] }
+// Allowed scopes come from the active demo pack (or .env). Drive folder ids are opaque, so unnamed folders are counted.
+const scopeLine = (s: HubSource) => {
+  const list = s.scopes ?? s.configured_collection.split(',').map(id => ({ id: id.trim(), name: '' })).filter(x => x.id)
+  if (!list.length) return ''
+  const names = list.map(x => x.name ? (s.provider === 'drive' ? x.name : `${x.name} (${s.provider === 'slack' ? '#' : ''}${x.id})`) : s.provider === 'drive' ? '' : (s.provider === 'slack' ? '#' : '') + x.id).filter(Boolean)
+  const unnamed = list.length - names.length
+  const parts = [...names, ...(unnamed ? [`${unnamed} unnamed ${unnamed === 1 ? 'folder' : 'folders'}`] : [])]
+  return `${COLLECTION[s.provider][list.length === 1 ? 0 : 1]}: ${parts.join(', ')}`
+}
 const OUTCOMES: Record<string, string> = {
   connected: 'Your source account was connected.', consent_not_completed: 'Consent was not completed. Nothing was linked.',
   scope_missing: 'The provider did not grant every required scope. Reconnect and approve all requested permissions.',
@@ -56,7 +66,7 @@ export default function ConnectionsPage() {
     location.href = url
   }, '')
 
-  const sources = (hub?.sources ?? []).filter(s => !(s.provider === 'slack' && !s.configured && !s.connection))
+  const sources = hub?.sources ?? []
   const canTools = pages.includes('tools'), canPolicies = pages.includes('policies')
   const models = hub?.models
 
@@ -71,12 +81,12 @@ export default function ConnectionsPage() {
           {sources.map(s => {
             const c = s.connection, linked = !!c && c.status !== 'disconnected' && c.status !== 'revoked'
             const fetched = s.freshness.last_successful_fetch ?? (linked ? c?.checked_at : null)
-            const coll = s.provider !== 'drive' && s.configured_collection ? `${COLLECTION[s.provider]} ${s.configured_collection.split(',').map(x => x.trim()).filter(Boolean).join(', ')}` : ''
-            const sub = linked ? [maskEmail(c?.identity_label || '') || 'Linked account', coll].filter(Boolean).join(' · ') : s.configured ? 'No account linked yet' : 'Needs local configuration before it can be connected'
+            const coll = scopeLine(s)
+            const sub = linked ? maskEmail(c?.identity_label || '') || 'Linked account' : s.configured ? 'No account linked yet' : 'Not configured: needs app credentials in .env before it can be connected'
             const sub2 = linked ? (fetched ? `Last fetched ${fmtWhen(fetched)}` : 'Not fetched yet') : ''
             return <div className="lrow" key={s.provider}>
               <SourceTile provider={s.provider} />
-              <div className="grow">{NAMES[s.provider]}<small>{sub}</small>{sub2 && <small>{sub2}</small>}</div>
+              <div className="grow">{NAMES[s.provider]}<small>{sub}</small>{coll && <small>{coll}</small>}{sub2 && <small>{sub2}</small>}</div>
               <div className="lacts">
                 {linked && c
                   ? <><Status tone={c.status === 'connected' ? 'green' : 'amber'}>{c.status === 'connected' ? 'Connected' : c.status.replace(/_/g, ' ').replace(/^./, x => x.toUpperCase())}</Status>
