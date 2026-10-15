@@ -212,9 +212,9 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
     if (!id) return
     setRunSel(null); openDrawer(); setCopMin(true)
   }
-  const retry = async (nodeId: string) => {
+  const retry = async (nodeId: string, inputs?: Record<string, unknown>) => {
     if (!stream.runId) return
-    try { const r = await retryFrom(stream.runId, nodeId); stream.attach(r.run_id); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
+    try { const r = await retryFrom(stream.runId, nodeId, inputs); stream.attach(r.run_id); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
   }
   const resetRun = () => { stream.attach(null); setDrawer(d => ({ ...d, open: false })); setRunSel(null) }
   const waitingNode = overlay && stream.status === 'paused' ? display?.nodes.find(n => overlay.nodeStates[n.id] === 'awaiting_approval') : undefined
@@ -283,7 +283,7 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
         onRestored={() => { setViewing(null); setSheet(null); setHist({ past: [], future: [] }); void load() }} />}
       {drawer.open && stream.runId && <RunDrawer spec={spec} stream={stream} groupName={groupName} selected={runSel} onSelect={setRunSel} canvasRef={canvasRef}
         collapsed={drawer.col} onCollapse={() => setDrawer(d => ({ ...d, col: !d.col }))} onResize={h => setDrawer(d => ({ ...d, col: false, h }))}
-        onClose={() => { setDrawer(d => ({ ...d, open: false })); if (TERMINAL_RUN.has(stream.status)) stream.attach(null) }} onRetry={id => void retry(id)} />}
+        onClose={() => { setDrawer(d => ({ ...d, open: false })); if (TERMINAL_RUN.has(stream.status)) stream.attach(null) }} onRetry={(id, inputs) => void retry(id, inputs)} />}
     </div>
     {submit && <SubmitModal detail={detail} onClose={() => setSubmit(false)} onDone={() => { setSubmit(false); void load() }} />}
   </div>

@@ -38,7 +38,7 @@ function eventLine(e: WfEvent): string | null {
 
 export interface DrawerProps {
   spec: WorkflowSpec; stream: RunStream; selected: string | null; onSelect: (id: string) => void
-  collapsed: boolean; onCollapse: () => void; onClose: () => void; onResize: (h: number) => void; onRetry: (nodeId: string) => void
+  collapsed: boolean; onCollapse: () => void; onClose: () => void; onResize: (h: number) => void; onRetry: (nodeId: string, inputs?: Record<string, unknown>) => void
   canvasRef: React.RefObject<HTMLElement | null>; groupName: (id: string) => string | undefined
 }
 
@@ -162,7 +162,21 @@ export function RunDrawer({ spec, stream, selected, onSelect, collapsed, onColla
 
 interface Row { id: string; name: string; type: string; state: RowState; dur: number | null; usage: DebugStep['usage']; d?: DebugStep; p?: { output: Record<string, unknown>; error_code: string | null } }
 
-function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: Row; tab: string; spec: WorkflowSpec; groupName: (id: string) => string | undefined; stream: RunStream; debug: RunDebug | null; onRetry: (id: string) => void }) {
+/** Retry from a failed step; the run's inputs can be corrected first (e.g. a mistyped key), then only this step and later ones run again. */
+function RetryBox({ nodeId, spec, runInputs, onRetry }: { nodeId: string; spec: WorkflowSpec; runInputs: Record<string, unknown>; onRetry: (id: string, inputs?: Record<string, unknown>) => void }) {
+  const fields = (spec.inputs ?? []).filter(i => i.type === 'string' || i.type === 'number')
+  const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(fields.map(i => [i.name, runInputs[i.name] == null ? '' : String(runInputs[i.name])])))
+  const changed = fields.filter(i => vals[i.name] !== (runInputs[i.name] == null ? '' : String(runInputs[i.name])))
+  const submit = () => onRetry(nodeId, changed.length ? Object.fromEntries(changed.map(i => [i.name, i.type === 'number' ? Number(vals[i.name]) : vals[i.name]])) : undefined)
+  return <div className="retrybox">
+    {fields.length > 0 && <p className="dd-m">Run inputs (fix a typo before retrying):</p>}
+    {fields.map(i => <label key={i.name} className="dd-p" style={{ display: 'block', marginBottom: 6 }}><span className="muted" style={{ display: 'block', fontSize: 12 }}>{i.name}</span>
+      <input className="input mono" value={vals[i.name] ?? ''} aria-label={`Input ${i.name}`} onChange={e => setVals(v => ({ ...v, [i.name]: e.target.value }))} /></label>)}
+    <button type="button" className="btn primary sm" onClick={submit}><Icon name="retry" small />Retry from this step</button>
+  </div>
+}
+
+function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: Row; tab: string; spec: WorkflowSpec; groupName: (id: string) => string | undefined; stream: RunStream; debug: RunDebug | null; onRetry: (id: string, inputs?: Record<string, unknown>) => void }) {
   const node = spec.nodes.find(n => n.id === row.id)
   const cfg = obj(node?.config)
   const out = obj(row.d?.output ?? row.p?.output)
@@ -183,7 +197,7 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
     return <>
       <div className="errbox">{err?.code ?? 'step_failed'}</div>
       {err?.message && <p className="dd-p">{err.message}</p>}
-      {(stream.status === 'failed' || stream.status === 'blocked_by_budget') && <button type="button" className="btn primary sm" onClick={() => onRetry(row.id)}><Icon name="retry" small />Retry from this step</button>}
+      {(stream.status === 'failed' || stream.status === 'blocked_by_budget') && <RetryBox nodeId={row.id} spec={spec} runInputs={obj(debug?.run?.inputs)} onRetry={onRetry} />}
     </>
   }
 

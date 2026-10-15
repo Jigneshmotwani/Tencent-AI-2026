@@ -56,7 +56,8 @@ export const versionDiff = (id: string, v: number) => api<VersionDiff>(`/workflo
 export const restoreVersion = (id: string, v: number) => api<unknown>(`/workflows/${enc(id)}/versions/${v}/restore`, 'POST', {})
 
 export const runDebug = (runId: string) => api<RunDebug>(`/workflow-runs/${enc(runId)}/debug`)
-export const retryFrom = (runId: string, nodeId: string) => api<{ run_id: string }>(`/workflow-runs/${enc(runId)}/retry`, 'POST', { node_id: nodeId })
+export const retryFrom = (runId: string, nodeId: string, inputs?: Record<string, unknown>) =>
+  api<{ run_id: string }>(`/workflow-runs/${enc(runId)}/retry`, 'POST', inputs ? { node_id: nodeId, inputs } : { node_id: nodeId })
 
 export async function listGroups(): Promise<Group[] | null> {
   try { return await api<Group[]>('/groups') } catch { return null }

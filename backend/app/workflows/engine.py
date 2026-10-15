@@ -780,7 +780,7 @@ def descendants(spec: dict, node_id: str) -> set[str]:
     return seen
 
 
-def retry_from(run_id: str, node_id: str) -> None:
+def retry_from(run_id: str, node_id: str, inputs: dict | None = None) -> None:
     """Re-run a failed run from `node_id` under the same invoker. Upstream outputs come from persisted node state; evidence
     references are re-read with the invoker's CURRENT delegated identity when a later step needs them (reauthorization).
     Raises ValueError(code)."""
@@ -802,6 +802,14 @@ def retry_from(run_id: str, node_id: str) -> None:
         from ..governance.budgets import start_block
         if start_block(db, workflow_id=run.workflow_id, user=user):
             raise ValueError('budget_exceeded')
+        changed = []
+        if inputs:
+            try:
+                merged = coerce_inputs(spec, {**dict(run.inputs or {}), **inputs})
+            except Exception:  # noqa: BLE001 - any coercion problem is an invalid input
+                raise ValueError('invalid_inputs') from None
+            changed = sorted(k for k in merged if merged.get(k) != (run.inputs or {}).get(k))
+            run.inputs = merged
         reset = descendants(spec, node_id)
         for ns in db.scalars(select(NodeState).where(NodeState.run_id == run_id, NodeState.node_id.in_(reset))):
             if ns.node_id == node_id:
@@ -811,7 +819,7 @@ def retry_from(run_id: str, node_id: str) -> None:
             ns.status = 'idle'; ns.output = {}; ns.error_code = None; ns.started_at = None; ns.finished_at = None; ns.logs = []; ns.input = {}
         run.status = 'pending'; run.error_code = None; run.finished_at = None; run.latency_ms = None; run.paused_node_id = None
         audit(db, run.owner_id, 'workflow.run.retry', 'allowed', 'ok', None, run_id, workflow_id=run.workflow_id,
-              workflow_version=run.workflow_version, node_id=node_id, details={'reset_nodes': len(reset)}, commit=False)
+              workflow_version=run.workflow_version, node_id=node_id, details={'reset_nodes': len(reset), 'inputs_changed': changed}, commit=False)
         db.commit()
     _contexts.pop(run_id, None)
     ctx = _load_ctx(run_id)
