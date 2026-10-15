@@ -200,6 +200,10 @@ async def _exchange_code(client: httpx.AsyncClient, provider: str, code: str, en
     client_id, client_secret = _client_credentials(provider)
     payload = {'code': code, 'redirect_uri': _callback_url(provider), 'client_id': client_id, 'client_secret': client_secret}
     if provider == 'slack':
+        # PKCE (Slack treats localhost redirects of a PKCE-enabled app as desktop redirects): send the verifier and, as a
+        # public client, no client_secret (docs.slack.dev/authentication/using-pkce).
+        payload.pop('client_secret')
+        payload['code_verifier'] = _decrypt(encrypted)['verifier']
         result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
         authed = result.get('authed_user') or {}
         team = (result.get('team') or {}).get('id')
@@ -228,6 +232,7 @@ async def _refresh(client: httpx.AsyncClient, provider: str, token: dict) -> tup
     client_id, client_secret = _client_credentials(provider)
     payload = {'grant_type': 'refresh_token', 'refresh_token': token['refresh_token'], 'client_id': client_id, 'client_secret': client_secret}
     if provider == 'slack':
+        payload.pop('client_secret')  # PKCE public client: refresh with client_id + refresh_token only
         # Token rotation: refresh tokens are single-use; store the replacement every time.
         result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
         source = result.get('authed_user') if isinstance(result.get('authed_user'), dict) and result['authed_user'].get('access_token') else result
@@ -328,8 +333,10 @@ def authorize(provider: str, request: Request, user: User = Depends(current_user
                        'code_challenge_method': 'S256'})
         endpoint = 'https://accounts.google.com/o/oauth2/v2/auth'
     elif provider == 'slack':
-        # User-token scopes only (no bot); `team` pre-selects the configured workspace.
-        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id})
+        # User-token scopes only (no bot); `team` pre-selects the configured workspace. PKCE S256 (required for localhost redirects).
+        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id,
+                       'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='),
+                       'code_challenge_method': 'S256'})
         endpoint = 'https://slack.com/oauth/v2/authorize'
     else:
         # Atlassian documents confidential-client 3LO, not a PKCE public-client flow.
