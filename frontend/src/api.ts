@@ -12,6 +12,17 @@ export interface Evidence { id: string; title: string; excerpt: string; canonica
 export interface AuditEvent { id?: string; event_id?: string; created_at?: string; timestamp?: string; operation?: string; outcome?: string; provider?: string | null; reason?: string | null; [key: string]: unknown }
 export interface ActivityDetail { run: Run; events: AuditEvent[] }
 
+export const DEFAULT_APP_NAME = 'ROSS'
+interface HealthResponse { app_name?: string }
+let appNameRequest: Promise<string> | null = null
+export function loadAppName(): Promise<string> {
+  appNameRequest ??= api<HealthResponse>('/health').then(({ app_name }) => {
+    const name = app_name?.trim()
+    return name || DEFAULT_APP_NAME
+  }).catch(() => DEFAULT_APP_NAME)
+  return appNameRequest
+}
+
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
 export class ApiError extends Error { constructor(public code: string, public status: number, public detail: unknown = undefined) { super(code) } }

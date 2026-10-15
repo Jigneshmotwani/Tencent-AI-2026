@@ -36,7 +36,7 @@ function Gate() {
 }
 
 function Login() {
-  const { setUser } = useSession()
+  const { setUser, appName } = useSession()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -50,7 +50,7 @@ function Login() {
   }
   return <div className="page-center">
     <form className="login" onSubmit={submit}>
-      <div className="brand"><span className="brand-mark" aria-hidden="true"><Icon name="spark" /></span><b>Internal Brain</b></div>
+      <div className="brand"><span className="brand-mark" aria-hidden="true"><Icon name="spark" /></span><b>{appName}</b></div>
       <h1>Sign in</h1>
       <p>{expired ? 'Your session ended. Sign in again to continue.' : 'Use your local account.'}</p>
       {error && <p className="err-t" role="alert">{error}</p>}

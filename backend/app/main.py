@@ -150,7 +150,7 @@ async def health():
                 # The OTel collector container answers OTLP only; any HTTP reply on the port means it is listening.
                 services[name]='ready' if response.is_success or (name=='collector' and response.status_code<500) else 'unavailable'
             except httpx.HTTPError: services[name]='unavailable'
-    return {'status':'ready' if database=='ready' else 'degraded','database':database,**services,
+    return {'status':'ready' if database=='ready' else 'degraded','database':database,'app_name':cfg.app_name,**services,
         'integrations':{**{p:v['configured'] for p,v in connections.availability().items()},
         'model':bool(cfg.model_id and cfg.model_api_key)},'model_alias':cfg.model_alias,
         'inference_verified':inference_verified,'runtime':'local LiteLLM; provider configured by MODEL_ID'}
