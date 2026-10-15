@@ -17,6 +17,7 @@ from ..governance import budgets, policies
 from ..governance.links import DASHBOARDS, grafana_dashboard_url
 from ..telemetry import audit, trace_id, tracer
 from . import chain
+from .labels import action_label
 from .query import AuditQuery, describe, execute, reconstruct, translate
 
 router = APIRouter(tags=['audit'])
@@ -51,6 +52,8 @@ def audit_meta(user: User = Depends(identity.current_user), db: DBSession = Depe
     return {'users': list(db.scalars(select(User.username).order_by(User.username))),
             'providers': sorted({p for p in db.scalars(select(AuditEvent.provider).distinct()) if p} | {'drive', 'confluence', 'jira', 'slack'}),
             'operations': [o for o in db.scalars(select(AuditEvent.operation).distinct().order_by(AuditEvent.operation)) if o],
+            'operation_labels': {o: action_label(o, 'allowed') for o in db.scalars(select(AuditEvent.operation).distinct()) if o},
+            'containers': sorted(c for c in db.scalars(select(AuditEvent.container).distinct()) if c),
             'workflows': [{'id': w.id, 'name': w.name} for w in db.scalars(select(Workflow).order_by(Workflow.name))],
             'grafana': {name: grafana_dashboard_url(name) for name in DASHBOARDS}}
 
@@ -77,8 +80,17 @@ def audit_query(body: AuditQuery, request: Request, user: User = Depends(identit
     return {'query': body.model_dump(mode='json', exclude_none=True), 'label': describe(db, body), 'results': _run_query(db, user, body, 'structured')}
 
 
+def _zone(tz):
+    from zoneinfo import ZoneInfo
+    try:
+        return tz if tz and ZoneInfo(tz) else None
+    except Exception:
+        return None
+
+
 class NLQuery(BaseModel):
     text: str = Field(min_length=3, max_length=500)
+    tz: str | None = Field(default=None, max_length=64, description='viewer IANA timezone for today/yesterday/this week')
 
 
 @router.post('/audit/nl-query')
@@ -87,7 +99,7 @@ async def audit_nl_query(body: NLQuery, request: Request, user: User = Depends(i
     _auditor(user); identity.require_mutation(request, user, db)
     with tracer.start_as_current_span('audit.nl_query'):
         try:
-            q = await translate(db, user, body.text.strip(), trace_id())
+            q = await translate(db, user, body.text.strip(), trace_id(), _zone(body.tz))
         except ModelError as exc:
             audit(db, user.id, 'audit.query', 'error', exc.code, details={'mode': 'nl'})
             raise HTTPException(502, exc.code)

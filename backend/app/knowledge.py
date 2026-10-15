@@ -5,6 +5,7 @@ from .db import SessionLocal, SourceConnection, EvidenceRecord
 from .contracts import SourceError, PROVIDERS
 from .telemetry import tracer, audit, record_access
 
+SEARCH_WIDTH = 25  # candidates fetched per source before title ranking; only PER_SOURCE_READS are read
 PER_SOURCE_READS = 6  # top hits read per source (in parallel); ranking then keeps the best 8 overall
 
 def search_topic(text, prior):
@@ -13,6 +14,17 @@ def search_topic(text, prior):
     stop = {'why','is','the','and','what','should','i','do','next','which','document','supports','that','who','contact','please','a','an','for','of','to','it','s'}
     meaningful = list(dict.fromkeys(w for w in words if w.lower() not in stop and len(w)>2))
     return ' '.join(meaningful[-16:])[:300] or text[:200]
+
+def name_matcher(query):
+    """Score how strongly a title names the query's subject: 2 = an identifier (token with a digit, e.g. an issue key or
+    version) from the query appears in it, 1 = most of its words appear in the query, 0 = neither. Same for every provider."""
+    lowered = query.lower(); qwords = set(re.findall(r'\w+', lowered))
+    ids = {t for t in re.findall(r'[\w.-]+', lowered) if any(c.isdigit() for c in t) and len(t) > 2}
+    def named(title):
+        t = title.lower(); words = [w for w in re.findall(r'\w+', t) if len(w) > 2]
+        if ids and any(re.search(r'(?<![\w-])'+re.escape(i)+r'(?![\w-])', t) for i in ids): return 2
+        return int(len(words) > 1 and sum(w in qwords for w in words) / len(words) >= 0.6)
+    return named
 
 async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, limit=None):
     """Fresh, federated, delegated retrieval across the invoker's own connected sources.
@@ -41,7 +53,7 @@ async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, lim
                     context = await access_context(db, user, connection_id)
                 adapter = registry[provider]
                 with tracer.start_as_current_span('source.search', attributes={'source.provider':provider}, record_exception=False, set_status_on_exception=False):
-                    page = await adapter.search(query, context, limit=cap)
+                    page = await adapter.search(query, context, limit=SEARCH_WIDTH)
                     with SessionLocal() as db: audit(db,user.id,'source.search',provider=provider,run_id=run_id,container=context.collection,
                         details={'hit_count':len(page.hits)},**ctx)
             # Bounded first page; reads run concurrently (PER_SOURCE_READS per source), each re-authorized and audited.
@@ -70,7 +82,9 @@ async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, lim
                                 resource_ids=[hit.document_id],decision={hit.document_id:'error'},**ctx)
                         return None
             # Reads get their own deadline; whatever finished in time is kept (slow documents are skipped, not fatal).
-            tasks = [asyncio.create_task(read_one(hit)) for hit in page.hits[:min(cap, PER_SOURCE_READS)]]
+            # The provider's own relevance order can miss an item the question names; read named items first (stable otherwise).
+            ranked = sorted(page.hits, key=lambda h: -name_matcher(query)(h.title))
+            tasks = [asyncio.create_task(read_one(hit)) for hit in ranked[:min(cap, PER_SOURCE_READS)]]
             if tasks:
                 done, pending = await asyncio.wait(tasks, timeout=cfg.source_timeout)
                 for task in pending: task.cancel()
@@ -92,7 +106,9 @@ async def retrieve(user, query, run_id=None, providers=None, audit_ctx=None, lim
     if not ids: limitations.append('No connected source accounts for the requested sources. Connect them in Connections.')
     # Bound evidence and preserve every source that returned something, ranking by simple lexical overlap.
     terms = {w.lower() for w in re.findall(r'\w+',query) if len(w)>2}
-    documents.sort(key=lambda row:sum(t in (row[2].title+' '+row[2].text).lower() for t in terms), reverse=True)
+    # An item the query names is the subject: ranked ahead of plain word overlap.
+    named = name_matcher(query)
+    documents.sort(key=lambda row:(named(row[2].title), sum(t in (row[2].title+' '+row[2].text).lower() for t in terms)), reverse=True)
     selected, seen = [], set()
     for provider in wanted:
         candidate = next((d for d in documents if d[1]==provider),None)
