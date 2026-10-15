@@ -94,6 +94,15 @@ def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depend
         reg={**reg,'builtin_tools':[t for t in reg['builtin_tools'] if not t.startswith('slack.')],'write_tools':[t for t in reg['write_tools'] if not t.startswith('slack.')]}
     return {**reg,'mcp_tools':list_tools(db,user_id=user.id),'models':models,'sources':cfg.enabled_sources,'policy':policy}
 
+@app.get('/api/app-config')
+def app_config(user:User=Depends(identity.current_user)):
+    """Demo-specific display values from the active demo pack (suggestion chips, org name). Nothing here grants access."""
+    from .scopes import pack_info
+    info=pack_info(); app_info=info.get('app') or {}
+    return {'pack':info.get('name') or None,'example':bool(info.get('example')),'org_name':app_info.get('org_name') or '',
+            'timezone':app_info.get('timezone') or 'UTC','audit_suggestions':list(info.get('audit_suggestions') or []),
+            'workspace_suggestions':list(info.get('workspace_suggestions') or [])}
+
 @app.middleware('http')
 async def response_security(request, call_next):
     response=await call_next(request)

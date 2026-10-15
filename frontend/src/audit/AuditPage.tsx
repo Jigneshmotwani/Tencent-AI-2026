@@ -6,6 +6,7 @@ import { hasCap, useMe } from '../shell/session'
 import { Icon } from '../ui/icons'
 import { Button, Dot, IconButton, Pill, Popover, Sheet, Spinner, Tabs, cx, fmtInt, fmtWhen, toast } from '../ui/kit'
 import MyRuns from './MyRuns'
+import { useAppConfig } from '../appConfig'
 
 export interface AuditRow {
   seq: number; timestamp: string; actor: string; actor_name: string; actor_title: string; label: string; resource_label: string; resource_mono: boolean
@@ -18,7 +19,6 @@ interface RunAudit { run_id: string; kind: 'chat' | 'workflow'; actor: string; s
 type Integrity = { state: 'checking' } | { state: 'ok'; count: number } | { state: 'broken'; seq: number | null; count: number } | { state: 'error' }
 
 const PER = 12
-const SUGGESTIONS = ['Who opened STR case files this week?', 'Denied access attempts today', 'Everything that happened yesterday', 'What did operations ask about Acme?']
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return undefined } })()
 const PERIODS: [string, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This week'], ['last_week', 'Last week'], ['this_month', 'This month'], ['last_month', 'Last month']]
 interface Meta { users: string[]; providers: string[]; operations: string[]; operation_labels: Record<string, string>; containers: string[]; workflows: { id: string; name: string }[] }
@@ -63,6 +63,7 @@ function IntegrityBadge() {
 
 function Events() {
   const [text, setText] = useState('')
+  const suggestions = useAppConfig().audit_suggestions
   const [filter, setFilter] = useState<{ query: Record<string, unknown>; label: string } | null>(null)
   const [decision, setDecision] = useState<'all' | 'allowed' | 'denied'>('all')
   const [page, setPage] = useState(0)
@@ -140,7 +141,7 @@ function Events() {
       <input value={text} onChange={e => setText(e.target.value)} placeholder="Ask about activity…" aria-label="Ask about activity" autoComplete="off" />
       <Button variant="primary" size="sm" type="submit" disabled={busy}>{busy ? <><Spinner />Asking…</> : 'Ask'}</Button>
     </form>
-    <div className="sugs">{SUGGESTIONS.map(s => <button key={s} type="button" className="sug" onClick={() => { setText(s); void ask(s) }}>{s}</button>)}</div>
+    {suggestions.length > 0 && <div className="sugs">{suggestions.map(s => <button key={s} type="button" className="sug" onClick={() => { setText(s); void ask(s) }}>{s}</button>)}</div>}
     <div className="meta-row">
       <div className="meta-l"><p>{countText}</p>
         {filter && <span className="fchip">Filtered: {filter.label}<button type="button" aria-label="Clear filter" onClick={clear}><Icon name="x" small /></button></span>}

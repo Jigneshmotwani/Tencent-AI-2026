@@ -99,7 +99,16 @@ def _migration_3(db: Session, engine):
     db.execute(text('CREATE INDEX IF NOT EXISTS audit_events_ts ON audit_events (timestamp)'))
 
 
-MIGRATIONS = [(2, _migration_2), (3, _migration_3)]
+def _migration_4(db: Session, engine):
+    """Iteration 4: subscriptions (scheduled agents) and the trigger record on workflow runs."""
+    from .db import Base
+    Base.metadata.create_all(engine)  # subscriptions
+    existing = {c['name'] for c in inspect(engine).get_columns('workflow_runs')}
+    if 'trigger_info' not in existing:
+        db.execute(text("ALTER TABLE workflow_runs ADD COLUMN trigger_info JSON NOT NULL DEFAULT '{}'"))
+
+
+MIGRATIONS = [(2, _migration_2), (3, _migration_3), (4, _migration_4)]
 
 
 def apply(db: Session, engine):

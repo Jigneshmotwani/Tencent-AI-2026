@@ -14,6 +14,7 @@ import { Composer } from './Composer'
 import { DraftView, Invocation, RunCard } from './RunCard'
 import { SourceSheet, SourceTarget } from './SourceSheet'
 import './workspace.css'
+import { useAppConfig } from '../appConfig'
 
 interface Live { runId: string; convId: string; text: string; cites: CiteRef[]; status: string; usage: Usage | null; error: string }
 type SheetState = { kind: 'source'; target: SourceTarget } | { kind: 'draft'; draft: DraftView } | null
@@ -35,6 +36,7 @@ export default function WorkspacePage() {
   const isHistory = route.parts[0] === 'history'
   const isNew = !convId && !isHistory
   const firstName = me.name.split(/\s+/)[0]
+  const starters = useAppConfig().workspace_suggestions
   const chats = useRecentChats(hasCap(me, 'user'))
 
   // ---------------------------------------------------------------- agents for you
@@ -238,6 +240,7 @@ export default function WorkspacePage() {
         <Composer agents={agents} looks={looks} selected={selected} onSelect={pickAgent} isNew={isNew} firstName={firstName}
           busy={!!liveId} onStop={() => void stop()} onAsk={ask} onRun={runAgent} inputRef={textarea} />
         <div className="newst gut"><div className="wrap">
+          {starters.length > 0 && <div className="sugs" style={{ marginBottom: 20 }}>{starters.map(t => <button key={t} type="button" className="sug" onClick={() => void ask(t)}>{t}</button>)}</div>}
           {agents.length > 0 && <><div className="agt-h">Agents for you</div>
             <div className="agrid">{agents.map(a => <button key={a.id} type="button" className={cx('ag', selected?.id === a.id && 'on')} aria-pressed={selected?.id === a.id}
               onClick={() => pickAgent(selected?.id === a.id ? null : a)}>

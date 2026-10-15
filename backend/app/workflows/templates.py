@@ -421,6 +421,19 @@ def template_spec(key: str) -> dict:
     return copy.deepcopy(TEMPLATES[key])
 
 
+# Builders that take template settings (demo packs: `template:` + `template_settings:`). Names of projects, channels,
+# folders and spaces are settings, never hard-coded.
+BUILDERS: dict = {}
+
+
+def build_template(key: str, values: dict | None = None) -> dict:
+    if key in BUILDERS:
+        return BUILDERS[key](**(values or {}))
+    if key in TEMPLATES:
+        return template_spec(key)
+    raise ValueError(f'unknown template {key!r}')
+
+
 # ======================================================================= seeded demo agents (idempotent)
 SEED_TAG = 'seed:i3'
 SEED_ICONS = {'policy_qa': 'book', 'transaction_investigator': 'spark', 'kyb_case_reviewer': 'usercheck', 'audit_explorer': 'search'}

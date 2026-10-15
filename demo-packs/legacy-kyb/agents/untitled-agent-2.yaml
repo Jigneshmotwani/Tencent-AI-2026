@@ -1,0 +1,46 @@
+name: Untitled agent
+description: ''
+icon: flow
+owner: admin
+status: draft
+template_key: null
+spec:
+  name: Untitled agent
+  description: ''
+  icon: flow
+  trigger:
+    type: manual
+    config: {}
+  inputs: []
+  nodes:
+  - id: trigger
+    type: trigger.manual
+    label: Start
+    config: {}
+    position:
+      x: 40.0
+      y: 120.0
+  edges: []
+  policies:
+    model_alias: ''
+    max_steps: 25
+    max_tokens_per_run: 40000
+    budget_usd: 1.0
+    allowed_sources:
+    - drive
+    - confluence
+    - jira
+    - slack
+    allowed_tools: []
+    approval_required_for:
+    - jira.comment
+    - jira.transition
+    - jira.create_issue
+    - slack.post
+  audience: &id001
+    kind: legacy
+    groups: []
+    roles:
+    - user
+    users: []
+audience: *id001

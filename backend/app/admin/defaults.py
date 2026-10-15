@@ -30,7 +30,21 @@ MEMBERS = {'Compliance': ['compliance', 'admin'], 'Compliance leads': ['admin'],
            'Onboarding': ['compliance', 'operations'], 'Audit': ['auditor']}
 
 
+def ensure_core_defaults(db) -> None:
+    """Non-demo defaults: page-access matrix and the env model. Always applied."""
+    if db.get(PlatformPolicy, PAGE_ACCESS_KEY) is None:
+        db.add(PlatformPolicy(key=PAGE_ACCESS_KEY, value={'matrix': DEFAULT_MATRIX}))
+    from ..governance.models import ensure_env_model
+    ensure_env_model(db)
+    db.flush()
+    invalidate_page_cache()
+
+
 def ensure_directory_defaults(db) -> None:
+    from ..seed_defaults import pack_active
+    if pack_active(db):
+        ensure_core_defaults(db)  # the loaded demo pack owns users and groups
+        return
     users = {u.username: u for u in db.scalars(select(User))}
     for _key, (username, name, title, email) in DEMO_USERS.items():
         u = users.get(username)

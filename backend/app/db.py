@@ -186,6 +186,9 @@ class WorkflowRun(Base):
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 4: what started an automatic run, e.g. {type: jira_issue_created, ref: INC-12, label: "Triggered by Jira INC-12",
+    # run_as: <user id>, run_as_reason: owner|subscriber}. owner_id is the run-as user; all reads use that user's own accounts.
+    trigger_info: Mapped[dict] = mapped_column(JSON, default=dict)
 class WorkflowEvent(Base):
     __tablename__ = 'workflow_events'
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -337,6 +340,15 @@ class BudgetLimit(Base):
     max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+# ---- Iteration 4 (migration 4) ----
+class Subscription(Base):
+    """A user's subscription to a scheduled agent: each scheduled fire starts one run per subscriber, as that subscriber."""
+    __tablename__ = 'subscriptions'
+    __table_args__ = (UniqueConstraint('workflow_id', 'user_id'),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey('workflows.id', ondelete='CASCADE'))
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 class Migration(Base):
     __tablename__ = 'schema_migrations'
     version: Mapped[int] = mapped_column(Integer, primary_key=True)

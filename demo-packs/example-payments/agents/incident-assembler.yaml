@@ -1,0 +1,13 @@
+# EXAMPLE. Built from the generic `incident_assembler` template; every name is a setting.
+name: Incident Assembler
+description: Assembles a cited incident brief from past incidents, the runbook and recent alert and deploy chatter.
+owner: arjun
+status: published
+audience: {kind: group, groups: [payments-eng, payments-leads]}
+template: incident_assembler
+template_settings:
+  jql: project = INC AND priority in (P1, P2)
+  alert_channel: pgw-alerts
+  deploy_channel: deploys
+  incident_channel: incidents
+  approver_group: payments-leads

@@ -218,26 +218,25 @@ def _demo_gate(request: Request):
 @router.get('/demo-users')
 def demo_users(_gate: None = Depends(_demo_gate), user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     from .admin.directory import ROLE_LABEL, assigned_roles, initials
+    # Every active account of the loaded demo (the demo pack decides who exists); key = username.
     out = []
-    for key, username in DEMO_USERS:
-        u = db.scalar(select(User).where(User.username == username))
-        if u is None or u.status == 'disabled':
-            continue
-        out.append({'key': key, 'name': u.name, 'title': u.title or '', 'role_label': ROLE_LABEL[assigned_roles(u)[0]],
+    for u in db.scalars(select(User).where(User.status != 'disabled').order_by(User.created_at, User.username)):
+        out.append({'key': u.username, 'name': u.name, 'title': u.title or '', 'role_label': ROLE_LABEL[assigned_roles(u)[0]],
                     'initials': initials(u.name or u.username)})
     return out
 
 
 class DemoSwitch(BaseModel):
-    key: str = Field(min_length=1, max_length=20)
+    key: str = Field(min_length=1, max_length=63)
 
 
 @router.post('/demo-switch')
 def demo_switch(body: DemoSwitch, request: Request, response: Response, _gate: None = Depends(_demo_gate),
                 user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     require_mutation(request, user, db)
-    username = dict(DEMO_USERS).get(body.key)
-    target = db.scalar(select(User).where(User.username == username)) if username else None
+    # Legacy keys (priya, daniel, wei, aisha) still map to the iteration 3 accounts; otherwise the key is the username.
+    username = dict(DEMO_USERS).get(body.key) or body.key
+    target = db.scalar(select(User).where(User.username == username))
     if target is None or target.status == 'disabled':
         raise HTTPException(404, 'not_found')
     token = _new_session(db, request, response, target)

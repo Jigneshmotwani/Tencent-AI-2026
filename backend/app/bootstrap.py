@@ -20,8 +20,10 @@ def bootstrap():
         if not db.get(Migration,1): db.add(Migration(version=1))
         db.commit()
         migrations.apply(db, engine)
-        for username,name,roles in [('operations','Olivia Operations',['user']),
-                ('compliance','Casey Compliance',['builder']),('admin','Alex Admin',['admin']),('auditor','Avery Auditor',['auditor'])]:
+        from .seed_defaults import pack_active
+        legacy_accounts=[] if pack_active(db) else [('operations','Olivia Operations',['user']),
+                ('compliance','Casey Compliance',['builder']),('admin','Alex Admin',['admin']),('auditor','Avery Auditor',['auditor'])]
+        for username,name,roles in legacy_accounts:
             if db.scalar(select(User).where(User.username==username)): continue
             password=os.environ.get(f'BOOTSTRAP_{username.upper()}_PASSWORD') or secrets.token_urlsafe(20)
             db.add(User(username=username,name=name,capabilities=roles,password_hash=hash_password(password)))

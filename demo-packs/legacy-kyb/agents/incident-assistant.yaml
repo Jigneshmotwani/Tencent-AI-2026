@@ -1,0 +1,129 @@
+name: Incident Assistant
+description: Answers questions about payment incidents from the Confluence runbook and Jira follow-up tickets (and Slack,
+  when configured).
+icon: siren
+owner: admin
+status: published
+template_key: incident_assistant
+spec:
+  name: Incident Assistant
+  icon: siren
+  description: Answers questions about payment incidents from the Confluence runbook and Jira follow-up tickets (and Slack,
+    when configured).
+  trigger:
+    type: manual
+    config: {}
+  inputs:
+  - name: question
+    type: string
+    required: true
+    description: e.g. What was the root cause of the payment outage and what are the follow-up tickets?
+  nodes:
+  - id: trigger
+    type: trigger.manual
+    label: Question
+    config: {}
+    position:
+      x: 0
+      y: 100
+  - id: retrieve
+    type: knowledge.retrieve
+    label: Runbook + chatter
+    config:
+      query: payment outage incident root cause {{inputs.question}}
+      sources:
+      - confluence
+      max_documents: 5
+    position:
+      x: 260
+      y: 100
+  - id: tickets
+    type: tool.builtin
+    label: Follow-up tickets
+    config:
+      tool: jira.search
+      params:
+        jql: labels = "incident-followup" ORDER BY created DESC
+        max_results: 5
+    position:
+      x: 520
+      y: 100
+  - id: guard_in
+    type: guardrail.input
+    label: PII + injection screen
+    config:
+      injection: true
+    position:
+      x: 780
+      y: 100
+  - id: answer
+    type: llm.generate
+    label: Incident answer
+    config:
+      prompt: 'Using only the evidence, answer: {{inputs.question}}
+
+        Give the root cause, impact, resolution and every follow-up ticket (key, summary, status). Cite [E#] after every factual
+        sentence. At most about 250 words.'
+      include_evidence: true
+      max_tokens: 1800
+    position:
+      x: 1040
+      y: 100
+  - id: guard_out
+    type: guardrail.output
+    label: Grounding check
+    config:
+      target: answer
+      grounding: true
+      on_fail: strip
+    position:
+      x: 1300
+      y: 100
+  - id: output
+    type: output
+    label: Answer
+    config:
+      template: '{{nodes.guard_out.output.result.text}}'
+    position:
+      x: 1560
+      y: 100
+  edges:
+  - id: e_trigger_retrieve
+    source: trigger
+    target: retrieve
+  - id: e_retrieve_tickets
+    source: retrieve
+    target: tickets
+  - id: e_tickets_guard_in
+    source: tickets
+    target: guard_in
+  - id: e_guard_in_answer
+    source: guard_in
+    target: answer
+  - id: e_answer_guard_out
+    source: answer
+    target: guard_out
+  - id: e_guard_out_output
+    source: guard_out
+    target: output
+  policies:
+    model_alias: ''
+    max_steps: 12
+    max_tokens_per_run: 20000
+    budget_usd: 1.0
+    allowed_sources:
+    - drive
+    - confluence
+    - jira
+    allowed_tools:
+    - builtin:jira.search
+    approval_required_for:
+    - jira.comment
+    - jira.transition
+    - jira.create_issue
+  audience: &id001
+    roles:
+    - user
+    users: []
+    groups: []
+audience: *id001
