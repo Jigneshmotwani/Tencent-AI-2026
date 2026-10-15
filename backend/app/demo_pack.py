@@ -482,7 +482,7 @@ def load(name: str, reset: bool, refresh_sources: bool = False, basic_file: str 
     out(f'  budgets: {budget_count} limits, subscriptions: {subs}')
     scopes = pack.get('scopes') or {}
     for field, items in scopes.items():
-        out(f"  scope {field}: {', '.join(str(i.get('key') or i.get('id')) if isinstance(i, dict) else str(i) for i in items or []) or '(.env)'}")
+        out(f"  scope {field}: {', '.join(str(i.get('key') or i.get('id')) if isinstance(i, dict) else str(i) for i in items or []) or ('(none)' if field in scopes else '(.env)')}")
     for placeholder in dict.fromkeys(pack.get('_unresolved') or []):
         hint = "run the seeder's Drive step once the folders exist" if 'drive:' in placeholder else 'add it to .local/demo-identities.env'
         out(f'  ! unresolved {placeholder}: {hint} (scopes using it were skipped)')

@@ -413,7 +413,8 @@ async def callback(provider: str, request: Request, user: User = Depends(current
         return RedirectResponse(settings().app_origin + '/?connection=' + code, status_code=303)
 
 
-async def access_context(db: DBSession, user: User, connection_id: str) -> AccessContext:
+async def access_context(db: DBSession, user: User, connection_id: str, lookup_only: bool = False) -> AccessContext:
+    """lookup_only: CLI seeding only (folder lookup before any Drive scope exists); never used for document reads."""
     require_capability(user, 'user')
     # One local API process: serialize rotating-token refresh and disconnect per account.
     async with _locks.setdefault(connection_id, asyncio.Lock()):
@@ -423,7 +424,7 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
             raise SourceError('unavailable')
         # The allowed scopes come from the active demo pack or .env and can change (a pack load). The connection follows
         # them: they only bound which containers are searched; the user's own token still decides what is readable.
-        current = _collection(connection.provider)
+        current = _collection(connection.provider) or (connection.collection if lookup_only else '')
         if not current:
             raise SourceError('unavailable')
         if connection.collection != current:

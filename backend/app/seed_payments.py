@@ -141,7 +141,7 @@ class PaymentsSeeder:
             self.manual.append(f'Identities: create {IDENTITIES.relative_to(ROOT)} with ROSS_A_EMAIL and ROSS_B_EMAIL (see the module '
                                'docstring of backend/app/seed_payments.py), then rerun.')
 
-    async def context(self, provider: str) -> AccessContext | None:
+    async def context(self, provider: str, lookup_only: bool = False) -> AccessContext | None:
         with SessionLocal() as db:
             connection = connection_for(db, self.user, provider)
             if connection is None:
@@ -149,7 +149,7 @@ class PaymentsSeeder:
                 out(f'  ! {provider}: no connected account for "{self.user.username}".')
                 return None
             try:
-                return await access_context(db, self.user, connection.id)
+                return await access_context(db, self.user, connection.id, lookup_only=lookup_only)
             except SourceError as exc:
                 self.manual.append(f'{provider}: reconnect {provider} as "{self.user.username}" ({exc.code}), then rerun.')
                 return None
@@ -729,7 +729,7 @@ class PaymentsSeeder:
     async def drive(self):
         out('\n== Drive (read-only app: upload checklist)')
         manifest = load_yaml(CONTENT / 'drive' / 'manifest.yaml')
-        context = await self.context('drive')
+        context = await self.context('drive', lookup_only=True)  # folder lookup works before the pack's Drive scope exists
         from .connectors.common import request_json
         from .connectors.drive import BASE, FOLDER_TYPE, drive_literal
         resolved = {}
