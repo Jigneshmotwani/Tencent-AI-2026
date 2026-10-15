@@ -14,9 +14,10 @@ In order. Each item says who and where. Ticked items were done by the human (or 
       Do **not** upload `vn-partner-api-v2-retirement-notice.docx` (it is dropped live in beat 3).
    3. Share as Viewer: `Payments Platform` → account A; `Partners/VN Rail` → accounts A and B; `Partners/Commercial` → nobody.
       (A and B emails are in `.local/demo-identities.env`.)
-   4. Then run `uv run --frozen python -m backend.app.seed --as weiling --content payments --only drive` (resolves the folder
-      ids into `.local/ross-drive-folders.json`) and `uv run --frozen python -m backend.app.demo_pack load ross-payments`
-      (puts the folders into the pack's scope).
+   4. Then run `uv run --frozen python -m backend.app.seed --as admin --content payments --only drive` (resolves the folder
+      ids into `.local/ross-drive-folders.json` with the owner's existing Drive link) and
+      `uv run --frozen python -m backend.app.demo_pack load ross-payments` (puts the folders into the pack's scope). Until
+      then Drive shows "not configured" and cannot be connected (by design: no fallback to another demo's folder).
 2. **Connect sources per persona** (app http://localhost:5273, Connections page; passwords in `.local/demo-accounts.txt`).
    Use one browser profile per real identity so the right Google/Atlassian/Slack session is used:
    - `weiling` and `daniel` → owner account: Google Drive, Confluence, Jira, Slack.
@@ -35,7 +36,7 @@ In order. Each item says who and where. Ticked items were done by the human (or 
 
 - [x] Task 0: branch `iteration-5`, docs read, app healthy (`/api/health` ready)
 - [x] Task 1: synthetic content in `demo-content/payments/`
-- [~] Task 2: seeding (Jira, Confluence done by the agent; Slack and Drive wait on human steps)
+- [~] Task 2: seeding (Jira and Confluence done and checked; Slack and Drive wait on human steps 1-3)
 - [~] Task 3: `demo-packs/ross-payments/`
 - [~] Task 4: recording-reliability fixes
 - [ ] Task 5: live verification of the beats
@@ -74,7 +75,11 @@ manifest. Every file carries "SYNTHETIC DEMO DATA". The planted injection line, 
 - **Fixed issue keys**: Jira Cloud cannot set a key, so the seeder bulk-creates placeholder issues (label
   `ross-placeholder`) up to the wanted number and deletes them at once; the burned number is stored as the project
   property `ross.counter`, so reruns never burn again. INC is advanced to 2300 so the live P1 is INC-2301; IT to 76.
-- **Confluence**: spaces are created as private spaces (visible to the owner only), then A/B get View per `visible_to`.
+- **Confluence**: spaces are created as private spaces (visible to the owner only), then A/B get the **Viewer** space role
+  per `visible_to` (this site is in roles-only mode: the v1 space-permission API returns HTTP 400
+  `InvalidRbacOperationException`, so the seeder uses `POST /wiki/api/v2/spaces/{id}/role-assignments`). Integration app
+  accounts (Chat Notifications, Microsoft Teams) keep their default role; no person or group besides the owner and the
+  listed accounts can read a space.
   Pages are created from the Markdown files; a page that differs from its file is restored (the reset uses this to
   remove the live Step 4a).
 - **Slack**: creates channels, sets purposes, invites A/B (needs `channels:write` / `groups:write`), posts the messages
@@ -110,3 +115,18 @@ Backup Radar import: `uv run --frozen python -m backend.app.demo_pack import-age
    brief can cite the certificate-rotation notice.
 6. **Offboarding inventory**: email matching ignores Gmail dots (`a.b@gmail.com` = `ab@gmail.com`) in Slack, Drive and the
    audit lookup, and accepts Jira's single exact match when the person hides their email.
+
+### Seeding run (16 Oct, 00:40–02:10 SGT)
+
+Jira (owner API token, identity-checked): INC, IT, PAYRAIL, VNR created; SEC (created during probing) got the scheme.
+Key counters: INC → 2213 burned, INC-2214 created, then → 2300; IT → 76; PAYRAIL → 409 (+4 +4 between issues);
+SEC → 100. All placeholders deleted. Issues: INC-2214 (Done), PAYRAIL-410 (In Progress), 415 (Blocked), 420, 421
+(To Do, due 24/28 Oct), SEC-101, SEC-102, VNR-1..6 (1, 2, 6 Done; 3 In Progress; 4 To Do; 5 Blocked), with comments.
+Roles: owner in Administrators everywhere; A in ROSS demo member on INC, PAYRAIL, VNR; B on VNR only.
+The INC burn (2,300 creates + deletes) took about 25 minutes.
+
+Confluence: 4 private spaces, 9 pages; readers set by role assignment (rerun after the roles-only fix): PAYENG owner+A,
+VNRAIL owner+A+B, PAYPART and SEC owner only. Rerun prints `=` for every item (idempotent).
+
+Check: a JQL naming a project the user cannot see (`project in ("INC","NOPEX")`) still returns 200 with the visible
+issues, so the app's `project in (<all pack projects>)` clause works for A and B.
