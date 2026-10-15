@@ -76,7 +76,7 @@ source NOT CHECKED and asked IT to check manually.
 requires `jira.search`): 2/5. Final (8,192-token output cap + sharper rule): **4/5**; the miss was an empty build
 (intermittent; not reproducible in 4 more tries). Edit prompt: **4/4**.
 
-**Stability (Task 10).** STABILITY_RESULT
+**Stability (Task 10).** Stack started 12:51 UTC and left running; `/api/health` polled every minute from 12:55 to 13:50 UTC (55 checks): 55/55 `ready` (database, gateway, collector), UI 200 every time, no restarts or stops. During the window it served the Copilot runs, triggered runs, browser checks and a `legacy-kyb --reset` load. The API log has one warning: one trigger poll for a test agent got a transient Jira error (`SourceError`), was caught and recorded as `last_error`; the loop continued.
 
 **Build.** `npm --prefix frontend run build` (tsc + vite) passes.
 
