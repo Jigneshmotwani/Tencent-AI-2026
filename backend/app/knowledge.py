@@ -128,3 +128,27 @@ def document_payload(doc, provider, evidence_id, changed=False):
     return {'id':evidence_id,'title':doc.title,'excerpt':doc.text[:settings().max_excerpt_chars],
         'canonical_url':doc.canonical_url,'location':doc.location,'modified_at':doc.modified_at,
         'fetched_at':doc.fetched_at.isoformat(),'provider':provider,'version':doc.version,'changed':changed}
+
+# ---- Relevance gate (hallucination guard): evidence that barely relates to the question is not sent to the model.
+_GENERIC = {'why','is','the','and','what','should','i','do','next','which','document','supports','that','who','contact','please','a','an','for','of','to','it','s',
+            'does','say','says','about','are','how','can','you','tell','give','show','from','with','this','that','have','has','was','were','will','would',
+            'could','our','your','any','there','their','them','when','where','must','need','needs','into','been','also','than','then','these','those','policy'}
+
+def _stems(text):
+    return {w.lower()[:5] for w in re.findall(r'[\w-]+', text or '') if len(w) > 2 and w.lower() not in _GENERIC}
+
+def filter_relevant(query, docs):
+    """Keep documents sharing enough distinctive terms (5-char stems) with the question; returns (kept, dropped_count).
+    A document matching none of the question's terms was only a fuzzy provider hit; giving it to the model invites it to
+    answer from general knowledge instead of saying nothing was found. Needs 1 shared term for short questions, else 2."""
+    terms = _stems(query)
+    if not terms:
+        return list(docs), 0
+    need = 1 if len(terms) <= 2 else 2
+    kept = []
+    for row in docs:
+        doc = row[2]
+        haystack = _stems((doc.title or '') + ' ' + (doc.text or '')[:20000])
+        if len(terms & haystack) >= need:
+            kept.append(row)
+    return kept, len(docs) - len(kept)

@@ -1,0 +1,46 @@
+# Repeated scope denials: a user whose chat or agent-run requests were refused for insufficient role/group scope 5+ times in
+# an hour. Metadata only (username + category, never message text). Shows under Grafana > Alerting; add a contact point to notify.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: governance
+    folder: Governance
+    interval: 1m
+    rules:
+      - uid: repeated-scope-denials
+        title: Repeated scope denials
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.user }} was refused {{ $values.B }} times in the last hour for requests outside their role or group scope"
+          description: "Check Audit for guardrail.chat / access.tool denials by this user."
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum by (user) (increase(chat_scope_denials_total[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings: {mode: dropNN}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [4.5]}

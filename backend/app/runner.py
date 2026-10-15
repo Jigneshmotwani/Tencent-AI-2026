@@ -4,9 +4,11 @@ from opentelemetry import trace
 from .db import SessionLocal, Run, RunEvent, Message, EvidenceRecord, now
 from .config import settings
 from .prompt import AGENT_ID, AGENT_VERSION, INSTRUCTIONS
-from .knowledge import retrieve, search_topic
+from .knowledge import retrieve, search_topic, filter_relevant
 from .gateway import ModelGateway, ModelError
-from .telemetry import tracer, audit, record_model_call
+from .telemetry import tracer, audit, record_model_call, record_guardrail, record_scope_denial
+from . import chat_guardrail
+from .workflows import guardrails as content_guards
 TERMINAL = {'completed','failed','cancelled'}
 tasks: dict[str, asyncio.Task] = {}
 
@@ -19,7 +21,7 @@ def event(run_id, kind, data=None):
         db.add(RunEvent(run_id=run_id,event_id=sequence,type=kind,data=data or {}))
         db.commit()
 
-def terminal(run_id,status,code=None,started=None):
+def terminal(run_id,status,code=None,started=None,message_status=None):
     with SessionLocal() as db:
         run = db.get(Run,run_id)
         if run.status in TERMINAL: return
@@ -30,7 +32,7 @@ def terminal(run_id,status,code=None,started=None):
         elif usage['status']=='pending': usage['status']='unknown'
         run.usage = usage
         assistant = db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant'))
-        if assistant: assistant.status = status
+        if assistant: assistant.status = message_status or status
         audit(db,run.owner_id,'run.'+status,'error' if status=='failed' else 'allowed',code or status,run_id=run_id)
         db.commit()
     event(run_id,'run_'+status,{'code':code} if code else {})
@@ -46,6 +48,25 @@ async def cancel_run(run_id):
         try: await task
         except asyncio.CancelledError: pass
     terminal(run_id,'cancelled')
+
+def refuse(run_id,user,decision,started,span):
+    """Out-of-scope request: answer instantly with the fixed refusal. No retrieval and no answer model call."""
+    with SessionLocal() as db:
+        from .db import User
+        run=db.get(Run,run_id); owner=db.get(User,user.id)
+        assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant')); assistant.text=decision.text
+        run.usage={**run.usage,**(decision.check_usage or {}),'status':'finalized' if decision.check_usage else 'not_requested','cost_status':'unknown'}
+        # Metadata only: the message text is never stored in the audit trail.
+        audit(db,user.id,'guardrail.chat','denied' if decision.kind=='denied' else 'allowed',
+              'insufficient_scope' if decision.kind=='denied' else 'use_page',run_id=run_id,
+              details={'category':decision.category,'required_page':decision.page,'detector':decision.detector,'kind':decision.kind})
+        db.commit(); usage=dict(run.usage)
+        if decision.kind=='denied': record_scope_denial(user=owner.username if owner else user.id,category=decision.category)
+    event(run_id,'guardrail',{'kind':decision.kind,'category':decision.category,'page':decision.page})
+    event(run_id,'answer_delta',{'text':decision.text})
+    event(run_id,'usage',{'usage':usage})
+    terminal(run_id,'completed',started=started,message_status='denied' if decision.kind=='denied' else None)
+    span.set_attribute('run.status','completed'); span.set_attribute('guardrail.chat',decision.kind)
 
 async def execute(run_id,user):
     started = time.monotonic()
@@ -63,9 +84,19 @@ async def execute(run_id,user):
             db.commit(); audit(db,user.id,'run.started',run_id=run_id)
         event(run_id,'run_started',{'agent_id':AGENT_ID,'agent_version':AGENT_VERSION})
         try:
+            with SessionLocal() as db:
+                decision = await chat_guardrail.check(db,user,question,run_id)
+            if decision is not None:
+                refuse(run_id,user,decision,started,span); return
             event(run_id,'retrieval_started')
-            docs, limitations = await retrieve(user,search_topic(question,prior),run_id)
+            topic = search_topic(question,prior)
+            docs, limitations = await retrieve(user,topic,run_id)
+            docs, irrelevant = filter_relevant(topic,docs)
+            if irrelevant:
+                record_guardrail(guardrail='relevance',outcome='dropped',workflow='chat')
+                with SessionLocal() as db: audit(db,user.id,'guardrail.relevance',run_id=run_id,details={'dropped':irrelevant,'kept':len(docs)})
             evidence = []
+            masker = content_guards.Masker(); pii_counts: dict[str,int] = {}; quarantined = 0
             with SessionLocal() as db:
                 run = db.get(Run,run_id)
                 run.providers=sorted({d[1] for d in docs}); run.limitations=limitations
@@ -73,12 +104,23 @@ async def execute(run_id,user):
                     rec = EvidenceRecord(run_id=run_id,connection_id=connection_id,document_id=doc.document_id,
                         content_hash=doc.content_hash,version=doc.version)
                     db.add(rec); db.flush()
+                    # What the model sees is screened: instruction-like spans quarantined, PII replaced by placeholders (memory only).
+                    safe, hits = content_guards.quarantine(doc.text[:settings().max_excerpt_chars]); quarantined += hits
+                    safe, found = masker.mask(safe,('nric','iban','card','phone','email'))
+                    for kind,n in found.items(): pii_counts[kind]=pii_counts.get(kind,0)+n
                     evidence.append({'id':rec.id,'label':f'E{i}','provider':provider,'title':doc.title,
-                        'text':doc.text[:settings().max_excerpt_chars],'modified_at':doc.modified_at,'fetched_at':doc.fetched_at.isoformat()})
+                        'text':safe,'modified_at':doc.modified_at,'fetched_at':doc.fetched_at.isoformat()})
                 assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant'))
                 assistant.evidence_refs=[{'evidence_id':e['id'],'label':e['label'],'provider':e['provider']} for e in evidence]
                 db.commit()
             event(run_id,'retrieval_completed',{'evidence_count':len(evidence),'limitations':limitations})
+            if pii_counts or quarantined:
+                if pii_counts: record_guardrail(guardrail='pii_mask',outcome='masked',workflow='chat')
+                if quarantined: record_guardrail(guardrail='injection',outcome='quarantined',workflow='chat')
+                with SessionLocal() as db:
+                    if pii_counts: audit(db,user.id,'guardrail.pii',run_id=run_id,details={'counts':pii_counts},commit=False)
+                    if quarantined: audit(db,user.id,'guardrail.injection',run_id=run_id,details={'spans':quarantined},commit=False)
+                    db.commit()
             span.set_attribute('evidence.count',len(evidence))
             if not evidence:
                 # Calm, generic copy: never hints that a restricted item exists (limitations stay on the run record).
@@ -126,6 +168,22 @@ async def execute(run_id,user):
                 prompt_tokens=metered.get('prompt_tokens'), completion_tokens=metered.get('completion_tokens'),
                 cost_usd=metered.get('cost'), latency_ms=metered.get('model_latency_ms'), outcome='ok' if received else 'empty')
             if not received: raise ModelError('empty_model_response')
+            # Hallucination guard: unsupported sentences never survive; not-found answers always carry the admin/IT line.
+            from .answer_guard import check_answer
+            from .prompt import NO_EVIDENCE_ANSWER, ADMIN_HINT
+            verdict = check_answer(answer,evidence); final = answer
+            if verdict['not_found']:
+                if ADMIN_HINT not in answer: final = answer.rstrip()+' '+ADMIN_HINT
+            elif verdict['removed']:
+                final = verdict['text'] if verdict['supported'] and verdict['text'].strip() else NO_EVIDENCE_ANSWER
+                record_guardrail(guardrail='grounding',outcome='removed',workflow='chat')
+                with SessionLocal() as db: audit(db,user.id,'guardrail.ungrounded','denied','unsupported_claims_removed',run_id=run_id,
+                    details={'removed':len(verdict['removed']),'supported':verdict['supported'],'replaced_all':final==NO_EVIDENCE_ANSWER})
+            if final != answer:
+                answer = final
+                event(run_id,'answer_replaced',{'text':answer})
+                with SessionLocal() as db:
+                    assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant')); assistant.text=answer; db.commit()
             used = {m.group(1) for m in re.finditer(r'\[(E\d+)\]',answer)}
             citations=[{k:e[k] for k in ('label','provider','modified_at','fetched_at')} | {'evidence_id':e['id']} for e in evidence if e['label'] in used]
             with SessionLocal() as db:

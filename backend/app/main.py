@@ -256,7 +256,15 @@ async def conversation_agent_run(id:str,body:AgentRunBody,request:Request,user:U
         run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=(row.spec.get('trigger') or {}).get('type','manual'))
     except ValueError as exc:
         code=str(exc)
-        if code=='validation_failed': raise HTTPException(422,{'code':'validation_failed','validation':getattr(exc,'validation',None)}) from None
+        if code=='validation_failed':
+            validation=getattr(exc,'validation',None) or {}
+            if any(e.get('code')=='tool_not_permitted' for e in validation.get('errors',[])):
+                # Group scope: the invoker's groups are not allowed to use a tool this agent needs. Say so, point to the admin.
+                from .telemetry import record_guardrail, record_scope_denial
+                audit(db,user.id,'access.tool','denied','tool_not_permitted',workflow_id=wf.id,details={'surface':'chat_agent_run'})
+                record_guardrail(guardrail='tool_scope',outcome='denied',workflow=wf.name); record_scope_denial(user=user.username,category='tool_scope',surface='agent_run')
+                raise HTTPException(403,{'code':'tool_not_permitted','message':'This agent uses a tool your group is not allowed to use. Please contact your admin or the IT team to request access.'}) from None
+            raise HTTPException(422,{'code':'validation_failed','validation':validation}) from None
         if code.startswith('missing_input:'): raise HTTPException(422,{'code':'missing_input','input':code.split(':',1)[1]}) from None
         raise HTTPException(422,'invalid_input') from None
     shown=', '.join(str(v) for v in (run.inputs or {}).values() if str(v).strip())[:600]

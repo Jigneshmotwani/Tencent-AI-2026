@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     mcp_stdio_dir: str = 'mcp_servers'  # stdio MCP commands must run modules/scripts under this repo directory
     # ---- Iteration 3 ----
     demo_mode: bool = False  # DEMO_MODE=true enables the loopback-only demo user switcher
+    # ---- Chat guardrail ----
+    guardrail_model_alias: str = ''  # cheap model for the intent check; empty = default model alias
+    guardrail_check_timeout: float = Field(default=4,ge=1,le=15)
 
     @property
     def slack_enabled(self) -> bool:

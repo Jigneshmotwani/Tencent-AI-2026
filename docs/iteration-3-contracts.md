@@ -98,5 +98,20 @@ Groups: Compliance, Compliance leads, Operations, Onboarding, Audit. Publish rev
 ### Audit (lead)
 - `POST /audit/query` / `POST /audit/nl-query` events add `actor_name`, `actor_title`, `hash`, `label` (human action), `resource_label`. `GET /audit/runs/{run_id}` is unchanged.
 
+### Chat guardrails (`chat_guardrail.py`, `answer_guard.py`, `knowledge.filter_relevant`, `runner.py`)
+Order for each Workspace chat message: **scope check → retrieval → relevance gate → PII mask + injection quarantine → model → grounding check.**
+- **Scope check.** Rules (`classify_rules`, no I/O) decide first. A message that looks like a command but matches no rule gets one tiny model call (`max_tokens 40`, `temperature 0`, alias `GUARDRAIL_MODEL_ALIAS` or the default; 4 s timeout, any failure = normal chat). The model only *labels* the intent; allow/deny comes from the server's `pages_for(user)`.
+  - Not allowed → message status **`denied`**, fixed refusal naming the admin(s) and the IT team, no retrieval and no answer model call. Allowed role → "do this on the <Page> page" (status `completed`). Chat is read-only for everyone, so `write_action` always refuses and lists the agents the user can run.
+  - SSE: new `guardrail` event `{kind: denied|redirect, category, page}` before the single `answer_delta`. Audit: `guardrail.chat` (denied|allowed; details category, required_page, detector, kind; never the message). Metric: `chat_scope_denials{user,category,surface}`.
+- **Documents stay non-disclosing.** Not-found answers (fixed text or the model's "I couldn't find information you have access to …") always end with the same admin/IT line for everyone, so it confirms nothing about restricted material.
+- **Hallucination guards (no extra model calls).**
+  - Relevance gate: evidence sharing too few distinctive terms with the question is dropped (audit `guardrail.relevance`). No relevant evidence = fixed answer and **no model call**.
+  - Prompt v1.5: use only supplied evidence; no training-data fill-ins; say "not found" instead of guessing.
+  - Grounding check after generation: a factual sentence must cite a valid `[E#]` or restate ≥60% of its distinctive terms from the evidence; others are removed. If nothing supported remains the answer becomes the fixed not-found text. SSE `answer_replaced {text}` replaces the streamed text; audit `guardrail.ungrounded`.
+  - Evidence is screened before the model sees it: instruction-like spans quarantined, PII replaced by placeholders (`guardrail.injection`, `guardrail.pii`).
+- **Group tool scope.** `workflows/validate.effective_policy(user=…)` adds every tool whose admin-set `allowed_groups` excludes all of the invoker's groups to `disabled_tools`, so validation and the run-time `tool_allowed` checks refuse it. Issue code `tool_not_permitted`; `POST /conversations/{id}/agent-runs` answers 403 `{code:'tool_not_permitted', message}` and audits `access.tool`.
+- **Alert.** `observability/grafana/provisioning/alerting/scope-denials.yaml`: "Repeated scope denials" fires at 5 refusals per user per hour; panel on the Governance dashboard.
+- **Offline check.** `uv run --frozen python -m backend.app.chat_guardrail_check` (SQLite, stubbed retrieval/model, zero cost).
+
 ## UI kit (lead, `frontend/src/ui`)
 Import `./ui/kit` components; class names mirror `docs/design/prototype.html` (`btn`, `pill`, `tbl`, `sheet`, `segs`, `crd`, `setrow`, `ub`, …) and are defined in `ui/app.css`. Icons: `ui/icons.tsx` (lucide, 1.75 stroke). Toast: `toast('Saved · logged to audit')`. Navigation: `navigate('/studio/<id>')`, `useRoute()`.

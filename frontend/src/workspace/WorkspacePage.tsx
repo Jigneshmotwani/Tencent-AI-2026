@@ -103,13 +103,14 @@ export default function WorkspacePage() {
         case 'answer_delta': setLive(l => l && l.runId === liveId ? { ...l, text: l.text + (d.text ?? ''), status: 'generating' } : l); break
         case 'citation': if (d.evidence_id) setLive(l => l && l.runId === liveId && !l.cites.some(c => c.evidence_id === d.evidence_id)
           ? { ...l, cites: [...l.cites, { evidence_id: d.evidence_id!, label: d.label ?? '', provider: String(d.provider ?? ''), title: typeof d.title === 'string' ? d.title : undefined }] } : l); break
+        case 'answer_replaced': setLive(l => l && l.runId === liveId ? { ...l, text: d.text ?? '' } : l); break
         case 'usage': setLive(l => l && l.runId === liveId ? { ...l, usage: d.usage ?? null } : l); break
         case 'run_completed': void finish('completed'); break
         case 'run_cancelled': void finish('cancelled'); break
         case 'run_failed': void finish('failed', typeof d.code === 'string' ? d.code : 'run_unavailable'); break
       }
     }
-    ;['run_started', 'retrieval_started', 'retrieval_completed', 'answer_delta', 'citation', 'usage', 'run_completed', 'run_failed', 'run_cancelled'].forEach(t => es.addEventListener(t, receive))
+    ;['run_started', 'retrieval_started', 'retrieval_completed', 'guardrail', 'answer_delta', 'answer_replaced', 'citation', 'usage', 'run_completed', 'run_failed', 'run_cancelled'].forEach(t => es.addEventListener(t, receive))
     es.onerror = () => {
       if (ended) return
       void api<Run>(`/runs/${encodeURIComponent(liveId)}`).then(r => { if (!ended && TERMINAL_CHAT.has(r.status)) void finish(r.status, r.error_code ?? undefined) }).catch(() => { /* EventSource retries */ })
@@ -276,6 +277,10 @@ function AnswerBlock({ message, onCite, failedNote, onRetry }: { message: Messag
   const shown = titles.state === 'done' ? sources.filter(s => titles.map[s.evidence_id]) : []
   const tips = Object.fromEntries(shown.map(s => [s.label, titles.map[s.evidence_id]]))
   const stopped = message.status === 'cancelled', failed = message.status === 'failed'
+  if (message.status === 'denied') return <div className="ans-turn ans-denied">
+    <p className="denied-tag"><Icon name="lock" small />Not authorized</p>
+    <Answer className="ans" text={tidy(message.text)} labels={[]} onCite={onCite} />
+  </div>
   return <div className="ans-turn">
     {message.text && <Answer className="ans" text={tidy(message.text)} labels={order} titles={tips} onCite={onCite} />}
     {(stopped || failed) && <p className="ws-calm">
