@@ -145,6 +145,18 @@ def main():
             # Provider-specific request fields (JSON object), e.g. {"reasoning_effort":"none"} to disable hidden reasoning.
             if values.get('MODEL_EXTRA_BODY'): params['extra_body']=json.loads(values['MODEL_EXTRA_BODY'])
             config['model_list']=[{'model_name':values['MODEL_ALIAS'],'litellm_params':params}]
+        # EXTRA_MODELS: more aliases on the same (or another OpenAI-compatible) provider. The key is referenced by env var name,
+        # never copied: {"alias","model","api_key_env"(default MODEL_API_KEY),"api_base"(default MODEL_API_BASE),"extra_body",
+        # "input_per_1m","output_per_1m","label"}.
+        for extra in json.loads(values.get('EXTRA_MODELS') or '[]'):
+            key_env=extra.get('api_key_env') or 'MODEL_API_KEY'
+            if not (isinstance(extra,dict) and extra.get('alias') and extra.get('model') and values.get(key_env)): continue
+            params={'model':extra['model'],'api_key':'os.environ/'+key_env}
+            if extra.get('api_base') or values.get('MODEL_API_BASE'): params['api_base']=extra.get('api_base') or values['MODEL_API_BASE']
+            if extra.get('extra_body'): params['extra_body']=extra['extra_body']
+            if extra.get('input_per_1m') and extra.get('output_per_1m'):
+                params['input_cost_per_token']=float(extra['input_per_1m'])/1e6; params['output_cost_per_token']=float(extra['output_per_1m'])/1e6
+            config['model_list'].append({'model_name':extra['alias'],'litellm_params':params})
         configfile=LOCAL/'litellm.yaml'; configfile.write_text(json.dumps(config)); os.chmod(configfile,0o600)
         env['LITELLM_DATABASE_URL']=pgurl.rsplit('/',1)[0]+'/litellm'
         schema=SITE_PACKAGES/'litellm/proxy/schema.prisma'

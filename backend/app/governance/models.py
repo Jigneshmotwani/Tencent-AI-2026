@@ -41,6 +41,25 @@ def ensure_env_model(db) -> None:
         row.source = 'env'; row.model_id = cfg.model_id; row.api_base = cfg.model_api_base or ''
         if not has_default:
             row.is_default = True; row.enabled = True
+    # EXTRA_MODELS (configured in .env, served by the gateway config): listed in Policies -> Models and the Studio model picker.
+    import json
+    try:
+        extras = json.loads(cfg.extra_models or '[]')
+    except ValueError:
+        extras = []
+    for extra in extras if isinstance(extras, list) else []:
+        if not isinstance(extra, dict) or not extra.get('alias') or not extra.get('model'):
+            continue
+        model_id = str(extra['model'])
+        row = db.scalar(select(ModelConfig).where(ModelConfig.alias == extra['alias']))
+        if row is None:
+            row = ModelConfig(alias=str(extra['alias'])[:80], enabled=True, is_default=False, allowed_groups=[], source='env')
+            db.add(row)
+        row.source, row.model_id = 'env', model_id
+        row.label = str(extra.get('label') or model_id.split('/')[-1])[:120]
+        row.provider = model_id.split('/', 1)[0] if '/' in model_id else ''
+        row.api_base = str(extra.get('api_base') or cfg.model_api_base or '')
+        row.input_per_1m, row.output_per_1m = _float(extra.get('input_per_1m')), _float(extra.get('output_per_1m'))
     db.flush()
     invalidate()
 
@@ -83,7 +102,7 @@ def default_alias() -> str:
 
 def public(db, m: ModelConfig) -> dict:
     return {'id': m.id, 'alias': m.alias, 'label': m.label or m.alias, 'provider': m.provider, 'model_id': m.model_id, 'api_base': m.api_base,
-            'has_key': bool(m.credential_ref) or (m.source == 'env' and bool(settings().model_api_key)),
+            'has_key': bool(m.credential_ref) or (m.source == 'env' and bool(settings().model_api_key)),  # env extras reuse an env key
             'input_per_1m': m.input_per_1m, 'output_per_1m': m.output_per_1m, 'enabled': bool(m.enabled), 'is_default': bool(m.is_default),
             'allowed_groups': list(m.allowed_groups or []), 'source': m.source}
 
