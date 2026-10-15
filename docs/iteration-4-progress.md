@@ -6,7 +6,7 @@ Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273,
 - [~] Task 2: Demo-pack loader (example-payments load check runs after Task 7, which adds its templates)
 - [x] Task 3: Guardrail fixes
 - [x] Task 4: Audit fixes
-- [ ] Task 5: Slack live
+- [~] Task 5: Slack live (configured and ready; connecting an account is blocked on the Slack consent page, see Blocked)
 - [ ] Task 6: Automatic triggers, run-as and subscriptions
 - [ ] Task 7: Tools and templates for the four demo workflows
 - [ ] Task 8: Copilot builds the Partner Change Radar
@@ -129,7 +129,39 @@ Checked (as `auditor` unless noted; NL = ask box `/api/audit/nl-query`, filters 
 | "who retrieved the AML Policy v4" | auditor: "I can't identify that document with your access." (Aisha has no linked sources); admin: 33 events | same |
 | "who retrieved the Compliance EDD Playbook" (restricted page) | auditor: can't identify; admin (can see it): 42 events | same |
 
+## Task 5: Slack
+
+- `.env` (values not printed): `SLACK_CLIENT_ID` set, `SLACK_CLIENT_SECRET` set, `SLACK_TEAM_ID` set (added by the human
+  during the run; at the start they were empty). `GET /api/health` now reports `integrations.slack: true`.
+- HTTPS shim: `GET https://localhost:8543/api/connections/slack/callback?state=x&code=y` → `303` to
+  `http://localhost:8100/api/connections/slack/callback?state=x&code=y` (state/session/owner checks run there).
+- Connections → Slack → Connect produced the correct authorize URL: `https://slack.com/oauth/v2/authorize` with
+  `redirect_uri=https://localhost:8543/api/connections/slack/callback`, `user_scope=search:read,channels:history,channels:read,
+  groups:history,groups:read,users:read,chat:write`, `team=<SLACK_TEAM_ID>`. The page itself did not load in Chrome
+  (browser error page), although `https://slack.com/api/api.test` answers 200 from this machine; no consent was given.
+- Slack is now shown in Connections (scope list, or "Not configured" when keys are missing), Tools (built-in Slack:
+  read_channel, search, draft, post_message), Policies (approval rule for "Post to Slack", shown once Slack is
+  configured) and retrieval (chat and `knowledge.retrieve` already include Slack for users who connect it).
+- New built-in tools: `slack.read_channel {channel, since}` (read: messages + up to 10 threads of one allowed channel the
+  person is a member of, since "2h"/"24h"/"7d"/ISO time; added as evidence; audited as `source.read`) and
+  `slack.post_message {channel, text}` (write: same governed action as `slack.post`, so it always needs an upstream approval,
+  follows the "Post to Slack" approval rule and only posts to the pack's write channels).
+- Not measured (needs a connected account): channel-membership filtering, private-channel exclusion, revocation seconds.
+  By design the member-channel list is cached 20 s per token (`COLLECTION_TTL`), so removal from a channel should be
+  excluded within about 20 s of the next search.
+
 ## Blocked
 
 - Creating content on the Atlassian site with the API token (a synthetic service-catalog page in `MFS`) was refused by
   the local permission policy for external writes. The two-space check used the pages already in `MFS` instead.
+- **Slack consent (Task 5).** The Slack authorize page did not load in the automated Chrome tab, and granting OAuth
+  access on the human's Slack account needs the human anyway. To finish:
+  1. Slack app (api.slack.com/apps → your app) → OAuth & Permissions → Redirect URLs: add
+     `https://localhost:8543/api/connections/slack/callback`. User Token Scopes: `search:read channels:history channels:read
+     groups:history groups:read users:read chat:write` (no bot scopes needed).
+  2. Open `https://localhost:8543/health` once in the browser and accept the self-signed certificate warning.
+  3. Sign in to the app, Connections → Slack → Connect, approve in Slack.
+  4. `.env`: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_TEAM_ID` (set), channels come from the demo pack
+     `scopes.slack_channels` / `slack_write_channels` (or `SLACK_CHANNELS` / `SLACK_WRITE_CHANNELS`).
+  5. Then measure revocation: remove the user from a channel and re-run a search every 5 s until the channel's messages
+     stop appearing.

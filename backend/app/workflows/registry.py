@@ -73,15 +73,18 @@ NODE_TYPES: dict[str, dict] = {
     },
     'tool.builtin': {
         'label': 'Built-in tool', 'category': 'tool',
-        'description': 'Jira/Slack operations under the invoker identity. Reads: jira.get_issue (adds the issue as evidence), jira.search. '
+        'description': 'Jira/Slack operations under the invoker (or run-as) identity. Reads: jira.get_issue (adds the issue as evidence), jira.search, '
+                       'slack.read_channel (messages + threads of one channel in a time window, added as evidence). '
                        'In-app: slack.draft (stored, never sent). Writes (require an upstream human.approval): jira.comment, jira.transition, '
-                       'jira.create_issue, slack.post.',
+                       'jira.create_issue, slack.post_message (slack.post is the same action).',
         'config_schema': {'type': 'object', 'additionalProperties': False, 'required': ['tool'], 'properties': {
-            'tool': {'enum': ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.draft', 'slack.post']},
+            'tool': {'enum': ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.read_channel',
+                              'slack.draft', 'slack.post_message', 'slack.post']},
             'params': {'type': 'object', 'description': (
                 'jira.get_issue {issue_key}; jira.search {jql, max_results}; jira.comment {issue_key, body}; '
                 'jira.transition {issue_key, to_status}; jira.create_issue {project_key, summary, description, issue_type, labels[]}; '
-                'slack.draft {channel, text}; slack.post {channel, text}')}}},
+                'slack.read_channel {channel, since} (since: "2h", "24h", "7d" or an ISO time; default 24h); '
+                'slack.draft {channel, text}; slack.post_message {channel, text}')}}},
         'inputs': [{'name': 'in', 'type': 'any'}], 'outputs': [{'name': 'result', 'type': 'object'}], 'side_effect': 'by_tool',
     },
     'logic.router': {
@@ -145,8 +148,15 @@ NODE_TYPES: dict[str, dict] = {
     },
 }
 
-BUILTIN_TOOLS = ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.draft', 'slack.post']
-WRITE_TOOLS = {'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.post'}
+BUILTIN_TOOLS = ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.read_channel', 'slack.draft',
+                 'slack.post_message', 'slack.post']
+WRITE_TOOLS = {'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.post', 'slack.post_message'}
+# Tool names that are the same governed action: approval rules, policies, previews and execution use the canonical name.
+ACTION_ALIASES = {'slack.post_message': 'slack.post'}
+
+
+def canonical_action(tool: str) -> str:
+    return ACTION_ALIASES.get(tool, tool)
 AGENT_READ_TOOLS = ['knowledge.search', 'builtin:jira.get_issue', 'builtin:jira.search']
 
 

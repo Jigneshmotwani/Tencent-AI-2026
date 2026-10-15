@@ -438,7 +438,10 @@ BUILTINS = {
     'jira': ('Jira', [('jira.get_issue', 'Read one Jira issue', True), ('jira.search', 'Search issues with JQL', True),
                       ('jira.comment', 'Comment on an issue (needs approval)', False), ('jira.transition', 'Move an issue to a status (needs approval)', False),
                       ('jira.create_issue', 'Create an issue (needs approval)', False)]),
-    'slack': ('Slack', [('slack.draft', 'Store a draft message (never sent)', True), ('slack.post', 'Post a message (needs approval)', False)]),
+    'slack': ('Slack', [('slack.read_channel', 'Read channel history and threads in a time window', True),
+                        ('slack.search', 'Search messages in your channels (knowledge retrieval)', True),
+                        ('slack.draft', 'Store a draft message (never sent)', True),
+                        ('slack.post_message', 'Post a message (needs approval)', False)]),
 }
 
 

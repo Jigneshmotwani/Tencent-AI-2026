@@ -18,7 +18,7 @@ from ..db import ActionExecution, Approval, NodeState, SessionLocal, SlackDraft,
 from ..telemetry import record_approval, record_guardrail
 from . import guardrails as G
 from .engine import NodeFailure, NodeResult, RunCtx, emit, model_call, step, _audit, ensure_evidence_text, idempotency_key
-from .registry import AGENT_READ_TOOLS, WRITE_TOOLS
+from .registry import AGENT_READ_TOOLS, WRITE_TOOLS, canonical_action
 from .validate import actions_after, graph, tool_allowed
 
 ISSUE_KEY = re.compile(r'^[A-Z][A-Z0-9]{0,19}-\d{1,9}$')
@@ -426,7 +426,59 @@ async def _jira_search(ctx: RunCtx, node, jql: str, limit: int) -> dict:
     return {'issues': issues}
 
 
+def parse_since(value) -> float:
+    """'2h' / '90m' / '7d' / ISO time / epoch seconds -> epoch seconds. Default 24 hours ago; at most 30 days back."""
+    import time as _time
+    from datetime import datetime as _dt
+    now_s = _time.time()
+    text = str(value or '').strip().lower()
+    seconds = 86400.0
+    m = re.fullmatch(r'(\d{1,4})\s*(m|min|minutes?|h|hours?|d|days?)', text)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)[0]
+        seconds = n * (60 if unit == 'm' else 3600 if unit == 'h' else 86400)
+    elif re.fullmatch(r'\d{9,11}(\.\d+)?', text):
+        seconds = now_s - float(text)
+    elif text:
+        try:
+            parsed = _dt.fromisoformat(text.replace('z', '+00:00'))
+            seconds = now_s - parsed.timestamp()
+        except ValueError:
+            pass
+    return now_s - min(max(seconds, 60.0), 30 * 86400.0)
+
+
+async def _slack_read_channel(ctx: RunCtx, node, channel: str, since) -> dict:
+    """Messages and threads of one allowed channel in a time window, read with the invoker's (or run-as user's) own Slack token.
+    A channel the person is not a member of is 'not available' (never confirmed to exist)."""
+    from ..contracts import SourceError
+    from datetime import datetime as _dt, timezone as _tz
+    if 'slack' not in ctx.eff['allowed_sources']:
+        raise NodeFailure('source_not_allowed')
+    if not _channel_allowed(channel):
+        raise NodeFailure('destination_not_allowed')
+    adapter, access = await _access(ctx, 'slack')
+    oldest = parse_since(since)
+    try:
+        async with asyncio.timeout(settings().source_timeout + 10):
+            doc, count = await adapter.read_window(channel, oldest, access)
+    except (SourceError, TimeoutError):
+        _audit(ctx, 'source.read', 'denied', 'not_available', node_id=node['id'], provider='slack', container=channel.lstrip('#'))
+        raise NodeFailure('source_not_available') from None
+    _audit(ctx, 'source.read', node_id=node['id'], provider='slack', container=doc.container, resource_ids=[doc.document_id],
+           decision={doc.document_id: 'allowed'}, details={'messages': count, 'since': int(oldest)})
+    label = None
+    if count:
+        label = ctx.add_evidence(kind='slack_window', provider='slack', document_id=doc.document_id, container=doc.container,
+                                 connection_id=access.connection_id, version=doc.version, content_hash=doc.content_hash,
+                                 modified_at=doc.modified_at, title=doc.title, text=doc.text[:settings().max_excerpt_chars],
+                                 url=doc.canonical_url, node_id=node['id'])
+    return {'channel': channel.lstrip('#').lower(), 'since': _dt.fromtimestamp(oldest, _tz.utc).isoformat(), 'messages': count,
+            'evidence_label': label}
+
+
 def _destination(tool: str, params: dict) -> str:
+    tool = canonical_action(tool)
     if tool == 'jira.comment': return f"Jira {params.get('issue_key', '')} (comment)"
     if tool == 'jira.transition': return f"Jira {params.get('issue_key', '')} -> {params.get('to_status', '')}"
     if tool == 'jira.create_issue': return f"Jira project {params.get('project_key', '')} (new issue)"
@@ -443,10 +495,10 @@ async def tool_builtin(ctx: RunCtx, node):
     cfg = node.get('config') or {}
     tool = cfg.get('tool')
     warnings = []
-    if not tool_allowed('builtin:' + str(tool), ctx.eff):
+    if not (tool_allowed('builtin:' + str(tool), ctx.eff) or tool_allowed('builtin:' + canonical_action(str(tool)), ctx.eff)):
         raise NodeFailure('tool_not_allowed')
     if tool in WRITE_TOOLS:
-        return await _write(ctx, node, tool, warnings)
+        return await _write(ctx, node, canonical_action(tool), warnings)
     params = ctx.render(cfg.get('params') or {}, warnings)
     emit(ctx.run_id, 'tool_call', {'node_id': node['id'], 'tool': 'builtin:' + tool})
     ctx.log(node['id'], f'Calling builtin:{tool}' + (f" ({params.get('issue_key')})" if isinstance(params, dict) and params.get('issue_key') else ''))
@@ -462,6 +514,12 @@ async def tool_builtin(ctx: RunCtx, node):
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'count': len(out['issues'])})
         ctx.log(node['id'], f"Result ok: {len(out['issues'])} readable issue(s)")
         return NodeResult(output=out, persist=persist, summary=f"{len(out['issues'])} issue(s)", warnings=warnings)
+    if tool == 'slack.read_channel':
+        out = await _slack_read_channel(ctx, node, str(params.get('channel') or ''), params.get('since'))
+        emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'count': out['messages']})
+        ctx.log(node['id'], f"Result ok: {out['messages']} message(s) in #{out['channel']} since {out['since'][:16]}" +
+                (f" -> {out['evidence_label']}" if out.get('evidence_label') else ''))
+        return NodeResult(output=out, summary=f"{out['messages']} message(s) in #{out['channel']}", warnings=warnings)
     if tool == 'slack.draft':
         channel = str(params.get('channel') or '').lstrip('#')
         if not _channel_allowed(channel):
@@ -682,7 +740,7 @@ async def human_approval(ctx: RunCtx, node):
     actions = []
     for wid in actions_after(node['id'], ctx.spec, succ):
         wcfg = ctx.nodes[wid].get('config') or {}
-        tool = wcfg.get('tool')
+        tool = canonical_action(wcfg.get('tool'))
         params = ctx.render(wcfg.get('params') or {}, warnings)
         if tool == 'jira.transition' and 'to_status' in params: params['to_status'] = str(params['to_status'])
         actions.append({'node_id': wid, 'type': tool, 'destination': _destination(tool, params), 'params': params})
