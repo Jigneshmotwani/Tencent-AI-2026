@@ -4,7 +4,7 @@ import type { WorkflowDetail, WorkflowRun, WorkflowSpec, WorkflowSummary, Workfl
 
 /** `GET /workflows` items; the iteration 3 fields are optional until the backend serves them. */
 export interface WorkflowRow extends WorkflowSummary {
-  display_status?: string; live_version?: number | null; audience_label?: string; owner_name?: string; category?: string
+  display_status?: string; live_version?: number | null; audience_label?: string; owner_name?: string; category?: string; can_delete?: boolean
 }
 export interface Detail extends WorkflowDetail {
   display_status?: string; live_version?: number | null; review_state?: string; review_version?: number | null; audience_label?: string; owner_name?: string
@@ -38,6 +38,8 @@ const enc = encodeURIComponent
 export const isMissing = (e: unknown) => e instanceof ApiError && (e.status === 404 || e.status === 405)
 
 export const listWorkflows = () => api<WorkflowRow[]>('/workflows')
+/** Soft delete: the agent leaves Studio and Workspace; its runs and audit history stay. */
+export const deleteWorkflow = (id: string) => api<{ ok: boolean; runs_cancelled: number }>(`/workflows/${encodeURIComponent(id)}`, 'DELETE')
 export const listTemplates = () => api<TemplateInfo[]>('/workflow-templates')
 export const getWorkflow = (id: string) => api<Detail>(`/workflows/${enc(id)}`)
 export const saveSpec = (id: string, spec: WorkflowSpec) => api<Detail>(`/workflows/${enc(id)}`, 'PUT', { spec })

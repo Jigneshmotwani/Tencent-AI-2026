@@ -2,7 +2,7 @@
 import {
   ArrowLeft, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheckBig, ClipboardList, Database, Ellipsis,
   ExternalLink, FileText, Filter, GitBranch, Hash, History, Lock, Maximize, Menu, MessageSquare, Minus, PanelLeft, PenLine, Play, Plug,
-  Plus, Redo, RefreshCw, Search, Send, Shield, ShieldCheck, SlidersHorizontal, Sparkle, Ticket, Undo, User, UserCheck, Users, Wallet,
+  Plus, Redo, RefreshCw, Search, Send, Shield, ShieldCheck, SlidersHorizontal, Sparkle, Ticket, Trash2, Undo, User, UserCheck, Users, Wallet,
   Workflow, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 
@@ -16,7 +16,7 @@ export const ICONS = {
   send: Send, spark: Sparkle, check: Check, chev: ChevronDown, ext: ExternalLink, filter: Filter, play: Play, zap: Zap, db: Database,
   book: BookOpen, usercheck: UserCheck, ticket: Ticket, branch: GitBranch, file: FileText, hash: Hash, note: PenLine, history: History,
   chevup: ChevronUp, chevl: ChevronLeft, chevr: ChevronRight, retry: RefreshCw, lock: Lock, wrench: Wrench, wallet: Wallet,
-  policy: ClipboardList, users: Users, user: User, more: Ellipsis, drive: 'drive',
+  policy: ClipboardList, users: Users, user: User, more: Ellipsis, trash: Trash2, drive: 'drive',
 } as const satisfies Record<string, LucideIcon | 'drive'>
 
 export type IconName = keyof typeof ICONS
