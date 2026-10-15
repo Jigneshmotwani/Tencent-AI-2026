@@ -1,0 +1,5 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay is a fictional company.
+key: PAYENG
+name: Payments Engineering
+description: "SYNTHETIC DEMO DATA. Northstar Pay Payments Platform Engineering: service catalog, runbooks, postmortems and engineering policies."
+visible_to: [owner, A]

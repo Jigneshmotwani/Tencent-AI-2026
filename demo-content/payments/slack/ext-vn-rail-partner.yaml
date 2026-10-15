@@ -1,0 +1,23 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+channel: ext-vn-rail-partner
+private: false
+purpose: "SYNTHETIC DEMO DATA – External partner channel with VN Partner and the Lumen Integrations contractor team"
+members: [owner, A, B]
+refresh: false
+messages:
+  - date: 2026-10-08
+    speaker: Arjun Mehta
+    post_as: owner
+    text: "Hi VN Partner team, the v3 sandbox status endpoint returns 502 for every payout since 7 Oct. Sample payout ids sent to integration support."
+  - date: 2026-10-13
+    speaker: VN Partner
+    post_as: owner
+    text: "We will rotate our TLS certificate on 20 Oct 02:00 ICT."
+  - date: 2026-10-14
+    speaker: VN Partner
+    post_as: owner
+    text: "API v2 will be retired on 30 Nov; please migrate to v3."
+  - date: 2026-10-14
+    speaker: Marco
+    post_as: B
+    text: "Quick check on v3: is status code PENDING_REVIEW terminal, or can it still move to SETTLED?"

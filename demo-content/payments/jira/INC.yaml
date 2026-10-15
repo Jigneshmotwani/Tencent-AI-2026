@@ -1,0 +1,36 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+project_key: INC
+name: Incidents
+description: "SYNTHETIC DEMO DATA. Production incidents for Northstar Pay Payments Platform Engineering."
+visible_to: [owner, A]
+next_number: 2301   # the seeder advances the key counter so the live P1 becomes INC-2301
+# INC-2301 is created live in beat 4 of the demo and must NOT be seeded here.
+issues:
+  - number: 2214
+    summary: "SEV-1: VN partner certificate rotation broke vn-rail-adapter TLS trust store"
+    issue_type: Bug
+    status: Done
+    priority: Highest
+    labels: [vn-rail, postmortem]
+    assignee_persona: priya
+    description: |
+      Severity: SEV-1 / P1. Duration: 47 minutes.
+      Opened: Thu 11 Jun 2026 15:09 SGT (payout-orchestrator 5xx alert).
+      Mitigated: Thu 11 Jun 2026 15:48 SGT. Resolved: Thu 11 Jun 2026 17:20 SGT (retry queue drained, reconciliation clean).
+      Postmortem reviewed: Tue 16 Jun 2026.
+
+      What happened: VN Partner rotated its production TLS certificate to one issued by a new intermediate CA. The pinned trust store in vn-rail-adapter did not include the new intermediate, so every TLS handshake to the partner failed. All Vietnam payouts failed and payout-orchestrator retry queues backed up (peak 18,400 messages).
+
+      Impact: 2,940 VN payout attempts failed and were retried; 612 merchants saw delays (longest 2 h 19 min). No funds lost, no duplicate payouts. Indonesia rail and card authorisations unaffected.
+
+      Fix: added the new intermediate CA (fingerprint verified out of band with the partner) to the vn-rail-adapter trust store and reloaded all pods. payouts.vn.enabled was paused from 15:25 to 15:48 SGT so payouts queued instead of failing.
+
+      Action items: subscribe Payout Rails to partner certificate notices; automate trust-store refresh; add an alert on TLS handshake failures. Full postmortem: "Postmortem INC-2214 (June 2026)" in the Payments Engineering space.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Priya Nair, 11 Jun] Paged on payout-orchestrator 5xx. Errors limited to the VN rail; Indonesia healthy. Pausing payouts.vn.enabled."
+      - "[Arjun Mehta, 11 Jun] openssl s_client shows a chain signed by a new intermediate CA that is not in our pinned trust store. Partner confirms a planned rotation."
+      - "[Daniel Ong, 11 Jun] Intermediate fingerprint verified with VN Partner by phone. OK to add to the trust store."
+      - "[Priya Nair, 11 Jun] Trust store updated, adapter reloaded, flag re-enabled at 15:48. Queue drained by 17:20. Resolving."
+      - "[Wei Ling Tan, 16 Jun] Postmortem reviewed. Action items tracked in PAYRAIL. Closing."

@@ -1,0 +1,23 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+channel: payments-eng
+private: false
+purpose: "SYNTHETIC DEMO DATA – Northstar Pay Payments Engineering"
+members: [owner, A]
+refresh: false
+messages:
+  - date: 2026-10-05
+    speaker: Arjun Mehta
+    post_as: owner
+    text: "VNR-2 merged: vn-rail-adapter can now authenticate to VN Partner v3 with OAuth client credentials. Still behind a config switch, v2 stays the prod default."
+  - date: 2026-10-08
+    speaker: Arjun Mehta
+    post_as: owner
+    text: "PAYRAIL-415 is blocking VN cutover: sandbox 502s on payout status."
+  - date: 2026-10-09
+    speaker: Arjun Mehta
+    post_as: owner
+    text: "VN partner says sandbox fix lands 14 Oct."
+  - date: 2026-10-09
+    speaker: Wei Ling Tan
+    post_as: owner
+    text: "Thanks Arjun. Let's keep the 20 Nov target for PAYRAIL-410 and revisit once the sandbox is green."

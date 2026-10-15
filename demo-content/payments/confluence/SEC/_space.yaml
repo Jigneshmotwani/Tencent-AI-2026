@@ -1,0 +1,5 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay is a fictional company.
+key: SEC
+name: Security
+description: "SYNTHETIC DEMO DATA. Restricted security space: incident reports, penetration test results and security findings."
+visible_to: [owner]

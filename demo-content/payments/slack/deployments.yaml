@@ -1,0 +1,19 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+channel: deployments
+private: false
+purpose: "SYNTHETIC DEMO DATA – Northstar Pay production deploy log"
+members: [owner, A]
+refresh: false
+messages:
+  - date: 2026-10-13
+    speaker: deploy-bot
+    post_as: owner
+    text: "ledger-service 3.2.0 deployed — env=prod, commit 7c1e9a2, by Ledger & Settlement"
+  - date: 2026-10-14
+    speaker: deploy-bot
+    post_as: owner
+    text: "payout-orchestrator 5.8.1 deployed — env=prod, commit a4f02d9, by Payout Rails"
+  - date: 2026-10-15
+    speaker: deploy-bot
+    post_as: owner
+    text: "vn-rail-adapter 2.14.0 deployed — env=prod, commit e93b51c, by Payout Rails"

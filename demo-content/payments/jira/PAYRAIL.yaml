@@ -1,0 +1,95 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+project_key: PAYRAIL
+name: Payout Rails
+description: "SYNTHETIC DEMO DATA. Payout Rails team backlog: payout-orchestrator, vn-rail-adapter and id-rail-adapter."
+visible_to: [owner, A]
+issues:
+  - number: 410
+    summary: "VN rail: migrate to partner API v3"
+    issue_type: Task
+    status: In Progress
+    priority: High
+    labels: [vn-rail]
+    due: 2026-11-20
+    assignee_persona: arjun
+    description: |
+      Migrate vn-rail-adapter from VN Partner API v2 (https://api.vnpartner.example/v2) to API v3 (https://api.vnpartner.example/v3).
+
+      Scope:
+      - v3 OAuth2 client-credentials auth (VNR-2, done by the contractor team).
+      - v3 payout status code mapping, including the new PENDING_REVIEW state (VNR-1, done).
+      - Sandbox end-to-end tests on v3 (VNR-3, in progress).
+      - Partner UAT sign-off (VNR-5, blocked on the partner).
+      - Cutover plan and rollback to v2 (VNR-6, done).
+      - payout-orchestrator: handle PENDING_REVIEW as non-terminal "Processing".
+
+      Contractor work by Lumen Integrations is tracked in the VNR project. Launch checklist is in the Vietnam Rail Integration space.
+
+      Dependencies: PAYRAIL-415 (sandbox 502 on payout status) blocks VNR-3 and therefore UAT.
+
+      Target: production cutover by 20 Nov 2026, outside the change-freeze calendar.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Arjun Mehta, 5 Oct] OAuth client-credentials flow merged behind a config switch. v2 remains the default in prod."
+      - "[Arjun Mehta, 8 Oct] Sandbox status polling is failing with 502s, raised PAYRAIL-415. This blocks the e2e suite."
+  - number: 415
+    summary: "Blocked: VN sandbox returns 502 on payout status"
+    issue_type: Bug
+    status: Blocked
+    priority: High
+    labels: [vn-rail, partner]
+    assignee_persona: arjun
+    description: |
+      Raised Thu 8 Oct 2026.
+
+      GET https://sandbox.vnpartner.example/v3/payouts/{id}/status returns HTTP 502 Bad Gateway for every payout created in the sandbox since Wed 7 Oct. Payout creation (POST /v3/payouts) still returns 201.
+
+      Impact: sandbox end-to-end tests on v3 (VNR-3) cannot pass, so partner UAT (VNR-5) cannot start. This is blocking VN cutover (PAYRAIL-410).
+
+      Raised with VN Partner integration support on 8 Oct with sample payout ids and timestamps (ICT).
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Arjun Mehta, 8 Oct] Reproduced with 20 sandbox payouts, 100% 502 on status. Partner ticket opened."
+      - "[Arjun Mehta, 9 Oct] VN partner says the sandbox fix lands 14 Oct. Keeping this Blocked until we see green status calls."
+  - number: 420
+    summary: "Upgrade OpenSSL in payout-orchestrator"
+    issue_type: Task
+    status: To Do
+    priority: High
+    labels: [security-remediation]
+    due: 2026-10-24
+    description: |
+      Security remediation, upgrade due.
+
+      Upgrade the OpenSSL package in the payout-orchestrator container base image to the current patched release, rebuild, and roll out through staging to production.
+
+      Steps:
+      - Bump the base image and rebuild payout-orchestrator.
+      - Run the payout regression suite in staging, including TLS calls to vn-rail-adapter and id-rail-adapter.
+      - Deploy to production before the October change freeze (starts Sun 25 Oct).
+
+      Due 24 Oct 2026.
+
+      SYNTHETIC DEMO DATA.
+  - number: 421
+    summary: "Bump TLS library in vn-rail-adapter"
+    issue_type: Task
+    status: To Do
+    priority: Medium
+    labels: [security-remediation]
+    due: 2026-10-28
+    description: |
+      Security remediation, upgrade due.
+
+      Bump the TLS client library used by vn-rail-adapter to the latest patched version and redeploy.
+
+      Steps:
+      - Update the dependency and rebuild vn-rail-adapter.
+      - Verify mutual TLS against the VN Partner sandbox and the pinned trust store.
+      - Deploy to production. The due date falls inside the October payroll freeze, so either deploy before Sun 25 Oct or request a freeze exception.
+
+      Due 28 Oct 2026.
+
+      SYNTHETIC DEMO DATA.
