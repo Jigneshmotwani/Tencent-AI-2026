@@ -18,7 +18,9 @@ from ..governance.links import DASHBOARDS, grafana_dashboard_url
 from ..telemetry import audit, trace_id, tracer
 from . import chain
 from .labels import action_label
-from .query import AuditQuery, describe, execute, reconstruct, translate
+from .query import AuditQuery, describe, execute, reconstruct, resolve_document, translate
+
+NO_DOCUMENT = "I can't identify that document with your access."
 
 router = APIRouter(tags=['audit'])
 
@@ -53,9 +55,27 @@ def audit_meta(user: User = Depends(identity.current_user), db: DBSession = Depe
             'providers': sorted({p for p in db.scalars(select(AuditEvent.provider).distinct()) if p} | {'drive', 'confluence', 'jira', 'slack'}),
             'operations': [o for o in db.scalars(select(AuditEvent.operation).distinct().order_by(AuditEvent.operation)) if o],
             'operation_labels': {o: action_label(o, 'allowed') for o in db.scalars(select(AuditEvent.operation).distinct()) if o},
-            'containers': sorted(c for c in db.scalars(select(AuditEvent.container).distinct()) if c),
+            'containers': sorted({c.strip() for raw in db.scalars(select(AuditEvent.container).distinct()) if raw for c in raw.split(',') if c.strip()}),
+            'container_labels': _container_labels(db),
             'workflows': [{'id': w.id, 'name': w.name} for w in db.scalars(select(Workflow).order_by(Workflow.name))],
             'grafana': {name: grafana_dashboard_url(name) for name in DASHBOARDS}}
+
+
+def _container_labels(db) -> dict:
+    from .labels import load_labels
+    return load_labels(db)['containers']
+
+
+async def _with_document(db, user, q: AuditQuery) -> AuditQuery:
+    """"Who retrieved <document>": titles are not stored in audit, so find the document with the auditor's OWN access and
+    filter on its ids. A document the auditor cannot see is never identified (and its existence is not revealed)."""
+    if not q.document:
+        return q
+    ids = await resolve_document(db, user, q.document)
+    if not ids:
+        audit(db, user.id, 'audit.query', 'denied', 'document_not_identified', details={'mode': 'document'})
+        raise HTTPException(404, {'code': 'document_not_identified', 'message': NO_DOCUMENT})
+    return q.model_copy(update={'resource_ids': ids})
 
 
 def _run_query(db, user, q: AuditQuery, mode: str) -> dict:
@@ -75,9 +95,10 @@ def _run_query(db, user, q: AuditQuery, mode: str) -> dict:
 
 
 @router.post('/audit/query')
-def audit_query(body: AuditQuery, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
+async def audit_query(body: AuditQuery, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     _auditor(user); identity.require_mutation(request, user, db)
-    return {'query': body.model_dump(mode='json', exclude_none=True), 'label': describe(db, body), 'results': _run_query(db, user, body, 'structured')}
+    q = await _with_document(db, user, body)
+    return {'query': body.model_dump(mode='json', exclude_none=True), 'label': describe(db, body), 'results': _run_query(db, user, q, 'structured')}
 
 
 def _zone(tz):
@@ -106,7 +127,8 @@ async def audit_nl_query(body: NLQuery, request: Request, user: User = Depends(i
         except ValueError as exc:
             audit(db, user.id, 'audit.query', 'error', str(exc)[:40], details={'mode': 'nl'})
             raise HTTPException(422, 'nl_query_not_understood')
-    return {'query': q.model_dump(mode='json', exclude_none=True), 'label': describe(db, q), 'results': _run_query(db, user, q, 'nl')}
+    resolved = await _with_document(db, user, q)
+    return {'query': q.model_dump(mode='json', exclude_none=True), 'label': describe(db, q), 'results': _run_query(db, user, resolved, 'nl')}
 
 
 @router.get('/audit/runs/{run_id}')

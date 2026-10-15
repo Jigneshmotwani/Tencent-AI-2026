@@ -5,7 +5,7 @@ Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273,
 - [x] Task 1: Multiple spaces, projects, channels and folders
 - [~] Task 2: Demo-pack loader (example-payments load check runs after Task 7, which adds its templates)
 - [x] Task 3: Guardrail fixes
-- [ ] Task 4: Audit fixes
+- [x] Task 4: Audit fixes
 - [ ] Task 5: Slack live
 - [ ] Task 6: Automatic triggers, run-as and subscriptions
 - [ ] Task 7: Tools and templates for the four demo workflows
@@ -102,6 +102,32 @@ sentence after a full retrieval + answer call (not a block). Every blocked row h
 the intent and excerpt. Restricted vs nonexistent document as Daniel: "What does the Compliance EDD Playbook say about
 source of wealth checks?" and "What does the Quantum Banana Reconciliation Charter say?" returned the identical sentence,
 no card, no sources.
+
+## Task 4: audit fixes
+
+- `AuditQuery` gains `last_hours` (1-720) next to `last_days` and the calendar `period`; the NL prompt maps "in the last N
+  days" / "past N hours" to them. Filters panel "When" adds Last 24 hours / Last 7 days / Last 30 days.
+- Container filter matches key **or** display name, ignoring case, spaces and punctuation (pack scope names + admin audit
+  labels), including entries of multi-scope search containers (`KYB,FINCRIME`). The table/sheet show the display name
+  (`container_label`); the filters panel lists containers by display name.
+- `document` filter ("who retrieved <document>"): the title is searched with the **auditor's own** linked accounts
+  (search only, audited as `source.search` with purpose `audit_document_lookup`); hits whose title names the document
+  give the resource ids the audit filter uses. None → 404 `document_not_identified`, shown as "I can't identify that
+  document with your access."
+- `guardrail.blocked` rows: action "Blocked request", decision pill "Blocked", decision filter option "Blocked"
+  (`outcome: blocked`), event sheet shows the intent and the masked excerpt.
+
+Checked (as `auditor` unless noted; NL = ask box `/api/audit/nl-query`, filters = `/api/audit/query` as the panel sends it):
+
+| Check | NL result | Filters result |
+|---|---|---|
+| "everything operations accessed in the last 30 days" | `{actor: operations, operation: source.*, last_days: 30}` → 463 events | same query → 463 |
+| "everything compliance accessed in the last 7 days" | `last_days: 7` → 482 | — |
+| "blocked requests in the past 6 hours" | `{outcome: blocked, last_hours: 6}` → 10 (the Task 3 blocks) | `{last_hours: 24, outcome: blocked}` → 10 |
+| space by key/name: "northstar-demo", "Northstar Demo", "NSDEMO" (this week) | all three → 441, label "Northstar Demo" | `northstar demo`, `Northstar-Demo`, `nsdemo` → 452 each |
+| Jira project by name "FinCrime cases" | — | 28 (incl. `KYB,FINCRIME` search rows) |
+| "who retrieved the AML Policy v4" | auditor: "I can't identify that document with your access." (Aisha has no linked sources); admin: 33 events | same |
+| "who retrieved the Compliance EDD Playbook" (restricted page) | auditor: can't identify; admin (can see it): 42 events | same |
 
 ## Blocked
 

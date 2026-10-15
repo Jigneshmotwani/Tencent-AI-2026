@@ -1,7 +1,7 @@
 // Audit (reference screen): integrity badge + Verify, all events by default (paginated), NL ask with suggestion chips that
 // filters the table, decision filter, row sheet (question, per-document decisions, outcome, hash) and the "My runs" tab.
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
-import { api, safeError } from '../api'
+import { ApiError, api, safeError } from '../api'
 import { hasCap, useMe } from '../shell/session'
 import { Icon } from '../ui/icons'
 import { Button, Dot, IconButton, Pill, Popover, Sheet, Spinner, Tabs, cx, fmtInt, fmtWhen, toast } from '../ui/kit'
@@ -20,13 +20,17 @@ type Integrity = { state: 'checking' } | { state: 'ok'; count: number } | { stat
 
 const PER = 12
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return undefined } })()
-const PERIODS: [string, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This week'], ['last_week', 'Last week'], ['this_month', 'This month'], ['last_month', 'Last month']]
-interface Meta { users: string[]; providers: string[]; operations: string[]; operation_labels: Record<string, string>; containers: string[]; workflows: { id: string; name: string }[] }
+const PERIODS: [string, string][] = [['last_24h', 'Last 24 hours'], ['last_7d', 'Last 7 days'], ['last_30d', 'Last 30 days'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This week'], ['last_week', 'Last week'], ['this_month', 'This month'], ['last_month', 'Last month']]
+// Rolling windows ending now, next to the calendar periods.
+const ROLLING: Record<string, Record<string, number>> = { last_24h: { last_hours: 24 }, last_7d: { last_days: 7 }, last_30d: { last_days: 30 } }
+interface Meta { users: string[]; providers: string[]; operations: string[]; operation_labels: Record<string, string>; containers: string[]; container_labels?: Record<string, string>; workflows: { id: string; name: string }[] }
 interface Manual { actor: string; provider: string; operation: string; workflow: string; container: string; period: string; from: string; to: string }
 const NO_MANUAL: Manual = { actor: '', provider: '', operation: '', workflow: '', container: '', period: '', from: '', to: '' }
 const dayStart = (d: string) => new Date(d + 'T00:00:00').toISOString()
 const dayEnd = (d: string) => new Date(d + 'T23:59:59.999').toISOString()
-const DECISION: Record<string, [string, '' | 'ok' | 'warn']> = { allowed: ['Allowed', 'ok'], denied: ['Denied', ''], error: ['Error', 'warn'] }
+const DECISION: Record<string, [string, '' | 'ok' | 'warn']> = { allowed: ['Allowed', 'ok'], denied: ['Denied', ''], error: ['Error', 'warn'], blocked: ['Blocked', ''] }
+type DecisionFilter = 'all' | 'allowed' | 'denied' | 'blocked'
+const rowDecision = (r: { operation: string; outcome: string }) => r.operation === 'guardrail.blocked' ? 'blocked' : r.outcome
 
 export default function AuditPage() {
   const me = useMe()
@@ -65,7 +69,7 @@ function Events() {
   const [text, setText] = useState('')
   const suggestions = useAppConfig().audit_suggestions
   const [filter, setFilter] = useState<{ query: Record<string, unknown>; label: string } | null>(null)
-  const [decision, setDecision] = useState<'all' | 'allowed' | 'denied'>('all')
+  const [decision, setDecision] = useState<DecisionFilter>('all')
   const [page, setPage] = useState(0)
   const [rows, setRows] = useState<AuditRow[] | null>(null)
   const [total, setTotal] = useState(0)
@@ -85,12 +89,12 @@ function Events() {
     const manualQuery: Record<string, unknown> = {
       ...(m.actor ? { actor: m.actor } : {}), ...(m.provider ? { provider: m.provider } : {}), ...(m.operation ? { operation: m.operation } : {}),
       ...(m.workflow ? { workflow: m.workflow } : {}), ...(m.container ? { container: m.container } : {}),
-      ...(m.period ? { period: m.period, tz: TZ } : {}),
+      ...(m.period ? (ROLLING[m.period] ?? { period: m.period, tz: TZ }) : {}),
       ...(m.from ? { since: dayStart(m.from) } : {}), ...(m.to ? { until: dayEnd(m.to) } : {}),
     }
     // A period picked by hand replaces any time window the question set; other manual filters override the question's.
     const base: Record<string, unknown> = { ...(filter?.query ?? {}) }
-    if (m.period || m.from || m.to) { delete base.period; delete base.last_days; delete base.since; delete base.until }
+    if (m.period || m.from || m.to) { delete base.period; delete base.last_days; delete base.last_hours; delete base.since; delete base.until }
     const query = { ...base, ...manualQuery, ...(decision !== 'all' ? { outcome: decision } : {}), limit: PER, offset: page * PER }
     try {
       const r = await api<QueryResult>('/audit/query', 'POST', query)
@@ -108,7 +112,11 @@ function Events() {
       const r = await api<QueryResult>('/audit/nl-query', 'POST', { text: t, tz: TZ })
       const { limit: _l, offset: _o, ...query } = r.query
       setFilter({ query, label: r.label }); setManual(NO_MANUAL); setDecision('all'); setPage(0)
-    } catch (e) { toast(safeError(e) === 'Request could not complete (nl_query_not_understood).' ? 'Try asking about people, sources, decisions or a time window.' : safeError(e)) }
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : ''
+      toast(code === 'nl_query_not_understood' ? 'Try asking about people, sources, decisions or a time window.'
+        : code === 'document_not_identified' ? "I can't identify that document with your access." : safeError(e))
+    }
     finally { setBusy(false) }
   }
   const clear = () => { setFilter(null); setText(''); setPage(0) }
@@ -118,7 +126,8 @@ function Events() {
   if (manual.provider) manualChips.push(['provider', manual.provider[0].toUpperCase() + manual.provider.slice(1)])
   if (manual.operation) manualChips.push(['operation', optLabel(manual.operation)])
   if (manual.workflow) manualChips.push(['workflow', meta?.workflows.find(w => w.id === manual.workflow)?.name ?? manual.workflow])
-  if (manual.container) manualChips.push(['container', manual.container])
+  const containerName = (c: string) => meta?.container_labels?.[c] ?? (c.length > 24 ? c.slice(0, 22) + '…' : c)
+  if (manual.container) manualChips.push(['container', containerName(manual.container)])
   if (manual.period) manualChips.push(['period', PERIODS.find(p => p[0] === manual.period)?.[1] ?? manual.period])
   if (manual.from || manual.to) manualChips.push(['range', `${manual.from || '…'} → ${manual.to || 'now'}`])
   if (decision !== 'all') manualChips.push(['decision', DECISION[decision][0]])
@@ -156,8 +165,8 @@ function Events() {
         <Popover open={fOpen} onClose={() => setFOpen(false)} anchor={fBtn} style={{ width: 380, padding: 12 }}>
           <div className="afilters">
             <label>Decision
-              <select className="select" value={decision} onChange={e => { setDecision(e.target.value as 'all' | 'allowed' | 'denied'); setPage(0) }}>
-                <option value="all">All</option><option value="allowed">Allowed</option><option value="denied">Denied</option></select></label>
+              <select className="select" value={decision} onChange={e => { setDecision(e.target.value as DecisionFilter); setPage(0) }}>
+                <option value="all">All</option><option value="allowed">Allowed</option><option value="denied">Denied</option><option value="blocked">Blocked</option></select></label>
             <label>Who
               <select className="select" value={manual.actor} onChange={e => setM({ actor: e.target.value })}>
                 <option value="">Anyone</option>{meta?.users.map(u => <option key={u} value={u}>{u}</option>)}</select></label>
@@ -169,7 +178,7 @@ function Events() {
                 <option value="">Any action</option>{meta?.operations.map(o => <option key={o} value={o}>{optLabel(o)}</option>)}</select></label>
             <label>Space, project or folder
               <select className="select" value={manual.container} onChange={e => setM({ container: e.target.value })}>
-                <option value="">Any</option>{meta?.containers.map(c => <option key={c} value={c}>{c.length > 24 ? c.slice(0, 22) + '…' : c}</option>)}</select></label>
+                <option value="">Any</option>{meta?.containers.map(c => <option key={c} value={c}>{containerName(c)}</option>)}</select></label>
             <label>Agent
               <select className="select" value={manual.workflow} onChange={e => setM({ workflow: e.target.value })}>
                 <option value="">Any agent</option>{meta?.workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
@@ -192,7 +201,7 @@ function Events() {
           <td>{r.actor_name}{r.actor_title && <span className="sub">{r.actor_title}</span>}</td>
           <td>{r.label}</td>
           <td className={r.resource_mono ? 'mono' : undefined} title={r.resource_label}>{r.resource_label || <span className="muted">—</span>}</td>
-          <td><Pill tone={DECISION[r.outcome]?.[1] ?? ''}>{DECISION[r.outcome]?.[0] ?? r.outcome}</Pill></td>
+          <td><Pill tone={DECISION[rowDecision(r)]?.[1] ?? ''}>{DECISION[rowDecision(r)]?.[0] ?? r.outcome}</Pill></td>
         </tr>)}
         {rows && !rows.length && <tr><td colSpan={5} className="empty-r">No events match. Clear the filter to see everything.</td></tr>}
       </tbody>
@@ -238,7 +247,9 @@ function EventSheet({ row, onClose }: { row: AuditRow | null; onClose: () => voi
         <Pill tone={d.decision === 'allowed' ? 'ok' : ''}>{d.decision === 'allowed' ? 'Allowed' : 'Denied'}</Pill></div>)}</div></>}
     <h3 className="sec-t">Outcome</h3>
     <p style={{ margin: '0 0 20px', color: 'var(--ink2)', whiteSpace: 'pre-line' }}>{run?.answer ? clip(run.answer, 700) : outcomeText(row, run)}</p>
-    {!run && <><h3 className="sec-t">Details</h3><div className="q mono" style={{ fontSize: 12 }}>{row.operation} · {row.reason}</div></>}
+    {row.operation === 'guardrail.blocked' && <><h3 className="sec-t">Blocked request</h3>
+      <div className="q">{String(row.details.excerpt ?? '')}<span style={{ display: 'block', fontSize: 12, color: 'var(--ink2)', marginTop: 4 }}>Intent: {String(row.details.intent ?? row.reason).replace(/_/g, ' ')}</span></div></>}
+    {!run && row.operation !== 'guardrail.blocked' && <><h3 className="sec-t">Details</h3><div className="q mono" style={{ fontSize: 12 }}>{row.operation} · {row.reason}</div></>}
     <h3 className="sec-t">Event hash</h3><span className="hash mono" title={row.hash}>{row.hash ? row.hash.slice(0, 8) + '…' + row.hash.slice(-6) : '—'}</span>
   </Sheet>
 }
@@ -248,6 +259,7 @@ const clip = (s: string, n: number) => s.length > n ? s.slice(0, n).trimEnd() + 
 function outcomeText(row: AuditRow, run: RunAudit | null) {
   if (run) return run.status === 'completed' ? 'Completed.' : `Run ${run.status.replace(/_/g, ' ')}.`
   if (row.outcome === 'allowed') return 'Allowed and recorded.'
+  if (row.operation === 'guardrail.blocked') return 'Blocked before any source search or answer. The attempt was logged.'
   if (row.outcome === 'denied') return 'Denied. The attempt was logged.'
   return 'Failed. The error was logged.'
 }

@@ -68,9 +68,12 @@ groups:
 scopes:
   confluence_spaces:
   - key: NSDEMO
+    name: Northstar Demo
   jira_projects:
   - key: KYB
+    name: KYB cases
   - key: FINCRIME
+    name: FinCrime cases
   slack_channels:
   - id: kyb-ops
   - id: compliance-escalations
