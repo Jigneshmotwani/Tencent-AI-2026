@@ -10,9 +10,9 @@ Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273,
 - [x] Task 6: Automatic triggers, run-as and subscriptions (new Jira issue / Drive file simulated, see notes)
 - [x] Task 7: Tools and templates for the four demo workflows
 - [x] Task 8: Copilot builds the Partner Change Radar (4/5 on the final prompt, edit 4/4)
-- [ ] Task 9: Small UI items
-- [ ] Task 10: Stability check
-- [ ] Task 11: Handoff
+- [x] Task 9: Small UI items (checked in Chrome as Wei Ming: trigger step sheet, triggered run card "Runs as Wei Ming Tan · Triggered by Jira KYB-7", approval card trigger line, Subscribe button; blocked-request card check not finished)
+- [~] Task 10: Stability check (poll running from 12:51 UTC; every check ready up to 12:57; not reviewed to the end)
+- [ ] Task 11: Handoff (not started: README updates and docs/iteration-4-handoff.md still to write)
 
 ## Task 1: multi-scope sources
 
