@@ -8,6 +8,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import and_, cast, func, or_, select
@@ -34,7 +35,10 @@ class AuditQuery(BaseModel):
     operation: str | None = Field(default=None, max_length=80, description="exact name or prefix wildcard, e.g. 'source.*'")
     run_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9-]{1,64}$')
     topic: str | None = Field(default=None, min_length=1, max_length=80, description='a named topic from the audit_labels policy')
-    last_days: int | None = Field(default=None, ge=1, le=366)
+    last_days: int | None = Field(default=None, ge=1, le=366, description='rolling window ending now')
+    period: Literal['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month'] | None = Field(
+        default=None, description='calendar period in the viewer timezone (weeks start Monday)')
+    tz: str | None = Field(default=None, max_length=64, description='IANA timezone the calendar period is read in; default UTC')
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=50, ge=1, le=200)
@@ -47,12 +51,43 @@ class AuditQuery(BaseModel):
             raise ValueError('invalid operation filter')
         return value
 
+    @field_validator('tz')
+    @classmethod
+    def known_zone(cls, value):
+        if value is not None:
+            try:
+                ZoneInfo(value)
+            except Exception:
+                raise ValueError('unknown timezone')
+        return value
+
     @field_validator('since', 'until')
     @classmethod
     def aware(cls, value):
         if value is not None and value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value
+
+
+def period_bounds(period: str, tz: str | None, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """[start, end) of a calendar period in the given zone, as UTC. Weeks start Monday."""
+    zone = ZoneInfo(tz or 'UTC')
+    local = (now or datetime.now(timezone.utc)).astimezone(zone)
+    day = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == 'today':
+        start, end = day, day + timedelta(days=1)
+    elif period == 'yesterday':
+        start, end = day - timedelta(days=1), day
+    elif period in ('this_week', 'last_week'):
+        monday = day - timedelta(days=day.weekday())
+        start, end = (monday, monday + timedelta(days=7)) if period == 'this_week' else (monday - timedelta(days=7), monday)
+    else:
+        first = day.replace(day=1)
+        if period == 'this_month':
+            start, end = first, (first + timedelta(days=32)).replace(day=1)
+        else:
+            start, end = (first - timedelta(days=1)).replace(day=1), first
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
 def _filters(db, q: AuditQuery):
@@ -91,10 +126,15 @@ def _filters(db, q: AuditQuery):
     if q.last_days:
         window = datetime.now(timezone.utc) - timedelta(days=q.last_days)
         since = max(since, window) if since else window
+    until = q.until
+    if q.period:
+        start, end = period_bounds(q.period, q.tz)
+        since = max(since, start) if since else start
+        until = min(until, end) if until else end
     if since:
         conditions.append(AuditEvent.timestamp >= since)
-    if q.until:
-        conditions.append(AuditEvent.timestamp <= q.until)
+    if until:
+        conditions.append(AuditEvent.timestamp <= until)
     return and_(*conditions) if conditions else None
 
 
@@ -223,14 +263,14 @@ def reconstruct(db, run_ids: list[str]) -> list[dict]:
 
 
 # ---- Natural language -> AuditQuery (validated JSON only) ----
-def _system_prompt(db) -> str:
+def _system_prompt(db, tz: str | None = None) -> str:
     users = [f'{u.username} ({u.name}{", " + u.title if u.title else ""})' for u in db.scalars(select(User).order_by(User.username))]
     from .labels import load_labels
     topics = sorted(load_labels(db)['topics'])
     workflows = list(db.scalars(select(Workflow.name).where(Workflow.status != 'archived').order_by(Workflow.name).limit(50)))
     operations = list(db.scalars(select(AuditEvent.operation).distinct().order_by(AuditEvent.operation).limit(80)))
     providers = sorted(set(PROVIDERS[:4]) | set(db.scalars(select(AuditEvent.provider).where(AuditEvent.provider.is_not(None)).distinct().limit(30))))
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo(tz or 'UTC')).strftime('%Y-%m-%d (%A) %H:%M ') + (tz or 'UTC')
     return (
         'You translate an auditor\'s request into ONE JSON object that filters an audit log. Reply with the JSON object only: '
         'no prose, no code fences, no SQL.\n'
@@ -244,13 +284,15 @@ def _system_prompt(db) -> str:
         '  operation: exact operation name or a prefix wildcard such as "source.*"\n'
         '  run_id: one run id\n'
         '  topic: exact name of a known topic when the request is about it (e.g. a kind of case file)\n'
-        '  last_days: integer 1-366 for relative windows ("last 30 days" -> 30, "this week" -> 7, "today" -> 1)\n'
+        '  period: calendar period, one of "today", "yesterday", "this_week", "last_week", "this_month", "last_month" '
+        '(use for "today", "yesterday", "this week", "last week", "this month", "last month")\n'
+        '  last_days: integer 1-366 for rolling windows ending now ("last 30 days" -> 30, "past 3 days" -> 3); never for today/yesterday\n'
         '  since / until: ISO-8601 UTC timestamps for absolute windows\n'
         '  limit: integer 1-200 (default 50)\n'
         'Guidance: "accessed", "read", "viewed", "retrieved" or "searched" source content means operation "source.*". '
         '"denied" or "blocked" access means outcome "denied". A "space" is a Confluence container; a "project" is Jira; '
         'a "channel" is Slack; a "folder" is Drive. Use only the known usernames when the request names a person.\n'
-        f'Today (UTC): {today}\n'
+        f'Now: {today}\n'
         f'Known users as "username (Name, Title)"; always output the username: {json.dumps(users)}\n'
         f'Known topics: {json.dumps(topics)}\n'
         f'Known workflows: {json.dumps(workflows)}\n'
@@ -259,9 +301,10 @@ def _system_prompt(db) -> str:
         '{"actor":"operations","operation":"source.*","container":"NSDEMO","last_days":30}\n'
         '"Opened" or "viewed" a file or case means operation "source.read". '
         'Example: "who opened STR case files this week" (with a known topic "STR case files") -> '
-        '{"operation":"source.read","topic":"STR case files","last_days":7}\n'
+        '{"operation":"source.read","topic":"STR case files","period":"this_week"}\n'
+        'Example: "denied access yesterday" -> {"outcome":"denied","period":"yesterday"}\n'
         'Example: "denied Slack reads by compliance this week" -> '
-        '{"actor":"compliance","provider":"slack","operation":"source.read","outcome":"denied","last_days":7}'
+        '{"actor":"compliance","provider":"slack","operation":"source.read","outcome":"denied","period":"this_week"}'
     )
 
 
@@ -277,7 +320,7 @@ def _parse(text: str) -> AuditQuery:
     return AuditQuery.model_validate(data)
 
 
-async def translate(db, user, text: str, trace_id: str) -> AuditQuery:
+async def translate(db, user, text: str, trace_id: str, tz: str | None = None) -> AuditQuery:
     """Ask the model for an AuditQuery; one repair attempt with safe validation codes. Raises ValueError(code)."""
     from ..gateway import ModelGateway, model_aliases
     from ..config import settings
@@ -286,14 +329,15 @@ async def translate(db, user, text: str, trace_id: str) -> AuditQuery:
     alias = settings().model_alias
     if allowed and alias not in allowed:
         alias = next((m for m in allowed if m in model_aliases()), alias)
-    messages = [{'role': 'system', 'content': _system_prompt(db)}, {'role': 'user', 'content': text}]
+    messages = [{'role': 'system', 'content': _system_prompt(db, tz)}, {'role': 'user', 'content': text}]
     attribution = {'user_id': user.id, 'username': user.username, 'trace_id': trace_id, 'workflow_name': 'audit-nl-query',
                    'node_type': 'audit.nl_query'}
     last = 'invalid_query'
     for _ in range(2):
         completion = await ModelGateway().complete(messages, attribution, model_alias=alias, max_tokens=700)
         try:
-            return _parse(completion.text)
+            parsed = _parse(completion.text)
+            return parsed.model_copy(update={'tz': tz}) if tz and parsed.period else parsed
         except ValidationError as exc:
             last = 'invalid_query'
             problems = sorted({'.'.join(str(p) for p in e['loc']) + ':' + e['type'] for e in exc.errors()})[:10]
@@ -329,6 +373,11 @@ def describe(db, q: AuditQuery) -> str:
         parts.append(q.workflow)
     if q.outcome:
         parts.append({'allowed': 'Allowed', 'denied': 'Denied', 'error': 'Errors'}[q.outcome])
-    if q.last_days:
-        parts.append('today' if q.last_days == 1 else 'this week' if q.last_days == 7 else f'last {q.last_days} days')
+    if q.period:
+        parts.append(q.period.replace('_', ' '))
+    elif q.last_days:
+        parts.append('last 24 hours' if q.last_days == 1 else 'last 7 days' if q.last_days == 7 else f'last {q.last_days} days')
+    if q.since or q.until:
+        fmt = lambda d: d.strftime('%d %b')
+        parts.append(f"{fmt(q.since) if q.since else '…'} – {fmt(q.until) if q.until else 'now'}")
     return ' · '.join(parts) or 'All events'

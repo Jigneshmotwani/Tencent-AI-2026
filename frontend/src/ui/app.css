@@ -712,3 +712,11 @@ button.user:hover{background:rgba(255,255,255,.06)}
   .rt td:first-child{flex:1 0 100%}
   .rt td.hm{display:none}
 }
+
+/* Audit filters panel */
+.afilters{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+.afilters .arange,.afilters>button{grid-column:1/-1}
+.afilters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2);min-width:0}
+.afilters .select,.afilters input[type=date]{width:100%;height:32px;font-size:13px;color:var(--ink)}
+.afilters .arange{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fpop .afilters button{width:auto;justify-self:start}

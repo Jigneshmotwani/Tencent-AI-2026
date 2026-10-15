@@ -18,7 +18,14 @@ interface RunAudit { run_id: string; kind: 'chat' | 'workflow'; actor: string; s
 type Integrity = { state: 'checking' } | { state: 'ok'; count: number } | { state: 'broken'; seq: number | null; count: number } | { state: 'error' }
 
 const PER = 12
-const SUGGESTIONS = ['Who opened STR case files this week?', 'Denied access attempts today', 'What did operations ask about Acme?']
+const SUGGESTIONS = ['Who opened STR case files this week?', 'Denied access attempts today', 'Everything that happened yesterday', 'What did operations ask about Acme?']
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return undefined } })()
+const PERIODS: [string, string][] = [['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This week'], ['last_week', 'Last week'], ['this_month', 'This month'], ['last_month', 'Last month']]
+interface Meta { users: string[]; providers: string[]; operations: string[]; operation_labels: Record<string, string>; containers: string[]; workflows: { id: string; name: string }[] }
+interface Manual { actor: string; provider: string; operation: string; workflow: string; container: string; period: string; from: string; to: string }
+const NO_MANUAL: Manual = { actor: '', provider: '', operation: '', workflow: '', container: '', period: '', from: '', to: '' }
+const dayStart = (d: string) => new Date(d + 'T00:00:00').toISOString()
+const dayEnd = (d: string) => new Date(d + 'T23:59:59.999').toISOString()
 const DECISION: Record<string, [string, '' | 'ok' | 'warn']> = { allowed: ['Allowed', 'ok'], denied: ['Denied', ''], error: ['Error', 'warn'] }
 
 export default function AuditPage() {
@@ -66,16 +73,30 @@ function Events() {
   const [error, setError] = useState('')
   const [open, setOpen] = useState<AuditRow | null>(null)
   const [fOpen, setFOpen] = useState(false)
+  const [meta, setMeta] = useState<Meta | null>(null)
+  const [manual, setManual] = useState<Manual>(NO_MANUAL)
+  useEffect(() => { api<Meta>('/audit/meta').then(setMeta).catch(() => setMeta(null)) }, [])
+  const setM = (patch: Partial<Manual>) => { setManual(m => ({ ...m, ...patch })); setPage(0) }
   const fBtn = useRef<HTMLButtonElement>(null)
 
   const load = useCallback(async () => {
-    const query = { ...(filter?.query ?? {}), ...(decision !== 'all' ? { outcome: decision } : {}), limit: PER, offset: page * PER }
+    const m = manual
+    const manualQuery: Record<string, unknown> = {
+      ...(m.actor ? { actor: m.actor } : {}), ...(m.provider ? { provider: m.provider } : {}), ...(m.operation ? { operation: m.operation } : {}),
+      ...(m.workflow ? { workflow: m.workflow } : {}), ...(m.container ? { container: m.container } : {}),
+      ...(m.period ? { period: m.period, tz: TZ } : {}),
+      ...(m.from ? { since: dayStart(m.from) } : {}), ...(m.to ? { until: dayEnd(m.to) } : {}),
+    }
+    // A period picked by hand replaces any time window the question set; other manual filters override the question's.
+    const base: Record<string, unknown> = { ...(filter?.query ?? {}) }
+    if (m.period || m.from || m.to) { delete base.period; delete base.last_days; delete base.since; delete base.until }
+    const query = { ...base, ...manualQuery, ...(decision !== 'all' ? { outcome: decision } : {}), limit: PER, offset: page * PER }
     try {
       const r = await api<QueryResult>('/audit/query', 'POST', query)
       setRows(r.results.events); setTotal(r.results.total); setError('')
       if (!filter && decision === 'all') setAllTotal(r.results.total)
     } catch (e) { setError(safeError(e)); setRows([]) }
-  }, [filter, decision, page])
+  }, [filter, decision, page, manual])
   useEffect(() => { void load() }, [load])
 
   const ask = async (q: string) => {
@@ -83,14 +104,31 @@ function Events() {
     if (!t) { setFilter(null); setPage(0); return }
     setText(t); setBusy(true); setError('')
     try {
-      const r = await api<QueryResult>('/audit/nl-query', 'POST', { text: t })
+      const r = await api<QueryResult>('/audit/nl-query', 'POST', { text: t, tz: TZ })
       const { limit: _l, offset: _o, ...query } = r.query
-      setFilter({ query, label: r.label }); setPage(0)
+      setFilter({ query, label: r.label }); setManual(NO_MANUAL); setDecision('all'); setPage(0)
     } catch (e) { toast(safeError(e) === 'Request could not complete (nl_query_not_understood).' ? 'Try asking about people, sources, decisions or a time window.' : safeError(e)) }
     finally { setBusy(false) }
   }
   const clear = () => { setFilter(null); setText(''); setPage(0) }
-  const narrowed = !!filter || decision !== 'all'
+  const manualChips: [keyof Manual | 'decision' | 'range', string][] = []
+  const optLabel = (v: string) => meta?.operation_labels?.[v] ?? v
+  if (manual.actor) manualChips.push(['actor', manual.actor])
+  if (manual.provider) manualChips.push(['provider', manual.provider[0].toUpperCase() + manual.provider.slice(1)])
+  if (manual.operation) manualChips.push(['operation', optLabel(manual.operation)])
+  if (manual.workflow) manualChips.push(['workflow', meta?.workflows.find(w => w.id === manual.workflow)?.name ?? manual.workflow])
+  if (manual.container) manualChips.push(['container', manual.container])
+  if (manual.period) manualChips.push(['period', PERIODS.find(p => p[0] === manual.period)?.[1] ?? manual.period])
+  if (manual.from || manual.to) manualChips.push(['range', `${manual.from || '…'} → ${manual.to || 'now'}`])
+  if (decision !== 'all') manualChips.push(['decision', DECISION[decision][0]])
+  const dropChip = (k: keyof Manual | 'decision' | 'range') => {
+    if (k === 'decision') setDecision('all')
+    else if (k === 'range') setM({ from: '', to: '' })
+    else setM({ [k]: '' } as Partial<Manual>)
+    setPage(0)
+  }
+  const clearAll = () => { clear(); setManual(NO_MANUAL); setDecision('all') }
+  const narrowed = !!filter || decision !== 'all' || manualChips.length > 0
   const pages = Math.max(1, Math.ceil(total / PER))
   const countText = rows == null ? '' : total === 0 ? '0 events' : narrowed
     ? `${fmtInt(total)} of ${fmtInt(allTotal ?? total)}`
@@ -105,17 +143,42 @@ function Events() {
     <div className="sugs">{SUGGESTIONS.map(s => <button key={s} type="button" className="sug" onClick={() => { setText(s); void ask(s) }}>{s}</button>)}</div>
     <div className="meta-row">
       <div className="meta-l"><p>{countText}</p>
-        {filter && <span className="fchip">Filtered: {filter.label}<button type="button" aria-label="Clear filter" onClick={clear}><Icon name="x" small /></button></span>}</div>
+        {filter && <span className="fchip">Filtered: {filter.label}<button type="button" aria-label="Clear filter" onClick={clear}><Icon name="x" small /></button></span>}
+        {manualChips.map(([k, label]) => <span className="fchip" key={k}>{label}<button type="button" aria-label={`Remove ${label} filter`} onClick={() => dropChip(k)}><Icon name="x" small /></button></span>)}
+        {(filter ? 1 : 0) + manualChips.length > 1 && <Button variant="text" size="sm" onClick={clearAll}>Clear all</Button>}</div>
       <div className="meta-r">
         <Button ref={fBtn} size="sm" icon="filter" aria-haspopup="true" aria-expanded={fOpen} onClick={() => setFOpen(o => !o)}>Filters</Button>
         {pages > 1 && <div className="pgn">
           <IconButton icon="chevl" label="Previous page" disabled={page <= 0} onClick={() => setPage(p => p - 1)} />
           <IconButton icon="chevr" label="Next page" disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)} />
         </div>}
-        <Popover open={fOpen} onClose={() => setFOpen(false)} anchor={fBtn}>
-          <div className="lbl2">Decision</div>
-          {(['all', 'allowed', 'denied'] as const).map(d => <button key={d} type="button" aria-checked={decision === d} role="menuitemradio"
-            onClick={() => { setDecision(d); setPage(0); setFOpen(false) }}>{d === 'all' ? 'All' : DECISION[d][0]}</button>)}
+        <Popover open={fOpen} onClose={() => setFOpen(false)} anchor={fBtn} style={{ width: 380, padding: 12 }}>
+          <div className="afilters">
+            <label>Decision
+              <select className="select" value={decision} onChange={e => { setDecision(e.target.value as 'all' | 'allowed' | 'denied'); setPage(0) }}>
+                <option value="all">All</option><option value="allowed">Allowed</option><option value="denied">Denied</option></select></label>
+            <label>Who
+              <select className="select" value={manual.actor} onChange={e => setM({ actor: e.target.value })}>
+                <option value="">Anyone</option>{meta?.users.map(u => <option key={u} value={u}>{u}</option>)}</select></label>
+            <label>Source
+              <select className="select" value={manual.provider} onChange={e => setM({ provider: e.target.value })}>
+                <option value="">Any source</option>{meta?.providers.map(p => <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>)}</select></label>
+            <label>Action
+              <select className="select" value={manual.operation} onChange={e => setM({ operation: e.target.value })}>
+                <option value="">Any action</option>{meta?.operations.map(o => <option key={o} value={o}>{optLabel(o)}</option>)}</select></label>
+            <label>Space, project or folder
+              <select className="select" value={manual.container} onChange={e => setM({ container: e.target.value })}>
+                <option value="">Any</option>{meta?.containers.map(c => <option key={c} value={c}>{c.length > 24 ? c.slice(0, 22) + '…' : c}</option>)}</select></label>
+            <label>Agent
+              <select className="select" value={manual.workflow} onChange={e => setM({ workflow: e.target.value })}>
+                <option value="">Any agent</option>{meta?.workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
+            <label>When
+              <select className="select" value={manual.period} onChange={e => setM({ period: e.target.value, from: '', to: '' })}>
+                <option value="">Any time</option>{PERIODS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+            <div className="arange"><label>From<input type="date" value={manual.from} max={manual.to || undefined} onChange={e => setM({ from: e.target.value, period: '' })} /></label>
+              <label>To<input type="date" value={manual.to} min={manual.from || undefined} onChange={e => setM({ to: e.target.value, period: '' })} /></label></div>
+            {narrowed && <Button variant="text" size="sm" onClick={() => { setManual(NO_MANUAL); setDecision('all'); setPage(0) }}>Reset filters</Button>}
+          </div>
         </Popover>
       </div>
     </div>
