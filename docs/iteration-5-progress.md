@@ -13,7 +13,11 @@ In order. Each item says who and where. Ticked items were done by the human (or 
       `vn-partner-api-v3-spec-summary.docx` → `Partners/VN Rail`; `vn-contract-summary.docx` → `Partners/Commercial`.
       Do **not** upload `vn-partner-api-v2-retirement-notice.docx` (it is dropped live in beat 3).
    3. Share as Viewer: `Payments Platform` → account A; `Partners/VN Rail` → accounts A and B; `Partners/Commercial` → nobody.
-      (A and B emails are in `.local/demo-identities.env`.)
+      A = the new `…001` account (Priya, Arjun); B = the existing `…0055` account (Marco), confirmed by the human on 16 Oct.
+   3a. **Status 03:10 SGT:** files uploaded ✓, but the folders sit inside the older `Demo Knowledge` folder, which is shared
+      with another person (Editor) and with B, so every demo folder (including `Partners/Commercial`) inherits those shares.
+      Fix: move `Payments Platform` and `Partners` to the top of My Drive; `Payments Platform` → A only (remove `…0055`);
+      `Partners/VN Rail` → `…0055` from Editor to Viewer. The seeder now only accepts top folders directly in My Drive.
    4. Then run `uv run --frozen python -m backend.app.seed --as admin --content payments --only drive` (resolves the folder
       ids into `.local/ross-drive-folders.json` with the owner's existing Drive link) and
       `uv run --frozen python -m backend.app.demo_pack load ross-payments` (puts the folders into the pack's scope). Until
