@@ -22,14 +22,19 @@ In order. Each item says who and where. Ticked items were done by the human (or 
       ids into `.local/ross-drive-folders.json` with the owner's existing Drive link) and
       `uv run --frozen python -m backend.app.demo_pack load ross-payments` (puts the folders into the pack's scope). Until
       then Drive shows "not configured" and cannot be connected (by design: no fallback to another demo's folder).
-2. **Connect sources per persona** (app http://localhost:5273, Connections page; passwords in `.local/demo-accounts.txt`).
-   Use one browser profile per real identity so the right Google/Atlassian/Slack session is used:
-   - `weiling` and `daniel` → owner account: Google Drive, Confluence, Jira, Slack.
-   - `priya` and `arjun` → account A: Google Drive, Confluence, Jira, Slack.
-   - `marco` → account B: Google Drive, Confluence, Jira, Slack.
-   Connect Slack as `weiling` **after** the API restart of this iteration: admins are now asked for `channels:write`,
-   `groups:write` and `users:read.email` too (the seeder creates the channels and invites A and B with them).
-3. **Slack channels**: once `weiling` has Slack connected, run
+2. **Connect sources per persona** (done by the agent in Chrome at 03:20-03:45 SGT, except below): weiling and daniel →
+   owner (Drive, Confluence, Jira ✓); priya and arjun → A (Drive, Confluence, Jira ✓); marco → B (Drive, Confluence ✓).
+   The agent added A (`…001`) as a Google OAuth test user (Google Cloud → Google Auth Platform → Audience) so A's Drive
+   consent was allowed. Still open:
+   - **Slack for all five** (slack.com is blocked in the agent's Chrome): in your own browser, open
+     `https://localhost:8543/health` once (accept the certificate), then sign in at http://localhost:5273 as each persona
+     → Connections → Slack → Connect: weiling and daniel with the owner's Slack, priya and arjun with A's (`…001`),
+     marco with B's (`…0055`). Do weiling first (admins also grant `channels:write`, `groups:write`).
+   - **Jira for marco**: account B has no Jira product access on the site (groups: confluence-users only), so the Jira
+     consent is refused (`denied`). admin.atlassian.com → Directory → Users → `jigneshmotwani0055@gmail.com` → Grant
+     access → Jira (the agent's API attempt to add B to `jira-users-…` was refused by the local permission policy). Then
+     marco → Connections → Jira → Connect (the agent can do this part in Chrome).
+3. **Slack channels**: once `weiling` has Slack connected, the agent runs
    `uv run --frozen python -m backend.app.seed --as weiling --content payments --only slack`. If `channels:write` /
    `groups:write` are not granted, create these by hand and invite the members, then rerun the same command (it posts
    the messages): `#payments-eng` (public: owner, A), `#ext-vn-rail-partner` (public: owner, A, B), `#infra-alerts`
