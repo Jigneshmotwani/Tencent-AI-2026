@@ -72,3 +72,6 @@
 .screen.ws.new .composer{margin-top:auto}
 .screen.ws.new .newst{margin-bottom:auto}
 .cbox textarea:focus-visible{box-shadow:none;outline:0}
+
+.ans-denied{border-left:3px solid var(--warn, #b7791f);padding-left:14px}
+.denied-tag{display:inline-flex;align-items:center;gap:6px;margin:0 0 6px;font-size:12px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2)}

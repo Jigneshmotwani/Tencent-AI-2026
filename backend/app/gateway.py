@@ -19,7 +19,7 @@ class Completion:
         self.text, self.usage, self.cost, self.latency_ms = text, usage, cost, latency_ms
 
 class ModelGateway:
-    async def complete(self, messages, attribution, *, model_alias=None, max_tokens=None, api_key=None):
+    async def complete(self, messages, attribution, *, model_alias=None, max_tokens=None, api_key=None, temperature=None):
         """Non-streaming convenience for workflow nodes; uses the same streamed path so usage/cost are captured.
         attribution: {user_id, username?, run_id, trace_id, workflow_id?, workflow_name?, workflow_version?, node_id?, node_type?}
         api_key: optional per-workflow LiteLLM virtual key (budget enforcement in the gateway). Raises ModelError
@@ -28,7 +28,7 @@ class ModelGateway:
         text, usage, cost = '', {}, None
         started = time.monotonic(); outcome = 'ok'
         try:
-            async for kind, data in self.stream(messages, attribution, model_alias=model_alias, max_tokens=max_tokens, api_key=api_key):
+            async for kind, data in self.stream(messages, attribution, model_alias=model_alias, max_tokens=max_tokens, api_key=api_key, temperature=temperature):
                 if kind == 'delta': text += data
                 elif kind == 'usage': usage = {**usage, **{k: v for k, v in data.items() if v is not None}}
                 elif kind == 'cost': cost = data.get('cost'); usage = {**usage, **data}
@@ -41,7 +41,7 @@ class ModelGateway:
         if not text.strip(): raise ModelError('empty_model_response')
         return Completion(text, usage, cost, (time.monotonic()-started)*1000)
 
-    async def stream(self, messages, attribution, *, model_alias=None, max_tokens=None, api_key=None):
+    async def stream(self, messages, attribution, *, model_alias=None, max_tokens=None, api_key=None, temperature=None):
         cfg = settings()
         if not cfg.model_id or not cfg.model_api_key: raise ModelError('model_not_configured')
         if urlparse(cfg.litellm_url).hostname not in {'127.0.0.1','localhost','::1'}:
@@ -58,6 +58,7 @@ class ModelGateway:
         payload = {'model':alias, 'messages':messages,'stream':True,
             'stream_options':{'include_usage':True}, 'max_tokens':min(max_tokens or cfg.max_output_tokens, 4096),
             'user':attribution['user_id'], 'metadata':metadata}
+        if temperature is not None: payload['temperature'] = temperature
         request_ref = None; started=time.monotonic(); tokens={}; provider_ref=None; truncated=False; stream_cost=None; cost_sent=False
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(75, connect=5), trust_env=False) as client:

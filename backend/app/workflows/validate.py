@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 
 from jsonschema import Draft202012Validator
+from sqlalchemy import select
 from pydantic import ValidationError
 
 from .expressions import ExpressionError, parse as parse_expr, references as expr_refs
@@ -16,11 +17,34 @@ from .render import has_template, template_refs, split_path
 from .spec import WorkflowSpec
 
 
+def _blocked_issue(qualified, eff, node_id):
+    if qualified in eff.get('group_blocked_tools', ()):
+        return _issue('tool_not_permitted', f'{qualified[:100]} is not enabled for your group', node_id)
+    return _issue('tool_not_allowed', f'{qualified[:100]} is not allowed by workflow/platform policy', node_id)
+
+
 def _issue(code, message, node_id=None, edge_id=None):
     out = {'code': code, 'message': message}
     if node_id: out['node_id'] = node_id
     if edge_id: out['edge_id'] = edge_id
     return out
+
+
+def group_blocked_tools(db, gids: set[str]) -> set[str]:
+    """Qualified tool ids whose admin-set allowed_groups exclude every group of the invoker (empty list = everyone)."""
+    from ..db import McpServer, PlatformPolicy
+    blocked: set[str] = set()
+    row = db.get(PlatformPolicy, 'builtin_tools')
+    for name, cfg in ((row.value or {}).get('tools') or {}).items() if row is not None else ():
+        allowed = set((cfg or {}).get('allowed_groups') or [])
+        if allowed and not (allowed & gids):
+            blocked.add('builtin:' + name)
+    for server in db.scalars(select(McpServer)):
+        for t in server.tools or []:
+            allowed = set(t.get('allowed_groups') or [])
+            if allowed and not (allowed & gids):
+                blocked.add(f"mcp:{server.name}/{t['name']}")
+    return blocked
 
 
 def effective_policy(spec_policies: dict, db, user=None, workflow_id: str | None = None) -> dict:
@@ -32,9 +56,11 @@ def effective_policy(spec_policies: dict, db, user=None, workflow_id: str | None
     from ..governance.policies import get_policy
     platform = get_policy(db)
     gids = None
+    group_blocked: set[str] = set()
     if user is not None:
         from ..admin.directory import user_group_ids
         gids = user_group_ids(db, user.id)
+        group_blocked = group_blocked_tools(db, gids)
     aliases = enabled_aliases(gids)
     models = [m for m in aliases if not platform.get('allowed_models') or m in platform['allowed_models']]
     max_steps = min(int(spec_policies.get('max_steps') or 25), int(platform.get('max_steps_cap') or 40), settings().workflow_max_steps)
@@ -56,7 +82,8 @@ def effective_policy(spec_policies: dict, db, user=None, workflow_id: str | None
         'models': models,
         'platform_tools': set(platform.get('allowed_tools') or []),
         'workflow_tools': set(spec_policies.get('allowed_tools') or []),
-        'disabled_tools': disabled,
+        'disabled_tools': disabled | group_blocked,
+        'group_blocked_tools': group_blocked,
         'approval_required_for': set(spec_policies.get('approval_required_for') or []) | set(platform.get('approval_required_for') or []),
         'allowed_sources': set(spec_policies.get('allowed_sources') or []),
         'max_steps': max_steps,
@@ -181,7 +208,7 @@ def validate_spec(spec: dict, db, user=None) -> dict:
         if ntype == 'tool.builtin':
             tool = cfg.get('tool')
             if tool and not tool_allowed('builtin:' + tool, eff):
-                errors.append(_issue('tool_not_allowed', f'builtin:{tool} is not allowed by workflow/platform policy', nid))
+                errors.append(_blocked_issue('builtin:' + tool, eff, nid))
             if tool in ('jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue') and 'jira' not in eff['allowed_sources']:
                 errors.append(_issue('source_not_allowed', 'Jira is not in the workflow allowed_sources', nid))
             if tool in ('slack.draft', 'slack.post') and 'slack' not in eff['allowed_sources']:
@@ -198,7 +225,7 @@ def validate_spec(spec: dict, db, user=None) -> dict:
             if q not in mcp_tools:
                 errors.append(_issue('mcp_tool_unavailable', f'{q[:100]} is not a registered, enabled MCP tool', nid))
             elif not tool_allowed(q, eff):
-                errors.append(_issue('tool_not_allowed', f'{q[:100]} is not allowed by workflow/platform policy', nid))
+                errors.append(_blocked_issue(q, eff, nid))
         if ntype == 'agent':
             for t in cfg.get('allowed_tools') or []:
                 if t.startswith('builtin:') and t[8:] in WRITE_TOOLS:
@@ -208,7 +235,7 @@ def validate_spec(spec: dict, db, user=None) -> dict:
                 if t.startswith('mcp:') and t not in mcp_tools:
                     errors.append(_issue('mcp_tool_unavailable', f'{t[:100]} is not a registered, enabled MCP tool', nid)); continue
                 if t != 'knowledge.search' and not tool_allowed(t, eff):
-                    errors.append(_issue('tool_not_allowed', f'{t[:100]} is not allowed by workflow/platform policy', nid))
+                    errors.append(_blocked_issue(t, eff, nid))
         if ntype == 'human.approval' and cfg.get('approver_group'):
             from ..admin.directory import resolve_group
             if resolve_group(db, str(cfg['approver_group'])) is None:

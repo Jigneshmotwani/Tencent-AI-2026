@@ -56,6 +56,9 @@ def record_model_call(*, user, workflow, model, prompt_tokens, completion_tokens
     if latency_ms is not None: _get('histogram', 'ai_model_latency', unit='ms', description='Model latency').record(float(latency_ms), labels)
 def record_guardrail(*, guardrail, outcome, workflow=''):
     _get('counter', 'guardrail_outcomes').add(1, {'guardrail': guardrail, 'outcome': outcome, 'workflow': workflow or ''})
+def record_scope_denial(*, user, category, surface='chat'):
+    # Feeds the Grafana "repeated scope denials" alert; user is the username, never message text.
+    _get('counter', 'chat_scope_denials', description='Requests denied for insufficient scope').add(1, {'user': user or '', 'category': category, 'surface': surface})
 def record_access(*, provider, decision, workflow=''):
     _get('counter', 'source_access_decisions').add(1, {'provider': provider or '', 'decision': decision, 'workflow': workflow or 'chat'})
 def record_approval(*, status, workflow=''):

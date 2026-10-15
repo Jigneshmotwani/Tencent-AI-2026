@@ -888,6 +888,62 @@
     "showHeader": true,
     "cellHeight": "sm"
    }
+  },
+  {
+   "id": 17,
+   "type": "timeseries",
+   "title": "Scope denials by user (chat and agent runs, live, cumulative)",
+   "description": "OTel counter chat_scope_denials: requests refused for insufficient role or group scope. The \"Repeated scope denials\" alert fires at 5 in an hour per user.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum by (user, category) (chat_scope_denials_total)",
+     "legendFormat": "{{user}} · {{category}}",
+     "range": true,
+     "instant": false
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 24,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "spanNulls": true,
+      "showPoints": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "timeFrom": "6h"
   }
  ]
 }

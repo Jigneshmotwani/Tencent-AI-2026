@@ -23,7 +23,7 @@ export interface AgentRunDetail { run: WorkflowRun & { paused_node_id?: string |
 /** Evidence shown in the source sheet (chat: /evidence/{id}; agent runs: /workflow-runs/{id}/evidence/{label}). */
 export interface EvidenceView { id?: string; title: string; excerpt: string; canonical_url: string; location: string; modified_at: string | null; fetched_at: string; provider: string; changed?: boolean; synthetic?: boolean }
 
-export const TERMINAL_CHAT = new Set(['completed', 'failed', 'cancelled'])
+export const TERMINAL_CHAT = new Set(['completed', 'failed', 'cancelled', 'denied'])
 export const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled', 'blocked_by_budget'])
 
 export function citesOf(message: Message): CiteRef[] {
