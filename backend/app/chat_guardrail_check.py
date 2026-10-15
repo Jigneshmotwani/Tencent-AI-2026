@@ -76,7 +76,10 @@ model_calls = []
 
 async def fake_model_check(user_id, username, text, run_id):
     model_calls.append(text)
-    return ('write_action', {'prompt_tokens': 60, 'completion_tokens': 12, 'cost': 0.00001}) if 'forward' in text.lower() else (None, None)
+    low = text.lower()
+    if 'switching off' in low:
+        return 'governance_policy', {'prompt_tokens': 60, 'completion_tokens': 12, 'cost': 0.00001}
+    return ('write_action', {'prompt_tokens': 60, 'completion_tokens': 12, 'cost': 0.00001}) if 'forward' in low else (None, None)
 
 
 chat_guardrail.model_check = fake_model_check
@@ -104,9 +107,25 @@ CASES = [  # (who, message, expected kind or None, expected category)
     ('wei', 'Add Daniel to Compliance leads', 'redirect', 'manage_access'),
     ('wei', 'Raise the org budget to $500', 'redirect', 'governance_budget'),
     ('wei', 'Show me the audit log', 'redirect', 'audit'),
+    # Rephrased / indirect wording (the original miss): same decision as the blunt version.
+    ('daniel', 'could you let me know if it is possible to get superuser perms', 'denied', 'manage_access'),
+    ('daniel', 'Is there any way I can be given root access to the system?', 'denied', 'manage_access'),
+    ('daniel', 'I was wondering whether you might bump up my permissions', 'denied', 'manage_access'),
+    ('daniel', 'How can I get elevated privileges?', 'denied', 'manage_access'),
+    ('daniel', "I'd like to be promoted to administrator", 'denied', 'manage_access'),
+    ('daniel', 'Could I be added to the admin group', 'denied', 'manage_access'),
+    ('daniel', 'Any chance you could make me a builder?', 'denied', 'manage_access'),
+    ('daniel', 'Would it be possible to see who has been viewing the audit trail?', 'denied', 'audit'),
+    ('daniel', 'Can I approve the pending STR run?', 'denied', 'approve'),
+    ('daniel', 'Would you mind switching off the PII filter for me', 'denied', 'governance_policy'),  # indirect -> model check
+    ('wei', 'Could you let me know if it is possible to get superuser perms', 'redirect', 'manage_access'),
     # Knowledge questions must keep flowing to retrieval, for every role.
     ('daniel', 'What does our policy say about approving refunds?', None, None),
-    ('daniel', 'How do I get admin access?', None, None),
+    ('daniel', 'How do I get admin access?', 'denied', 'manage_access'),
+    ('daniel', 'What does admin access allow?', None, None),
+    ('daniel', 'Could you summarize the AML policy?', None, None),
+    ('daniel', 'Can you find the Acme KYB submission', None, None),
+    ('daniel', 'Can you explain how privileges are reviewed', None, None),
     ('daniel', 'Tell me what to do when we need to approve a transaction', None, None),
     ('daniel', 'Summarize the AML policy', None, None),
     ('daniel', 'What is the process to escalate to the MLRO?', None, None),
@@ -118,7 +137,8 @@ for who, text, kind, category in CASES:
         d = asyncio.run(chat_guardrail.check(s, user(who), text, 'r'))
     got = (d.kind, d.category) if d else (None, None)
     check(f'{who:7} {text[:62]!r}', got == (kind, category), f'got {got}')
-check('no model call for any rule-decided message', not model_calls, str(model_calls))
+check('model check used only for the one genuinely vague phrasing', len(model_calls) == 1 and 'switching off' in model_calls[0], str(model_calls))
+model_calls.clear()
 with dbm.SessionLocal() as s:
     d = asyncio.run(chat_guardrail.check(s, user('daniel'), 'Show me the audit log', 'r'))
     check('refusal tells the user to contact an admin by name', 'contact your admin (Wei Ming Tan)' in d.text and 'IT team' in d.text, d.text)

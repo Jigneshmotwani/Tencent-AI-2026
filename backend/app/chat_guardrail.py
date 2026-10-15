@@ -22,7 +22,7 @@ CATEGORIES = ('manage_access', 'audit', 'approve', 'governance_budget', 'governa
 
 # category -> (page that grants the capability or None, phrase for "You're not authorized to ...")
 SCOPE = {
-    'manage_access': ('users', 'manage users, roles or permissions'),
+    'manage_access': ('users', 'grant roles, permissions or access'),
     'audit': ('audit', 'view the audit log'),
     'approve': ('approvals', 'approve or reject requests'),
     'governance_budget': ('budgets', 'change budgets or spending limits'),
@@ -36,8 +36,9 @@ PAGE_LABEL = {'workspace': 'Workspace', 'studio': 'Studio', 'approvals': 'Approv
 
 # (category, verbs, targets); a clause must START with the verb (after polite filler) and name a target soon after.
 _RULES = [
-    ('manage_access', r'grant|give|assign|promote|elevate|upgrade|revoke|remove|invite|make|add|set|change|update|create|disable|delete|reset|unlock',
-     r'admin(?:istrator)?s?|roles?|permissions?|privileges?|access|builder|auditor|groups?|members?|membership|users?|accounts?|passwords?'),
+    ('manage_access', r'grant|give|assign|promote|elevate|upgrade|bump|revoke|remove|invite|make|add|set|change|update|create|disable|delete|reset|unlock|'
+     r'get|obtain|gain|have|become|receive|let|allow|enable|escalate',
+     r'admin(?:istrator)?s?|super\\s?-?\\s?users?|sudo|root|perms?|permissions?|privileges?|privileged|rights|entitlements?|clearance|(?:elevated|higher|full|owner|extra|more)\\s+access|access|roles?|builder|auditor|groups?|members?|membership|users?|accounts?|passwords?'),
     ('audit', r'show|list|display|export|view|open|pull|fetch|download|see|check|search|find|read|give|get|send|share|email',
      r'(?:audit|access|security|activity)\s+(?:logs?|trails?|events?|records?|history)'),
     ('approve', r'approve|reject|decline|deny|sign\s+off|authori[sz]e|override|rubber-?stamp',
@@ -60,8 +61,18 @@ _COMPILED = [(c, re.compile(rf'(?:{v})\b[^.?!\n]{{0,80}}?\b(?:{t})\b', re.I)) fo
 # Publishing/suspending is only ever about agents here, so it needs no noun.
 _AGENT_LIFECYCLE = re.compile(r'(?:publish|suspend|archive|deploy|unpublish)\b', re.I)
 _ADD_TO_GROUP = re.compile(r'add\b[^.?!\n]{1,40}\b(?:to|into)\b[^.?!\n]{0,30}\b(?:group|team|leads?|role)\b', re.I)
+# Asking for privileges for yourself or someone else, in any phrasing ("is it possible to get superuser perms").
+_PRIV = r'admin(?:istrator)?s?|super\s?-?\s?users?|sudo|root|perms?|permissions?|privileges?|privileged|rights|entitlements?|clearance|(?:elevated|higher|full|owner|extra|more)\s+access|access'
+_ACCESS_SEEKING = re.compile(
+    r'\b(?:get|obtain|gain|have|receive|become|need|want|request|ask\s+for|apply\s+for|be\s+(?:given|granted|made|promoted|added)|upgrade|elevate|bump(?:\s+up)?|'
+    r'escalate|raise|boost)\b[^.?!\n]{0,60}?\b(?:'+_PRIV+r')\b'
+    r'|\b(?:give|grant|let|allow|make|promote|add|assign)\s+(?:me|us|him|her|them|\w+)\b[^.?!\n]{0,50}?\b(?:'+_PRIV+r')\b', re.I)
+# Polite / indirect request framing; only a *request* with a sensitive signal earns the tiny model check.
+_REQUEST_FORM = re.compile(r"\b(?:(?:can|could|would|will|may)\s+(?:you|i|u)|please|pls|i\s+(?:want|need|wish|would\s+like|'d\s+like)|is\s+it\s+possible|possible\s+to|"
+                           r"(?:able|allowed|permitted)\s+to|let\s+me|any\s+chance|wonder(?:ing)?|help\s+me|is\s+there\s+(?:a|any)\s+way|how\s+(?:can|do|could)\s+i)\b", re.I)
+_SIGNAL = re.compile(r'\b(?:'+_PRIV+r'|roles?|audit|budgets?|quotas?|polic(?:y|ies)\s+(?:change|setting)|guardrails?|pii|masking|(?:turn|switch)\s+(?:off|on)|disable|bypass|mcp|tool\s+servers?|agents?|workflows?|approv\w+|publish\w*)\b', re.I)
 # Audit questions phrased as "who ..." are an audit-log request, not a knowledge question.
-_WHO_ACCESSED = re.compile(r'\bwho\s+(?:has\s+|have\s+|had\s+)?(?:accessed|opened|viewed|read|downloaded|touched|looked\s+at)\b', re.I)
+_WHO_ACCESSED = re.compile(r'\bwho\s+(?:has\s+|have\s+|had\s+|is\s+|was\s+)?(?:been\s+)?(?:accessed|accessing|opened|opening|viewed|viewing|read|reading|downloaded|downloading|touched|touching|looked\s+at|looking\s+at)\b', re.I)
 # State-changing verbs: a clause starting with one of these but matching no rule is "unsure" -> cheap model check.
 _BROAD = re.compile(r'(?:approve|reject|grant|revoke|assign|promote|publish|delete|remove|create|build|file|raise|close|send|post|update|modify|change|edit|'
                     r'disable|enable|register|add|set|make|give|submit|transition|escalate|cancel|reset|deploy|execute|trigger|run|invite|export|'
@@ -69,24 +80,26 @@ _BROAD = re.compile(r'(?:approve|reject|grant|revoke|assign|promote|publish|dele
 # A request that is really about information (policy, procedure, "what does ... say") stays normal chat.
 _KNOWLEDGE = re.compile(r'\b(what|whats|what\'s|why|how|which|procedure|procedures|process|guideline|guidelines|says?|means?|mean|explain|'
                         r'requirements?|about|definition|difference|summari[sz]e|summary|example|examples)\b', re.I)
-_QUESTION_START = re.compile(r'^(?:what|whats|what\'s|who|whom|why|how|when|where|which|is|are|was|were|does|do|did|has|have|had|should|shall|am|can i|could i|may i)\b', re.I)
+_QUESTION_START = re.compile(r'^(?:what|whats|what\'s|who|whom|why|how|when|where|which|is|are|was|were|does|do|did|has|have|had|should|shall|am)\b', re.I)
 _SPLIT = re.compile(r'[.?!;\n]+|,\s+|\s+(?:and|then|also|but)\s+', re.I)
-_FILLERS = ("go ahead and", "i would like you to", "i'd like you to", "i would like to", "i'd like to", "i want you to", "i need you to",
-            "i want to", "i need to", "i wish to", "help me to", "help me", "can you", "could you", "would you", "will you", "can u",
-            "you should", "you must", "you can", "let me", "let us", "please", "pls", "kindly", "actually", "okay", "ok", "hey", "hi",
-            "so", "then", "and", "also", "now", "just", "to")
+_LEAD = re.compile(
+    r"^(?:go\s+ahead\s+and|i\s+would\s+like\s+you\s+to|i'd\s+like\s+you\s+to|i\s+would\s+like\s+to|i'd\s+like\s+to|i\s+want\s+you\s+to|i\s+need\s+you\s+to|"
+    r"i\s+want\s+to|i\s+need\s+to|i\s+wish\s+to|i\s+was\s+wondering\s+(?:if|whether)(?:\s+you\s+(?:could|can|might|would))?|i\s+wonder\s+(?:if|whether)(?:\s+you\s+(?:could|can))?|"
+    r"do\s+you\s+think\s+(?:you|i)\s+(?:can|could)|any\s+chance\s+(?:you|i)\s+(?:can|could)|is\s+there\s+(?:a|any)\s+way\s+(?:to|for\s+me\s+to|i\s+can|you\s+can)|"
+    r"(?:is|would|will|could|might)\s+it\s+(?:be\s+)?possible\s+(?:for\s+(?:me|you)\s+)?to|it\s+is\s+possible\s+to|it's\s+possible\s+to|possible\s+to|"
+    r"(?:let\s+me\s+know|tell\s+me|i'd\s+like\s+to\s+know|i\s+would\s+like\s+to\s+know|wondering|i\s+wonder)\s+(?:if|whether)|if\s+(?:i|you)\s+(?:can|could)|"
+    r"(?:am\s+i|are\s+we)\s+(?:able|allowed|permitted)\s+to|(?:can|could|would|will|may)\s+(?:you|u|i)|help\s+me\s+to|help\s+me|you\s+should|you\s+must|you\s+can|"
+    r"let\s+me|let\s+us|please|pls|kindly|actually|okay|ok|hey|hi|so|then|and|also|now|just|to)(?![A-Za-z0-9'])[\s,:-]*", re.I)
 
 
 def _clauses(text: str):
     for raw in _SPLIT.split(text or ''):
         clause = (raw or '').strip(' \t"\'-*`>')
-        changed = True
-        while clause and changed:
-            changed = False
-            low = clause.lower()
-            for filler in _FILLERS:
-                if low == filler or low.startswith(filler) and not low[len(filler)].isalnum():
-                    clause = clause[len(filler):].lstrip(' ,:-'); changed = True; break
+        while True:
+            stripped = _LEAD.sub('', clause, count=1)
+            if stripped == clause:
+                break
+            clause = stripped
         if clause:
             yield clause
 
@@ -97,6 +110,8 @@ def classify_rules(text: str) -> tuple[str | None, bool]:
     text = (text or '')[:1000]
     if _WHO_ACCESSED.search(text):
         return 'audit', False
+    if _ACCESS_SEEKING.search(text):
+        return 'manage_access', False
     unsure = False
     for clause in _clauses(text):
         if _QUESTION_START.match(clause) or _KNOWLEDGE.search(clause):
@@ -110,6 +125,9 @@ def classify_rules(text: str) -> tuple[str | None, bool]:
                 return category, False
         if _BROAD.match(clause):
             unsure = True
+    # Indirect phrasing the rules cannot parse: a polite *request* that mentions something sensitive gets the tiny model check.
+    if not unsure and _REQUEST_FORM.search(text) and _SIGNAL.search(text) and not _KNOWLEDGE.search(text) and not _QUESTION_START.match(text.strip()):
+        unsure = True
     return None, unsure
 
 
