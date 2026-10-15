@@ -13,7 +13,10 @@ interface Approval {
   node_id: string; title: string; requester: string; requester_name?: string; status: string; actions: ApprovalAction[]
   created_at: string; can_decide: boolean; approver_names?: string[]; approver_group?: { id: string; name: string } | null; approver_roles?: string[]
   payload?: Record<string, unknown> | null; message?: string; executions?: { node_id: string; status: string; result: Record<string, unknown> | null }[]
+  trigger?: { type: string; label?: string; run_as_name?: string } | null
 }
+// "Triggered by Drive file …", "Scheduled, subscriber priya"; manual runs show nothing extra.
+const triggerLine = (a: Approval) => a.trigger?.label ? `${a.trigger.label}${a.trigger.run_as_name ? ` · runs as ${a.trigger.run_as_name}` : ''}` : ''
 type Filter = 'all' | 'runs' | 'pub'
 const kindOf = (a: Approval) => a.kind ?? (a.run_id ? 'run_action' : 'publish_request')
 const str = (v: unknown) => typeof v === 'string' ? v : ''
@@ -122,6 +125,7 @@ function RunApprovalCard({ a, onDone }: { a: Approval; onDone: (id: string) => v
   return <div className="card apc">
     <div><h3>{a.title || 'Approval request'}</h3>
       <p>Requested by {by} · {a.workflow_name} run · {day(a.created_at)}</p>
+      {triggerLine(a) && <p>{triggerLine(a)}</p>}
       {reason && <p>{reason}</p>}</div>
     {a.actions.map((x, i) => <ActionPreview key={`${x.node_id}-${i}`} action={x} />)}
     <Decision a={a} busy={busy}>

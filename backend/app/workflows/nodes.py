@@ -19,6 +19,8 @@ from ..telemetry import record_approval, record_guardrail
 from . import guardrails as G
 from .engine import NodeFailure, NodeResult, RunCtx, emit, model_call, step, _audit, ensure_evidence_text, idempotency_key
 from .registry import AGENT_READ_TOOLS, WRITE_TOOLS, canonical_action
+
+AUTOMATIC_TRIGGERS = ('jira_issue_created', 'drive_file_added', 'schedule', 'jira_issue_poll')
 from .validate import actions_after, graph, tool_allowed
 
 ISSUE_KEY = re.compile(r'^[A-Z][A-Z0-9]{0,19}-\d{1,9}$')
@@ -448,6 +450,27 @@ def parse_since(value) -> float:
     return now_s - min(max(seconds, 60.0), 30 * 86400.0)
 
 
+async def _drive_get_file(ctx: RunCtx, node, file_id: str) -> dict:
+    """Read one Drive file inside the allowed folders with the invoker's (or run-as user's) own access; adds it as evidence."""
+    from ..contracts import SourceError
+    if 'drive' not in ctx.eff['allowed_sources']:
+        raise NodeFailure('source_not_allowed')
+    adapter, access = await _access(ctx, 'drive')
+    try:
+        async with asyncio.timeout(settings().source_timeout + 5):
+            doc = await adapter.read(file_id.strip(), access)
+    except (SourceError, TimeoutError):
+        _audit(ctx, 'source.read', 'denied', 'not_available', node_id=node['id'], provider='drive', container=access.collection,
+               resource_ids=[file_id[:200]], decision={file_id[:200]: 'denied'})
+        raise NodeFailure('source_not_available') from None
+    _audit(ctx, 'source.read', node_id=node['id'], provider='drive', container=doc.container, resource_ids=[doc.document_id],
+           decision={doc.document_id: 'allowed'})
+    label = ctx.add_evidence(kind='document', provider='drive', document_id=doc.document_id, container=doc.container,
+                             connection_id=access.connection_id, version=doc.version, content_hash=doc.content_hash, modified_at=doc.modified_at,
+                             title=doc.title, text=doc.text[:settings().max_excerpt_chars], url=doc.canonical_url, node_id=node['id'])
+    return {'file_id': doc.document_id, 'name': doc.title[:200], 'evidence_label': label}
+
+
 async def _slack_read_channel(ctx: RunCtx, node, channel: str, since) -> dict:
     """Messages and threads of one allowed channel in a time window, read with the invoker's (or run-as user's) own Slack token.
     A channel the person is not a member of is 'not available' (never confirmed to exist)."""
@@ -509,13 +532,56 @@ async def tool_builtin(ctx: RunCtx, node):
         ctx.log(node['id'], f"Result ok -> {out['evidence_label']}")
         return NodeResult(output=out, persist=persist, summary=f"{out['issue_key']} -> {out['evidence_label']}", warnings=warnings)
     if tool == 'jira.search':
-        out = await _jira_search(ctx, node, str(params.get('jql') or ''), int(params.get('max_results') or 5))
+        try:
+            out = await _jira_search(ctx, node, str(params.get('jql') or ''), int(params.get('max_results') or 5))
+        except NodeFailure as exc:
+            if exc.code not in ('source_not_connected', 'source_not_available'):
+                raise
+            # No Jira access for this person (or the search failed): no evidence from it; the run continues.
+            ctx.log(node['id'], 'No readable Jira issues with your access; continuing without them.', 'warn')
+            return NodeResult(output={'issues': [], 'note': 'not_available'}, summary='0 issue(s)', warnings=warnings)
         persist = {'issues': [{k: v for k, v in i.items() if k != 'summary'} for i in out['issues']]}
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'count': len(out['issues'])})
         ctx.log(node['id'], f"Result ok: {len(out['issues'])} readable issue(s)")
         return NodeResult(output=out, persist=persist, summary=f"{len(out['issues'])} issue(s)", warnings=warnings)
+    if tool == 'drive.get_file':
+        out = await _drive_get_file(ctx, node, str(params.get('file_id') or ''))
+        emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'evidence_label': out['evidence_label']})
+        ctx.log(node['id'], f"Result ok -> {out['evidence_label']}")
+        return NodeResult(output=out, summary=f"Drive file -> {out['evidence_label']}", warnings=warnings)
+    if tool in ('access.inventory', 'audit.user_activity'):
+        from . import admin_tools
+        if not admin_tools.allowed_for(ctx.user):
+            raise NodeFailure('tool_not_permitted')  # admins and auditors only
+        try:
+            if tool == 'access.inventory':
+                result = await admin_tools.access_inventory(ctx.user, str(params.get('user_email') or ''))
+                title = f"Access inventory: {result['email']}"
+            else:
+                result = await asyncio.to_thread(admin_tools.user_activity, str(params.get('username') or params.get('user_email') or ''),
+                                                 int(params.get('days') or 30))
+                title = f"App activity: {result.get('username') or 'unknown account'} ({result['days']} days)"
+        except (ValueError, TimeoutError):
+            raise NodeFailure('invalid_input') from None
+        label = ctx.add_evidence(kind='tool', provider='app', document_id=f"{tool}:{node['id']}", container=tool, title=title,
+                                 text=result['text'][:settings().max_excerpt_chars], node_id=node['id'])
+        _audit(ctx, 'tool.' + tool, node_id=node['id'], details={'checked': [c['source'] for c in result.get('checks', []) if c['status'] == 'checked']}
+               if tool == 'access.inventory' else {'days': result['days'], 'found': result['found']})
+        out = {k: v for k, v in result.items() if k != 'text'}
+        out['evidence_label'] = label
+        emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'evidence_label': label})
+        ctx.log(node['id'], f'Result ok -> {label}')
+        return NodeResult(output=out, summary=f'{title} -> {label}', warnings=warnings)
     if tool == 'slack.read_channel':
-        out = await _slack_read_channel(ctx, node, str(params.get('channel') or ''), params.get('since'))
+        try:
+            out = await _slack_read_channel(ctx, node, str(params.get('channel') or ''), params.get('since'))
+        except NodeFailure as exc:
+            if exc.code in ('destination_not_allowed', 'source_not_allowed'):
+                raise
+            # Not connected or not a member: no evidence from this channel; the run continues with what is readable.
+            ctx.log(node['id'], 'No readable messages from this channel with your access; continuing without them.', 'warn')
+            return NodeResult(output={'channel': str(params.get('channel') or '').lstrip('#'), 'messages': 0, 'evidence_label': None,
+                                      'note': 'not_available'}, summary='No readable messages', warnings=warnings)
         emit(ctx.run_id, 'tool_result', {'node_id': node['id'], 'tool': 'builtin:' + tool, 'ok': True, 'count': out['messages']})
         ctx.log(node['id'], f"Result ok: {out['messages']} message(s) in #{out['channel']} since {out['since'][:16]}" +
                 (f" -> {out['evidence_label']}" if out.get('evidence_label') else ''))
@@ -552,7 +618,8 @@ async def _write(ctx: RunCtx, node, tool: str, warnings):
         index = next(i for i, x in enumerate(governing.actions) if x.get('node_id') == node['id'])
         params = dict(governing.actions[index]['params'])  # the exact previewed payload, executed verbatim
         approval_id = governing.id
-    elif required:
+    elif required or ctx.trigger in AUTOMATIC_TRIGGERS:
+        # Automatic runs (nobody clicked Run) may only write through an approval node, whatever the policy says.
         raise NodeFailure('approval_missing')
     else:
         params, index, approval_id = ctx.render((node.get('config') or {}).get('params') or {}, warnings), 0, None
@@ -829,7 +896,8 @@ async def output_node(ctx: RunCtx, node):
 
 
 EXECUTORS = {
-    'trigger.manual': trigger, 'trigger.chat': trigger, 'knowledge.retrieve': knowledge_retrieve, 'llm.generate': llm_generate,
+    'trigger.manual': trigger, 'trigger.chat': trigger, 'trigger.jira_issue_created': trigger, 'trigger.drive_file_added': trigger,
+    'trigger.schedule': trigger, 'knowledge.retrieve': knowledge_retrieve, 'llm.generate': llm_generate,
     'agent': agent, 'tool.mcp': tool_mcp, 'tool.builtin': tool_builtin, 'logic.router': logic_router,
     'guardrail.input': guardrail_input, 'guardrail.output': guardrail_output, 'human.approval': human_approval, 'output': output_node,
 }

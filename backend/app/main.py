@@ -24,7 +24,10 @@ async def lifespan(app):
     for rid in unfinished: terminal(rid,'failed','app_restarted')
     from .workflows import engine as workflow_engine
     workflow_engine.recover_on_startup()
+    from .workflows import triggers
+    triggers.start()  # one background loop for Jira/Drive polling and schedules (advisory-locked)
     yield
+    await triggers.stop()
     await workflow_engine.shutdown()
     for rid in list(tasks): await cancel_run(rid)
     provider.shutdown()
@@ -76,7 +79,8 @@ from .audit.api import router as audit_router
 from .admin.api import router as admin_router
 from .workflows.debug import router as workflow_debug_router
 from .sources_api import router as sources_router
-for _router in (admin_router, workflows_router, workflow_debug_router, copilot_router, mcp_router, audit_router, sources_router): app.include_router(_router, prefix='/api')
+from .workflows.triggers import router as triggers_router
+for _router in (admin_router, workflows_router, workflow_debug_router, copilot_router, mcp_router, audit_router, sources_router, triggers_router): app.include_router(_router, prefix='/api')
 
 @app.get('/api/studio/registry')
 def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
@@ -259,7 +263,8 @@ async def conversation_agent_run(id:str,body:AgentRunBody,request:Request,user:U
         audit(db,user.id,'access.workflows','denied','not_available'); raise HTTPException(404,'not_found')
     if workflow_engine.active_count()>=settings().workflow_max_active: raise HTTPException(429,'run_capacity_reached')
     try:
-        run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=(row.spec.get('trigger') or {}).get('type','manual'))
+        from .workflows.triggers import invocation_trigger
+        run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=invocation_trigger(row.spec))
     except ValueError as exc:
         code=str(exc)
         if code=='validation_failed':

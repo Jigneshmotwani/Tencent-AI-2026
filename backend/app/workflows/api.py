@@ -157,6 +157,9 @@ def run_summary(db, run: WorkflowRun) -> dict:
                                          'steps_used', 'tokens_used', 'cost_usd', 'error_code', 'created_at', 'finished_at', 'latency_ms',
                                          'paused_node_id', 'model_alias')}
     out['outputs'] = run.outputs or {}
+    out['trigger_info'] = dict(run.trigger_info or {})
+    owner = db.get(User, run.owner_id)
+    out['runs_as'] = (owner.name or owner.username) if owner else ''
     out['workflow_name'] = wf.name if wf else ''
     out['grafana_trace_url'] = grafana_trace_url(run.trace_id) if run.trace_id else None
     return out
@@ -219,10 +222,8 @@ def workflows_list(user: User = Depends(identity.current_user), db: DBSession = 
 @router.get('/workflow-templates')
 def templates_list(user: User = Depends(identity.current_user)):
     identity.require_capability(user, 'builder')
-    try:
-        from .templates import TEMPLATES
-    except ImportError:
-        TEMPLATES = {}
+    from .templates import studio_templates
+    TEMPLATES = studio_templates()
     return [{'key': k, 'name': t.get('name', k), 'description': t.get('description', ''), 'icon': t.get('icon', 'flow'),
              'node_count': len(t.get('nodes', []))} for k, t in TEMPLATES.items()]
 
@@ -247,10 +248,8 @@ def workflows_create(body: NewWorkflow, request: Request, user: User = Depends(i
 @router.post('/workflows/from-template')
 def workflows_from_template(body: FromTemplate, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
-    try:
-        from .templates import TEMPLATES
-    except ImportError:
-        TEMPLATES = {}
+    from .templates import studio_templates
+    TEMPLATES = studio_templates()
     if body.template_key not in TEMPLATES:
         raise HTTPException(404, 'template_not_found')
     spec = copy.deepcopy(TEMPLATES[body.template_key])
@@ -388,13 +387,16 @@ def workflow_restore(wf_id: str, version: int, request: Request, user: User = De
 @router.get('/catalog')
 def catalog(user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user')
+    from .triggers import subscribed_ids, trigger_of
+    mine = subscribed_ids(db, user)
     out = []
     for wf in db.scalars(select(Workflow).where(Workflow.status == 'published').order_by(Workflow.name)):
         pub = _published_for(db, wf, user)
         if pub is None:
             continue
-        out.append({**summary(db, wf, user), 'inputs': pub.spec.get('inputs', []), 'trigger': pub.spec.get('trigger', {}),
-                    'version': pub.version})
+        kind, config, _ = trigger_of(pub.spec or {})
+        out.append({**summary(db, wf, user), 'inputs': pub.spec.get('inputs', []), 'trigger': {'type': kind, 'config': config},
+                    'version': pub.version, 'scheduled': kind == 'schedule', 'subscribed': wf.id in mine})
     return out
 
 
@@ -422,7 +424,8 @@ async def run_create(wf_id: str, body: RunBody, request: Request, user: User = D
     if engine.active_count() >= settings().workflow_max_active:
         raise HTTPException(429, 'run_capacity_reached')
     try:
-        run = engine.create_run(db, wf, row, user, body.inputs, trigger=(row.spec.get('trigger') or {}).get('type', 'manual'))
+        from .triggers import invocation_trigger
+        run = engine.create_run(db, wf, row, user, body.inputs, trigger=invocation_trigger(row.spec))
     except ValueError as exc:
         code = str(exc)
         if code == 'validation_failed':

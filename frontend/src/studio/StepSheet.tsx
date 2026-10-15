@@ -6,6 +6,7 @@ import { Icon } from '../ui/icons'
 import { Button, Field, Input, Select, Sheet, Switch, Textarea, useUid } from '../ui/kit'
 import type { Group } from './api'
 import { defaultConfig, humanCase, schemaHas } from './model'
+import { TRIGGER_TYPES, TriggerStatus } from './TriggerStatus'
 
 const PII = [['nric', 'NRIC'], ['iban', 'Account no.'], ['card', 'Card no.'], ['phone', 'Phone'], ['email', 'Email'], ['uen', 'UEN']] as const
 const WITHIN = ['4 hours', '1 business day', '2 business days']
@@ -115,6 +116,24 @@ export function StepSheet({ node, spec, registry, groups, readOnly, onSave, onDe
         onChange={e => set({ respond_within: e.target.value })} options={WITHIN} /></Field>}
       <Field label="Message to approver" htmlFor={id('msg')}><Textarea id={id('msg')} rows={3} disabled={dis} maxLength={hasMsg ? 1000 : 200}
         value={hasMsg ? s(cfg.message) : s(cfg.title)} onChange={e => set(hasMsg ? { message: e.target.value } : { title: e.target.value })} /></Field>
+    </>
+  } else if (type.startsWith('trigger.')) {
+    const kinds = TRIGGER_TYPES.filter(([k]) => registry.node_types[k])
+    const setKind = (kind: string) => { if (kind !== type) { setType(kind); setCfg(structuredClone(defaultConfig(registry.node_types[kind]))); setRaw(null) } }
+    body = <>{name}
+      <Field label="Type" htmlFor={id('ttype')}><Select id={id('ttype')} value={type} disabled={dis} onChange={e => setKind(e.target.value)}
+        options={kinds.map(([value, l]) => ({ value, label: l }))} /></Field>
+      {type === 'trigger.jira_issue_created' && <Field label="Jira filter (JQL)" htmlFor={id('jql')} hint="Only the allowed projects are searched. Checked every 60 s; each new issue starts one run.">
+        <Input id={id('jql')} value={s(cfg.jql)} disabled={dis} maxLength={1000} placeholder="project = INC AND priority in (P1, P2)" onChange={e => set({ jql: e.target.value })} /></Field>}
+      {type === 'trigger.drive_file_added' && <Field label="Drive folder ID" htmlFor={id('folder')} hint="An allowed folder or a folder inside one. Checked every 60 s; each new file starts one run.">
+        <Input id={id('folder')} value={s(cfg.folder_id)} disabled={dis} maxLength={200} onChange={e => set({ folder_id: e.target.value })} /></Field>}
+      {type === 'trigger.schedule' && <>
+        <Field label="Cron" htmlFor={id('cron')} hint="Five fields, e.g. 0 9 * * 1 for Mondays at 09:00."><Input id={id('cron')} className="mono" value={s(cfg.cron)} disabled={dis} maxLength={100} onChange={e => set({ cron: e.target.value })} /></Field>
+        <Field label="Timezone" htmlFor={id('tz')}><Input id={id('tz')} value={s(cfg.timezone)} disabled={dis} maxLength={64} placeholder="Asia/Singapore" onChange={e => set({ timezone: e.target.value || undefined })} /></Field>
+      </>}
+      {(type === 'trigger.jira_issue_created' || type === 'trigger.drive_file_added') && spec.inputs.length > 0 && <Field label="Fills input" htmlFor={id('tin')}>
+        <Select id={id('tin')} value={s(cfg.input) || spec.inputs[0].name} disabled={dis} onChange={e => set({ input: e.target.value })} options={spec.inputs.map(i => ({ value: i.name, label: i.name }))} /></Field>}
+      {spec.id && <TriggerStatus workflowId={spec.id} nodeType={type} dirty={type !== node.type || JSON.stringify(cfg) !== JSON.stringify(node.config ?? {})} />}
     </>
   } else if (type === 'logic.router') {
     body = <>{name}

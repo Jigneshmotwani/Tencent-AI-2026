@@ -12,6 +12,7 @@ export interface CiteRef { evidence_id: string; label: string; provider: string;
 /** GET /catalog item: a published agent this user may run. */
 export interface Agent extends WorkflowSummary {
   inputs?: InputDef[]; version?: number; category?: string; audience_label?: string; owner_name?: string; display_status?: string
+  scheduled?: boolean; subscribed?: boolean
 }
 
 export interface ApprovalView extends ApprovalRequest {

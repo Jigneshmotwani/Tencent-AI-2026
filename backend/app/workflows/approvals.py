@@ -113,7 +113,9 @@ def serialize(db, approval: Approval, user: User, gids: set[str] | None = None) 
     group = db.get(Group, approval.approver_group_id) if approval.approver_group_id else None
     execs = list(db.scalars(select(ActionExecution).where(ActionExecution.approval_id == approval.id).order_by(ActionExecution.created_at)))
     publish = approval.kind == 'publish_request'
-    return {'id': approval.id, 'kind': approval.kind or 'run_action', 'run_id': approval.run_id, 'workflow_id': approval.workflow_id,
+    run = db.get(WorkflowRun, approval.run_id) if approval.run_id else None
+    trigger = {'type': run.trigger, **(run.trigger_info or {})} if run is not None else None
+    return {'id': approval.id, 'trigger': trigger, 'kind': approval.kind or 'run_action', 'run_id': approval.run_id, 'workflow_id': approval.workflow_id,
             'workflow_name': wf.name if wf else '',
             'workflow_version': approval.workflow_version, 'node_id': approval.node_id, 'title': approval.title,
             'requester': requester.username if requester else '', 'requester_name': (requester.name or requester.username) if requester else '',
