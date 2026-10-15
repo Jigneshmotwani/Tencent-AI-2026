@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, safeError } from '../api'
 import type { NodeRunState, WorkflowSpec } from '../contracts'
+import { triggerText } from '../contracts'
 import { Icon } from '../ui/icons'
 import { Button, Dot, Tile, cx, fmtSecs } from '../ui/kit'
 import { navigate } from '../ui/router'
@@ -255,6 +256,9 @@ function RunCardBody({ runId, detail, error, agents, onCite, onDraft }: { runId:
       <Tile {...agentLook(agent ?? { name: run.workflow_name }, spec)} /><b>{name}</b><span className="pill cobalt">v{run.workflow_version}</span>
       <span className="st"><span className={cx('dotx', 'rc-dot', dot)} />{stText}</span>
     </div>
+    <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      {run.trigger === 'schedule' && <span className="pill">Scheduled</span>}
+      <span>Runs as {run.runs_as || run.trigger_info?.run_as_name || 'you'} · {triggerText(run)}</span></p>
     <ul className="rc-steps">{rows.map(({ n, label }) => {
       const [cls, icon, d] = stepState(n)
       return <li key={n.node_id} className={cx(cls === 'wait' && 'wait', cls === 'pend' && 'pend')}><span className={cx('si', cls)}>{icon}</span>{label}{d && <span className="d">{d}</span>}</li>

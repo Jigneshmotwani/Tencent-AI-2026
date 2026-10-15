@@ -24,7 +24,10 @@ async def lifespan(app):
     for rid in unfinished: terminal(rid,'failed','app_restarted')
     from .workflows import engine as workflow_engine
     workflow_engine.recover_on_startup()
+    from .workflows import triggers
+    triggers.start()  # one background loop for Jira/Drive polling and schedules (advisory-locked)
     yield
+    await triggers.stop()
     await workflow_engine.shutdown()
     for rid in list(tasks): await cancel_run(rid)
     provider.shutdown()
@@ -76,7 +79,8 @@ from .audit.api import router as audit_router
 from .admin.api import router as admin_router
 from .workflows.debug import router as workflow_debug_router
 from .sources_api import router as sources_router
-for _router in (admin_router, workflows_router, workflow_debug_router, copilot_router, mcp_router, audit_router, sources_router): app.include_router(_router, prefix='/api')
+from .workflows.triggers import router as triggers_router
+for _router in (admin_router, workflows_router, workflow_debug_router, copilot_router, mcp_router, audit_router, sources_router, triggers_router): app.include_router(_router, prefix='/api')
 
 @app.get('/api/studio/registry')
 def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depends(get_db)):
@@ -93,6 +97,15 @@ def studio_registry(user:User=Depends(identity.current_user),db:DBSession=Depend
     if not cfg.slack_enabled:  # hide Slack tools until Slack is configured
         reg={**reg,'builtin_tools':[t for t in reg['builtin_tools'] if not t.startswith('slack.')],'write_tools':[t for t in reg['write_tools'] if not t.startswith('slack.')]}
     return {**reg,'mcp_tools':list_tools(db,user_id=user.id),'models':models,'sources':cfg.enabled_sources,'policy':policy}
+
+@app.get('/api/app-config')
+def app_config(user:User=Depends(identity.current_user)):
+    """Demo-specific display values from the active demo pack (suggestion chips, org name). Nothing here grants access."""
+    from .scopes import pack_info
+    info=pack_info(); app_info=info.get('app') or {}
+    return {'pack':info.get('name') or None,'example':bool(info.get('example')),'org_name':app_info.get('org_name') or '',
+            'timezone':app_info.get('timezone') or 'UTC','audit_suggestions':list(info.get('audit_suggestions') or []),
+            'workspace_suggestions':list(info.get('workspace_suggestions') or [])}
 
 @app.middleware('http')
 async def response_security(request, call_next):
@@ -138,10 +151,7 @@ async def health():
                 services[name]='ready' if response.is_success or (name=='collector' and response.status_code<500) else 'unavailable'
             except httpx.HTTPError: services[name]='unavailable'
     return {'status':'ready' if database=='ready' else 'degraded','database':database,**services,
-        'integrations':{'drive':bool(cfg.google_client_id and cfg.google_client_secret and cfg.google_folder_id),
-        'confluence':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.confluence_space_key),
-        'jira':bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.jira_projects),
-        'slack':bool(cfg.slack_client_id and cfg.slack_client_secret and cfg.slack_team_id),
+        'integrations':{**{p:v['configured'] for p,v in connections.availability().items()},
         'model':bool(cfg.model_id and cfg.model_api_key)},'model_alias':cfg.model_alias,
         'inference_verified':inference_verified,'runtime':'local LiteLLM; provider configured by MODEL_ID'}
 class NewConversation(BaseModel): title:str=Field(default='New conversation',max_length=100)
@@ -253,7 +263,8 @@ async def conversation_agent_run(id:str,body:AgentRunBody,request:Request,user:U
         audit(db,user.id,'access.workflows','denied','not_available'); raise HTTPException(404,'not_found')
     if workflow_engine.active_count()>=settings().workflow_max_active: raise HTTPException(429,'run_capacity_reached')
     try:
-        run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=(row.spec.get('trigger') or {}).get('type','manual'))
+        from .workflows.triggers import invocation_trigger
+        run=workflow_engine.create_run(db,wf,row,user,body.inputs,trigger=invocation_trigger(row.spec))
     except ValueError as exc:
         code=str(exc)
         if code=='validation_failed':

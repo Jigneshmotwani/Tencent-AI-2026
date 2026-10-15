@@ -1,0 +1,11 @@
+# EXAMPLE. Built from the generic `contractor_offboarding` template.
+name: Contractor Offboarding Sweep
+description: When an offboarding ticket lands, inventories the contractor's access and drafts a revocation checklist.
+owner: weiling
+status: draft
+audience: {kind: only_me}
+template: contractor_offboarding
+template_settings:
+  jql: project = IT AND summary ~ "offboarding"
+  it_project: IT
+  approver_group: security

@@ -1,0 +1,62 @@
+name: Audit Explorer
+description: Answers questions about activity and access
+icon: search
+owner: auditor
+status: in_review
+template_key: audit_explorer
+spec:
+  name: Audit Explorer
+  icon: search
+  description: Answers questions about activity and access
+  trigger:
+    type: chat
+    config: {}
+  inputs:
+  - name: question
+    type: string
+    required: true
+    description: e.g. Who opened STR case files this week?
+  nodes:
+  - id: question
+    type: trigger.chat
+    label: Question
+    config: {}
+    position:
+      x: 0
+      y: 0
+  - id: audit_answer
+    type: output
+    label: Open in Audit
+    config:
+      template: '## Audit question
+
+        {{inputs.question}}
+
+
+        Ask this in Audit to filter the hash-chained log.'
+    position:
+      x: 0
+      y: 110
+  edges:
+  - id: e_question_audit_answer
+    source: question
+    target: audit_answer
+  policies:
+    model_alias: ''
+    max_steps: 5
+    max_tokens_per_run: 5000
+    budget_usd: 0.5
+    allowed_sources: []
+    allowed_tools: []
+    approval_required_for:
+    - jira.comment
+    - jira.transition
+    - jira.create_issue
+  audience: &id001
+    kind: group
+    groups:
+    - Audit
+    - Compliance leads
+    roles: []
+    users: []
+audience: *id001

@@ -25,7 +25,7 @@ from ..workflows.spec import WorkflowSpec, diff_specs
 from . import core
 
 router = APIRouter(tags=['copilot'])
-MODEL_MAX_TOKENS = 4096
+MODEL_MAX_TOKENS = 8192  # whole-workflow builds with two worked examples can exceed 4k output tokens
 
 
 class CopilotIn(BaseModel):
@@ -114,6 +114,8 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
         except ValueError:
             data, parse_error = {}, 'The reply was not a single valid JSON object.'
         ops, preview, warnings, unsupported = core.apply_sanitized(ctx, base, data.get('operations'), mode)
+        from ..workflows.triggers import sync_trigger
+        preview = sync_trigger(preview)
         unsupported = [str(u)[:300] for u in (data.get('unsupported') or []) if isinstance(u, (str, dict))][:10] + unsupported
         unsupported = list(dict.fromkeys(unsupported))
         validation = core.validate(preview, db, ctx)

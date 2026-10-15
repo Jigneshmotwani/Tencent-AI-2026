@@ -3,11 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import { safeError } from '../api'
 import type { StudioRegistry } from '../contracts'
 import { api } from '../api'
-import { Button, Menu, StatusPill, Tile, fmtDay, toast, type Cat } from '../ui/kit'
+import { Button, IconButton, Menu, Modal, StatusPill, Tile, fmtDay, toast, type Cat } from '../ui/kit'
 import { agentLook } from '../workspace/api'
 import type { IconName } from '../ui/icons'
 import { navigate, useRoute } from '../ui/router'
-import { type TemplateInfo, type WorkflowRow, createBlank, createFromTemplate, listTemplates, listWorkflows } from './api'
+import { type TemplateInfo, type WorkflowRow, createBlank, createFromTemplate, deleteWorkflow, listTemplates, listWorkflows } from './api'
 import { StudioEditor } from './StudioEditor'
 import './studio.css'
 
@@ -37,7 +37,19 @@ function StudioHome() {
   const [error, setError] = useState('')
   const [menu, setMenu] = useState(false)
   const [busy, setBusy] = useState('')
+  const [doomed, setDoomed] = useState<WorkflowRow | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const newBtn = useRef<HTMLButtonElement>(null)
+  const remove = async () => {
+    if (!doomed) return
+    setDeleting(true)
+    try {
+      const r = await deleteWorkflow(doomed.id)
+      setRows(list => list?.filter(x => x.id !== doomed.id) ?? list)
+      toast(`Deleted ${doomed.name}` + (r.runs_cancelled ? ` · ${r.runs_cancelled} run${r.runs_cancelled === 1 ? '' : 's'} stopped` : ''))
+      setDoomed(null)
+    } catch (e) { toast(safeError(e)) } finally { setDeleting(false) }
+  }
   const tplRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     listWorkflows().then(setRows).catch(e => { setRows([]); setError(safeError(e)) })
@@ -60,10 +72,10 @@ function StudioHome() {
     </div>
     {error && <div className="errbox" role="alert" style={{ fontFamily: 'var(--f-ui)' }}>{error}</div>}
     <div className="tbl ag-tbl"><table>
-      <thead><tr><th>Name</th><th>Status</th><th>Version</th><th>Audience</th><th>Last edited</th><th>Owner</th></tr></thead>
+      <thead><tr><th>Name</th><th>Status</th><th>Version</th><th>Audience</th><th>Last edited</th><th>Owner</th><th><span className="sr-only">Actions</span></th></tr></thead>
       <tbody>
-        {rows === null && <tr><td colSpan={6} className="muted">Loading…</td></tr>}
-        {rows?.length === 0 && !error && <tr><td colSpan={6} className="muted">No agents yet. Use New agent to build one.</td></tr>}
+        {rows === null && <tr><td colSpan={7} className="muted">Loading…</td></tr>}
+        {rows?.length === 0 && !error && <tr><td colSpan={7} className="muted">No agents yet. Use New agent to build one.</td></tr>}
         {rows?.map(r => {
           const status = r.display_status ?? (r.status === 'published' && r.published_version != null && r.draft_version !== r.published_version ? 'draft' : r.status)
           const live = r.live_version ?? r.published_version
@@ -77,10 +89,19 @@ function StudioHome() {
             <td>{r.audience_label ?? ''}</td>
             <td>{fmtDay(r.updated_at)}</td>
             <td>{r.owner_name ?? r.owner}</td>
+            <td style={{ width: 44, textAlign: 'right' }}>{r.can_delete && <IconButton icon="trash" label={`Delete ${r.name}`}
+              onClick={e => { e.stopPropagation(); setDoomed(r) }} onKeyDown={e => e.stopPropagation()} />}</td>
           </tr>
         })}
       </tbody>
     </table></div>
+    <Modal open={!!doomed} onClose={() => !deleting && setDoomed(null)} title={`Delete ${doomed?.name ?? 'agent'}?`} label="Delete agent"
+      footer={<><Button size="sm" disabled={deleting} onClick={() => setDoomed(null)}>Cancel</Button>
+        <Button danger size="sm" disabled={deleting} onClick={() => void remove()}>{deleting ? 'Deleting…' : 'Delete agent'}</Button></>}>
+      <p style={{ margin: 0, color: 'var(--ink2)' }}>It disappears from Studio and from everyone's Workspace{doomed?.status === 'published' ? ', including people who use it today' : ''}.
+        Any run still in progress is stopped and its pending approvals are cancelled; triggers and subscriptions stop. Past runs and the audit
+        log are kept. This can't be undone from the app.</p>
+    </Modal>
     {templates.length > 0 && <>
       <h2 className="sec2">Templates</h2>
       <div className="tpls" ref={tplRef}>{templates.map(t => {

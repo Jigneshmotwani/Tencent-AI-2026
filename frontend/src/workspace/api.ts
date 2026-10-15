@@ -12,6 +12,7 @@ export interface CiteRef { evidence_id: string; label: string; provider: string;
 /** GET /catalog item: a published agent this user may run. */
 export interface Agent extends WorkflowSummary {
   inputs?: InputDef[]; version?: number; category?: string; audience_label?: string; owner_name?: string; display_status?: string
+  scheduled?: boolean; subscribed?: boolean
 }
 
 export interface ApprovalView extends ApprovalRequest {
@@ -23,7 +24,7 @@ export interface AgentRunDetail { run: WorkflowRun & { paused_node_id?: string |
 /** Evidence shown in the source sheet (chat: /evidence/{id}; agent runs: /workflow-runs/{id}/evidence/{label}). */
 export interface EvidenceView { id?: string; title: string; excerpt: string; canonical_url: string; location: string; modified_at: string | null; fetched_at: string; provider: string; changed?: boolean; synthetic?: boolean }
 
-export const TERMINAL_CHAT = new Set(['completed', 'failed', 'cancelled', 'denied'])
+export const TERMINAL_CHAT = new Set(['completed', 'failed', 'cancelled', 'denied', 'blocked'])
 export const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled', 'blocked_by_budget'])
 
 export function citesOf(message: Message): CiteRef[] {
@@ -73,10 +74,10 @@ const ICON_LOOK: Record<string, Look> = {
   'clipboard-check': { cat: 'appr', icon: 'usercheck' }, 'user-search': { cat: 'appr', icon: 'usercheck' }, building: { cat: 'appr', icon: 'usercheck' },
   db: { cat: 'data', icon: 'db' }, database: { cat: 'data', icon: 'db' },
 }
-/** Known agents by name, so a run card or list never falls back to a generic data glyph (KYB → usercheck). */
+/** Generic name keywords, so a run card or list never falls back to a generic data glyph when an agent has no icon. */
 const NAME_LOOK: [RegExp, Look][] = [
-  [/kyb|onboarding|due diligence/i, { cat: 'appr', icon: 'usercheck' }], [/policy/i, { cat: 'know', icon: 'book' }],
-  [/transaction|investigat/i, { cat: 'ai', icon: 'spark' }], [/incident/i, { cat: 'act', icon: 'zap' }], [/audit/i, { cat: 'act', icon: 'search' }],
+  [/review|onboard|offboard|access|due diligence/i, { cat: 'appr', icon: 'usercheck' }], [/policy|expert|catalog/i, { cat: 'know', icon: 'book' }],
+  [/investigat|radar|tracker/i, { cat: 'ai', icon: 'spark' }], [/incident|alert/i, { cat: 'act', icon: 'zap' }], [/audit/i, { cat: 'act', icon: 'search' }],
 ]
 export interface Look { cat: Cat; icon: IconName }
 /** An agent's tile: its `icon` when set, else its `category`, else the dominant node family of its spec. */

@@ -49,23 +49,24 @@ async def cancel_run(run_id):
         except asyncio.CancelledError: pass
     terminal(run_id,'cancelled')
 
-def refuse(run_id,user,decision,started,span):
+def refuse(run_id,user,decision,started,span,question=''):
     """Out-of-scope request: answer instantly with the fixed refusal. No retrieval and no answer model call."""
     with SessionLocal() as db:
         from .db import User
         run=db.get(Run,run_id); owner=db.get(User,user.id)
         assistant=db.scalar(select(Message).where(Message.run_id==run_id,Message.role=='assistant')); assistant.text=decision.text
         run.usage={**run.usage,**(decision.check_usage or {}),'status':'finalized' if decision.check_usage else 'not_requested','cost_status':'unknown'}
-        # Metadata only: the message text is never stored in the audit trail.
-        audit(db,user.id,'guardrail.chat','denied' if decision.kind=='denied' else 'allowed',
-              'insufficient_scope' if decision.kind=='denied' else 'use_page',run_id=run_id,
-              details={'category':decision.category,'required_page':decision.page,'detector':decision.detector,'kind':decision.kind})
+        # Every block is audited: who, the intent label, when, and at most 120 PII-masked characters of the user's own
+        # question (never source text). No retrieval and no answer-model call happened for this request.
+        audit(db,user.id,'guardrail.blocked','denied',decision.intent,run_id=run_id,
+              details={'intent':decision.intent,'category':decision.category,'required_page':decision.page,'detector':decision.detector,
+                       'kind':decision.kind,'excerpt':chat_guardrail.safe_excerpt(question)})
         db.commit(); usage=dict(run.usage)
         if decision.kind=='denied': record_scope_denial(user=owner.username if owner else user.id,category=decision.category)
     event(run_id,'guardrail',{'kind':decision.kind,'category':decision.category,'page':decision.page})
     event(run_id,'answer_delta',{'text':decision.text})
     event(run_id,'usage',{'usage':usage})
-    terminal(run_id,'completed',started=started,message_status='denied' if decision.kind=='denied' else None)
+    terminal(run_id,'completed',started=started,message_status=decision.kind if decision.kind in ('denied','blocked') else None)
     span.set_attribute('run.status','completed'); span.set_attribute('guardrail.chat',decision.kind)
 
 async def execute(run_id,user):
@@ -87,7 +88,7 @@ async def execute(run_id,user):
             with SessionLocal() as db:
                 decision = await chat_guardrail.check(db,user,question,run_id)
             if decision is not None:
-                refuse(run_id,user,decision,started,span); return
+                refuse(run_id,user,decision,started,span,question); return
             event(run_id,'retrieval_started')
             topic = search_topic(question,prior)
             docs, limitations = await retrieve(user,topic,run_id)
@@ -173,7 +174,7 @@ async def execute(run_id,user):
             from .prompt import NO_EVIDENCE_ANSWER, ADMIN_HINT
             verdict = check_answer(answer,evidence); final = answer
             if verdict['not_found']:
-                if ADMIN_HINT not in answer: final = answer.rstrip()+' '+ADMIN_HINT
+                final = NO_EVIDENCE_ANSWER  # the same sentence for every not-found answer (never names the subject)
             elif verdict['removed']:
                 final = verdict['text'] if verdict['supported'] and verdict['text'].strip() else NO_EVIDENCE_ANSWER
                 record_guardrail(guardrail='grounding',outcome='removed',workflow='chat')

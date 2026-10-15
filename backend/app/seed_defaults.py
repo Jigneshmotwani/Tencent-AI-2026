@@ -83,6 +83,13 @@ def ensure_budget_defaults(db) -> None:
     db.flush()
 
 
+def pack_active(db) -> bool:
+    """A demo pack was loaded (python -m backend.app.demo_pack): it owns users, groups, agents, labels and budgets, so the
+    built-in iteration 1-3 demo is not re-seeded at startup."""
+    from .db import PlatformPolicy
+    return db.get(PlatformPolicy, 'demo_pack') is not None
+
+
 def seed_defaults(db):
     from .governance.policies import ensure_default_policy
     from .mcp.registry import ensure_default_servers
@@ -90,6 +97,11 @@ def seed_defaults(db):
     ensure_default_policy(db)
     ensure_default_servers(db)
     ensure_demo_servers(db)
+    if pack_active(db):
+        from .admin.defaults import ensure_core_defaults
+        ensure_core_defaults(db)
+        db.commit()
+        return
     try:  # groups must exist before group-audience agents are seeded (idempotent; bootstrap calls it again)
         from .admin.defaults import ensure_directory_defaults
         ensure_directory_defaults(db)

@@ -235,6 +235,40 @@ class SlackConnector:
         return dataclasses.replace(doc, container=channel_id, fields={
             'channel_id': channel_id, 'channel_name': name, 'thread_ts': root_ts, 'reply_count': max(len(messages) - 1, 0)})
 
+    @source_operation
+    async def read_window(self, channel: str, oldest: float, context: AccessContext, max_messages: int = 150, max_threads: int = 10):
+        """(document, message count) for one member channel since `oldest` (epoch s): top-level messages oldest-first with
+        their thread replies. Only channels in the allowed list that this user is a member of."""
+        wanted = str(channel or '').strip().lstrip('#').lower()
+        channels = await collection(context)
+        channel_id = next((cid for cid, name in channels.items() if cid.lower() == wanted or name == wanted), None)
+        if channel_id is None:
+            raise SourceError('denied')
+        history = await call('conversations.history', context, {'channel': channel_id, 'oldest': f'{oldest:.6f}', 'limit': min(max_messages, 200)})
+        messages = [m for m in history.get('messages', []) if isinstance(m, dict) and TS_RE.fullmatch(str(m.get('ts', '')))
+                    and m.get('type') == 'message' and m.get('subtype') not in ('channel_join', 'channel_leave')][:max_messages]
+        messages.sort(key=lambda m: float(m['ts']))
+        lookups, lines, threads, count = [20], [], 0, 0
+        for message in messages:
+            name = await user_name(context, str(message.get('user', '')), lookups)
+            when = (ts_iso(str(message.get('ts'))) or '')[:16].replace('T', ' ')
+            lines.append(f"{name} ({when} UTC): {plain(message.get('text', ''))}")
+            count += 1
+            if int(message.get('reply_count') or 0) and threads < max_threads:
+                threads += 1
+                replies = await call('conversations.replies', context, {'channel': channel_id, 'ts': str(message['ts']), 'limit': 50})
+                for reply in [r for r in replies.get('messages', []) if isinstance(r, dict)][1:50]:
+                    rname = await user_name(context, str(reply.get('user', '')), lookups)
+                    rwhen = (ts_iso(str(reply.get('ts'))) or '')[:16].replace('T', ' ')
+                    lines.append(f"    reply from {rname} ({rwhen} UTC): {plain(reply.get('text', ''))}")
+                    count += 1
+        name = channels[channel_id]
+        since = (ts_iso(f'{oldest:.6f}') or '')[:16].replace('T', ' ')
+        latest = str(messages[-1]['ts']) if messages else f'{oldest:.6f}'
+        text = '\n'.join(lines) if lines else f'No messages in #{name} since {since} UTC.'
+        doc = document(f'{channel_id}:window', f'#{name} since {since} UTC', text, '', f'Slack channel #{name}', latest, ts_iso(latest))
+        return dataclasses.replace(doc, container=channel_id, fields={'channel_id': channel_id, 'channel_name': name, 'messages': count}), count
+
     # ---- writes ----
     @source_operation
     async def execute(self, action: str, params: dict, context: AccessContext, idempotency_key: str) -> dict:
@@ -263,7 +297,8 @@ async def writable_channel(context: AccessContext, channel) -> str:
     if not isinstance(channel, str) or not channel.strip() or len(channel) > 100:
         raise SourceError('denied')
     wanted = channel.strip().lstrip('#').lower()
-    writable = set(normalize(settings().slack_write_channels))
+    from ..scopes import slack_write_channels
+    writable = set(slack_write_channels())
     for cid, name in (await collection(context)).items():
         if (cid.lower() == wanted or name == wanted) and (cid.lower() in writable or name in writable):
             return cid

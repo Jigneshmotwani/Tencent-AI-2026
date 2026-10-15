@@ -27,6 +27,9 @@ export function nodeSubtitle(node: WfNode, spec: WorkflowSpec, groupName?: (id: 
   switch (node.type) {
     case 'trigger.manual': return spec.inputs.map(i => i.name).join(', ') || 'Manual start'
     case 'trigger.chat': return 'Chat message'
+    case 'trigger.jira_issue_created': return str(c.jql) ? `Jira: ${str(c.jql)}` : 'New Jira issue'
+    case 'trigger.drive_file_added': return 'New file in a Drive folder'
+    case 'trigger.schedule': return str(c.cron) ? `Schedule: ${str(c.cron)}${str(c.timezone) ? ' ' + str(c.timezone) : ''}` : 'Schedule'
     case 'tool.mcp': return str(c.server) || 'MCP tool'
     case 'knowledge.retrieve': {
       const src = Array.isArray(c.sources) ? c.sources as string[] : spec.policies?.allowed_sources ?? []

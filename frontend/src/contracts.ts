@@ -7,7 +7,7 @@ export interface InputDef { name: string; type: 'string' | 'number' | 'boolean';
 export interface Policies { model_alias: string; max_steps: number; max_tokens_per_run: number; budget_usd: number; allowed_sources: SourceProvider[]; allowed_tools: string[]; approval_required_for: string[] }
 export interface WorkflowSpec {
   id: string; version: number; status: 'draft' | 'published' | 'suspended' | 'archived'; name: string; description: string; icon: string
-  trigger: { type: 'manual' | 'chat' | 'jira_issue_poll'; config: Record<string, unknown> }
+  trigger: { type: 'manual' | 'chat' | 'jira_issue_poll' | 'jira_issue_created' | 'drive_file_added' | 'schedule'; config: Record<string, unknown> }
   inputs: InputDef[]; nodes: WfNode[]; edges: WfEdge[]; policies: Policies; audience: { roles: string[]; users: string[] }
 }
 export interface Port { name: string; type: 'any' | 'context' | 'evidence' | 'object' | 'text' }
@@ -25,7 +25,13 @@ export interface Validation { ok: boolean; errors: ValidationIssue[]; warnings: 
 // Runs. POST /api/workflows/{id}/runs {inputs, version?: 'draft'|'published'|number} -> {run_id}
 export type RunStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'blocked_by_budget'
 export type NodeStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'awaiting_approval'
-export interface WorkflowRun { id: string; workflow_id: string; workflow_name: string; workflow_version: number; status: RunStatus; trigger: string; inputs: Record<string, unknown>; outputs: Record<string, unknown>; trace_id: string; usage: Record<string, unknown>; steps_used: number; tokens_used: number; cost_usd: number; error_code: string | null; created_at: string; finished_at: string | null; latency_ms: number | null; grafana_trace_url?: string | null }
+export interface WorkflowRun { id: string; workflow_id: string; workflow_name: string; workflow_version: number; status: RunStatus; trigger: string; inputs: Record<string, unknown>; outputs: Record<string, unknown>; trace_id: string; usage: Record<string, unknown>; steps_used: number; tokens_used: number; cost_usd: number; error_code: string | null; created_at: string; finished_at: string | null; latency_ms: number | null; grafana_trace_url?: string | null
+  trigger_info?: { type?: string; label?: string; ref?: string; run_as_name?: string; run_as_reason?: string }; runs_as?: string }
+/** "Runs as Priya Raman · Scheduled, subscriber priya" — who an (automatic) run uses the access of, and what started it. */
+export function triggerText(run: Pick<WorkflowRun, 'trigger' | 'trigger_info'>): string {
+  if (run.trigger_info?.label) return run.trigger_info.label
+  return ({ manual: 'Started by hand', chat: 'Started from chat', schedule: 'Scheduled', jira_issue_created: 'Triggered by Jira', drive_file_added: 'Triggered by Drive' } as Record<string, string>)[run.trigger] ?? 'Started by hand'
+}
 export interface NodeRunState { node_id: string; node_type: string; status: NodeStatus; output: Record<string, unknown>; error_code: string | null; usage: Record<string, unknown>; started_at: string | null; finished_at: string | null }
 // GET /api/workflow-runs/{id} -> {run, nodes: NodeRunState[], approvals: ApprovalRequest[]}
 // GET /api/workflow-runs/{id}/events?after=N  (SSE, same envelope as iteration 1)

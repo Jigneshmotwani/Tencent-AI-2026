@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     atlassian_client_secret: str = ''
     google_folder_id: str = ''
     confluence_space_key: str = ''
+    # Iteration 4: comma-separated scope lists (the active demo pack overrides them; see backend/app/scopes.py).
+    google_folder_ids: str = ''
+    confluence_space_keys: str = ''
     confluence_cloud_id: str = ''
     model_id: str = ''
     model_api_key: str = ''
@@ -57,7 +60,9 @@ class Settings(BaseSettings):
     demo_mode: bool = False  # DEMO_MODE=true enables the loopback-only demo user switcher
     # ---- Chat guardrail ----
     guardrail_model_alias: str = ''  # cheap model for the intent check; empty = default model alias
-    guardrail_check_timeout: float = Field(default=4,ge=1,le=15)
+    guardrail_check_timeout: float = Field(default=8,ge=1,le=15)
+    # ---- Iteration 4: automatic triggers (seconds between polls; 0 disables the background loop) ----
+    trigger_poll_s: int = Field(default=60,ge=0,le=3600)
 
     @property
     def slack_enabled(self) -> bool:
@@ -70,7 +75,8 @@ class Settings(BaseSettings):
 
     @property
     def jira_projects(self) -> list[str]:
-        return [p.strip().upper() for p in self.jira_project_keys.split(',') if p.strip()]
+        from .scopes import allowed
+        return allowed('jira')
 
     @field_validator('database_url','app_database_url','litellm_url','otel_endpoint','app_origin','api_origin','api_tls_origin','grafana_url')
     @classmethod

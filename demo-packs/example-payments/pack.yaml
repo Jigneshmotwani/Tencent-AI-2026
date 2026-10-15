@@ -1,0 +1,107 @@
+# EXAMPLE DEMO PACK - a template to copy, not the final demo. Iteration 5 replaces it.
+#
+#   uv run python -m backend.app.demo_pack load example-payments --reset
+#
+# Everything demo-specific lives here: people, groups, the source scopes the app searches, agents, subscriptions,
+# budgets, policies and the suggestion chips. Roles and groups decide pages, audiences and approvers; they never grant
+# document access. Every source read uses the person's own linked account.
+#
+# Scope ids below are placeholders (REPLACE-...). Point them at real spaces, projects, channels and folders on the
+# connected Atlassian site, Slack workspace and Drive before a live demo.
+example: true
+
+app:
+  org_name: Example Payments (synthetic)
+  timezone: Asia/Singapore
+
+users:
+  # Passwords are generated on first load and appended to .local/demo-accounts.txt (never stored here).
+  - username: weiling
+    display_name: Wei Ling Tan
+    email: weiling.tan@examplepay.example
+    title: Head of Platform
+    roles: [admin]
+    groups: [payments-leads, security]
+  - username: priya
+    display_name: Priya Raman
+    email: priya.raman@examplepay.example
+    title: Payments engineer
+    roles: [user]
+    groups: [payments-eng]
+  - username: arjun
+    display_name: Arjun Mehta
+    email: arjun.mehta@examplepay.example
+    title: Platform engineer
+    roles: [builder]
+    groups: [payments-eng, payments-leads]
+  - username: marco
+    display_name: Marco Rossi
+    email: marco.rossi@examplepay.example
+    title: Payments on-call
+    roles: [user]
+    groups: [payments-eng]
+  - username: daniel
+    display_name: Daniel Koh
+    email: daniel.koh@examplepay.example
+    title: Security auditor
+    roles: [auditor, user]
+    groups: [security]
+
+groups:
+  - name: payments-eng
+    description: Payments engineers.
+  - name: payments-leads
+    description: Approve incident posts, partner tickets and agent publishing.
+  - name: security
+    description: Security and audit.
+  - name: contractors
+    description: External contractors (offboarding sweeps check their access).
+
+scopes:
+  # A plain string or {key|id, name}. The name is a display label (Connections, Audit filters), never a grant.
+  confluence_spaces:
+    - {key: PGW, name: Payment Gateway}
+    - {key: SECOPS, name: Security Operations}
+  jira_projects:
+    - {key: INC, name: Incidents}
+    - {key: PAY, name: Payments}
+    - {key: SEC, name: Security findings}
+    - {key: IT, name: IT requests}
+  slack_channels: [pgw-alerts, deploys, incidents, partner-updates]
+  slack_write_channels: [incidents, partner-updates]
+  drive_folders:
+    - {id: REPLACE-partner-folder-id, name: Partner updates}
+
+agents:
+  - agents/incident-assembler.yaml
+  - agents/partner-change-radar.yaml
+  - agents/vulnerability-remediation-tracker.yaml
+  - agents/contractor-offboarding-sweep.yaml
+
+subscriptions:
+  - {agent: Vulnerability Remediation Tracker, username: daniel}
+  - {agent: Vulnerability Remediation Tracker, username: arjun}
+
+audit_suggestions:
+  - Everything daniel accessed in the last 30 days
+  - Who retrieved the payment gateway runbook?
+  - Blocked requests in the last 7 days
+
+workspace_suggestions:
+  - What does the payment gateway runbook say to do first in a P1?
+  - Which partner API changes are announced for next month?
+
+budgets:
+  org: {limit_usd: 100, threshold_pct: 80}
+  groups: {payments-eng: 30, payments-leads: 20, security: 20}
+  agents:
+    Incident Assembler: {limit_usd: 15, max_steps: 20, max_tokens: 60000}
+    Vulnerability Remediation Tracker: {limit_usd: 10, max_steps: 10, max_tokens: 30000}
+  users: {priya: 10, marco: 10}
+
+policies:
+  publish_reviewer_group: payments-leads
+  approval_rules:
+    slack.post: payments-leads
+    jira.create_issue: payments-leads
+  allowed_models: []   # [] = every enabled model

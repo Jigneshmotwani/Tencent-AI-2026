@@ -2,6 +2,7 @@
 // (falling back to the persisted node states + SSE events), the failed-step state with "Retry from this step".
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ApprovalRequest, WfEvent, WorkflowSpec } from '../contracts'
+import { triggerText } from '../contracts'
 import { Icon } from '../ui/icons'
 import { Pill, cx, fmtInt, usdSmall, type PillTone } from '../ui/kit'
 import { type DebugStep, type LogLine, type RunDebug, isMissing, runDebug } from './api'
@@ -131,6 +132,7 @@ export function RunDrawer({ spec, stream, selected, onSelect, collapsed, onColla
         {durMs != null && <span>{fmtS(durMs)}</span>}
         <span className="opt-s">{fmtInt(tokens || 0)} tokens</span>
         <span className="opt-s">{usdSmall(cost || 0)}</span>
+        {run && <span className="opt-s">Runs as {run.runs_as || 'you'} · {triggerText(run)}</span>}
         {trace && <a href={trace} target="_blank" rel="noopener noreferrer">Open trace</a>}
       </div>
       <div className="dact">

@@ -1,0 +1,135 @@
+name: Untitled agent
+description: ''
+icon: flow
+owner: admin
+status: draft
+template_key: null
+spec:
+  name: Untitled agent
+  description: ''
+  icon: flow
+  trigger:
+    type: manual
+    config: {}
+  inputs:
+  - name: issue_key
+    type: string
+    required: true
+    description: Jira issue key to check, e.g. PAY-1042
+  nodes:
+  - id: trigger
+    type: trigger.manual
+    label: Start
+    config: {}
+    position:
+      x: -120.0
+      y: 0.0
+  - id: get_issue
+    type: tool.builtin
+    label: Get Jira issue
+    config:
+      tool: jira.get_issue
+      params:
+        issue_key: '{{inputs.issue_key}}'
+    position:
+      x: -120.0
+      y: 88.0
+  - id: summarize_pending
+    type: llm.generate
+    label: Summarize pending items
+    config:
+      prompt: 'From the Jira issue below, list only the open items that are pending on the requester''s side (the reporter/requester),
+        with owners and due dates when present.
+
+
+        Issue facts:
+
+        {{nodes.get_issue.output.fields.facts}}
+
+        Status: {{nodes.get_issue.output.fields.status}}
+
+
+        Write a short plain-English summary. Cite [E#] evidence labels for factual claims.'
+      include_evidence: true
+      include_nodes:
+      - get_issue
+      output_schema:
+        type: object
+        properties:
+          pending_items:
+            type: array
+            items:
+              type: object
+              properties:
+                item:
+                  type: string
+                owner:
+                  type: string
+                due:
+                  type: string
+          summary:
+            type: string
+        required:
+        - pending_items
+        - summary
+    position:
+      x: -120.0
+      y: 176.0
+  - id: report
+    type: output
+    label: Pending report
+    config:
+      template: '## Pending from the requester
+
+
+        {{nodes.summarize_pending.output.summary}}
+
+
+        ### Open items
+
+        {{nodes.summarize_pending.output.pending_items}}'
+      include_nodes:
+      - get_issue
+      - summarize_pending
+    position:
+      x: -120.0
+      y: 264.0
+  edges:
+  - id: e_trigger_get_issue
+    source: trigger
+    target: get_issue
+    sourceHandle: null
+    condition: null
+  - id: e_get_issue_summarize_pending
+    source: get_issue
+    target: summarize_pending
+    sourceHandle: null
+    condition: null
+  - id: e_summarize_pending_report
+    source: summarize_pending
+    target: report
+    sourceHandle: null
+    condition: null
+  policies:
+    model_alias: ''
+    max_steps: 25
+    max_tokens_per_run: 40000
+    budget_usd: 1.0
+    allowed_sources:
+    - drive
+    - confluence
+    - jira
+    - slack
+    allowed_tools: []
+    approval_required_for:
+    - jira.comment
+    - jira.transition
+    - jira.create_issue
+    - slack.post
+  audience: &id001
+    kind: legacy
+    groups: []
+    roles:
+    - user
+    users: []
+audience: *id001

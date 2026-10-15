@@ -48,8 +48,11 @@ def build_context(db) -> dict:
     except Exception:  # noqa: BLE001 - directory not migrated yet
         groups = []
     from ..config import settings
+    from ..scopes import entries
+    scopes = {'jira_projects': entries('jira'), 'slack_channels': entries('slack'), 'confluence_spaces': entries('confluence'),
+              'drive_folders': entries('drive')}
     return {'registry': public_registry(), 'mcp_tools': mcp, 'builtin_tools': builtin, 'models': models,
-            'sources': list(settings().enabled_sources), 'policy': policy, 'groups': groups}
+            'sources': list(settings().enabled_sources), 'policy': policy, 'groups': groups, 'scopes': scopes}
 
 
 def _compact_schema(schema: dict) -> dict:
@@ -82,7 +85,7 @@ def spec_view(spec: dict) -> dict:
     return view
 
 
-SYSTEM = '''You are the Studio Copilot of an agentic workflow builder for a regulated fintech (Northstar Pay, synthetic demo).
+SYSTEM = '''You are the Studio Copilot of an agentic workflow builder for a regulated company (synthetic demo data).
 You edit a WorkflowSpec (a DAG of typed nodes) by proposing graph operations. You never execute anything; code validates
 every operation and rejects invalid ones.
 
@@ -105,7 +108,7 @@ Rules:
    something that is not available, leave it out and add an "unsupported" entry that names the nearest registered alternative.
 2. To insert X between A and B: disconnect the A->B edge, add X, connect A->X, connect X->B. Keep one connected DAG that starts at
    exactly one trigger node. No cycles. A path may end at an output node or at a write action.
-3. Write tools (jira.comment, jira.transition, jira.create_issue, slack.post) must have a human.approval node upstream on EVERY
+3. Write tools (jira.comment, jira.transition, jira.create_issue, slack.post_message, slack.post) must have a human.approval node upstream on EVERY
    path (put the approval immediately before the write actions). A write on a router branch needs its own approval on that
    branch. Agents never get write tools. Set human.approval approver_group to a GROUPS name when the user names who approves
    (e.g. "compliance approval" -> the compliance leads group if listed); set allow_requester false for those approvals.
@@ -133,12 +136,30 @@ Rules:
    Never copy trimmed text that ends with "…".
 10. If the workflow's policies.allowed_tools is non-empty and you use a new tool, set_policy allowed_tools to the full new list.
 11. Never put credentials, secrets or real customer data into configs.
+13. Triggers: exactly one trigger node, id "trigger". Pick its TYPE from how the agent starts. "watches a Drive folder / when a file is
+    added" -> trigger.drive_file_added {"folder_id": an id from SCOPES.drive_folders, "input":"file_id"} with input file_id; "when a Jira
+    issue is created / new incident / new ticket" -> trigger.jira_issue_created {"jql": "project = <key from SCOPES.jira_projects> ...",
+    "input":"issue_key"} with input issue_key; "every Monday / daily / weekly" -> trigger.schedule {"cron":"0 9 * * 1"} and NO
+    required inputs; a person typing in chat -> trigger.chat; otherwise trigger.manual. To change the type: remove_node "trigger",
+    then add_node {"id":"trigger","type":"<type>",...} and connect it to the first step again.
+14. Reading sources: a new Drive file -> tool.builtin drive.get_file {"file_id":"{{inputs.file_id}}"}; a Jira issue ->
+    jira.get_issue; recent Slack messages in a named channel -> tool.builtin slack.read_channel {"channel":"<SCOPES.slack_channels>",
+    "since":"24h"} (one node per channel); Confluence pages (policies, runbooks, the service catalog) -> knowledge.retrieve with
+    sources ["confluence"]; finding existing Jira tickets -> tool.builtin jira.search {"jql":"project = <KEY> AND text ~ \"{{...}}\"",
+    "max_results":5}. Posting to Slack -> tool.builtin slack.post_message {"channel","text"} behind an approval. Use names from SCOPES
+    exactly (keys and channel names); never invent projects, channels, folders or spaces.
+15. "If there is no existing ticket" ALWAYS needs a tool.builtin jira.search node (its issues become evidence) placed BEFORE the
+    decision step; never decide "ticket exists" from memory.
+    "If there is no existing ticket" / "if X then Y": decide with an llm.generate step whose output_schema has an enum field
+    (e.g. {"ticket_exists": {"enum": ["yes","no"]}}), then a logic.router on {{nodes.<that step>.output.ticket_exists}} with cases
+    ["yes","no"] and default "no"; wire the follow-up actions on the matching branch (sourceHandle).
 12. explanation: one or two short plain sentences for a business user, no node ids, no JSON, no jargon. When you build a whole
     workflow start with "Done. I added N steps:" (N = nodes you added, the trigger included) and say what it does in one breath.
     For an edit, say what changed, e.g. "Added a 'Close with note' branch for low and medium risk."'''
 
 CREATE_HINT = '''Build a complete NEW workflow from the user's description. The current spec only has a trigger node "trigger"
-(trigger.manual) and no inputs. If the workflow answers questions typed in chat, replace it: remove_node "trigger", then add_node
+(trigger.manual) and no inputs. Choose the trigger type with rule 13 (watching a folder, a new Jira issue or a schedule are
+automatic triggers; replace the node as described there). If the workflow answers questions typed in chat, replace it: remove_node "trigger", then add_node
 {"id":"trigger","type":"trigger.chat"} and set_inputs [{"name":"question","type":"string","required":true,"description":"..."}].
 Otherwise keep trigger.manual (relabel it with update_node_config) and declare the needed inputs with set_inputs. Rename the
 workflow with a concise name and a one-sentence description. Restrict knowledge.retrieve sources to what the user asked for
@@ -178,6 +199,32 @@ def worked_example(ctx: dict) -> str | None:
     return json.dumps({'explanation': EXAMPLE_EXPLANATION, 'operations': ops, 'unsupported': []}, ensure_ascii=False, separators=(',', ':'))
 
 
+INCIDENT_REQUEST = ('When a new P1 incident is created in Jira, pull similar past incidents and the runbook from Confluence, read the alert '
+                    'and deploy Slack channels for the last 2 hours, write a cited brief and post it to the incident channel after approval')
+INCIDENT_EXPLANATION = ('Done. I added 13 steps: when a new incident appears it gathers past incidents, the runbook and recent alert and '
+                        'deploy messages, writes a cited brief, and posts it to the incident channel after approval.')
+
+
+def incident_example(ctx: dict) -> str:
+    """Worked example for automatic triggers and Slack tools, built from the generic Incident Assembler template."""
+    from ..workflows.flow_templates import incident_assembler
+    scopes = ctx.get('scopes') or {}
+    projects = [p['id'] for p in scopes.get('jira_projects') or []] or ['INC']
+    channels = [c['id'] for c in scopes.get('slack_channels') or []] or ['alerts', 'deploys', 'incidents']
+    spec = incident_assembler(jql=f'project = {projects[0]} AND priority = P1', alert_channel=channels[0],
+                              deploy_channel=channels[1] if len(channels) > 1 else channels[0], incident_channel=channels[-1])
+    ops: list[dict] = [{'op': 'rename', 'name': spec['name'], 'description': spec['description']},
+                       {'op': 'set_inputs', 'inputs': spec['inputs']}, {'op': 'remove_node', 'node_id': 'trigger'}]
+    for n in spec['nodes']:
+        ops.append({'op': 'add_node', 'node': {'id': n['id'], 'type': n['type'], 'label': n['label'], 'config': n['config']}})
+    for e in spec['edges']:
+        edge = {'source': e['source'], 'target': e['target']}
+        if e.get('sourceHandle'):
+            edge['sourceHandle'] = e['sourceHandle']
+        ops.append({'op': 'connect', 'edge': edge})
+    return json.dumps({'explanation': INCIDENT_EXPLANATION, 'operations': ops, 'unsupported': []}, ensure_ascii=False, separators=(',', ':'))
+
+
 EDIT_REQUEST = 'Also close low-risk alerts with a Jira note.'
 EDIT_EXPLANATION = "Added a 'Close with note' branch for low and medium risk."
 
@@ -211,6 +258,7 @@ def build_messages(ctx: dict, spec: dict, history: list[dict], message: str, mod
         'BUILTIN_TOOLS': ctx['builtin_tools'], 'WRITE_TOOLS': sorted(WRITE_TOOLS), 'AGENT_READ_TOOLS': AGENT_READ_TOOLS,
         'MODELS': ctx['models'], 'SOURCES': ctx['sources'],
         'GROUPS': [g['name'] for g in ctx.get('groups') or []],
+        'SCOPES': ctx.get('scopes') or {},
         'PLATFORM_POLICY': {k: ctx['policy'].get(k) for k in ('allowed_models', 'allowed_tools', 'approval_required_for') if k in ctx['policy']},
     }
     messages = [{'role': 'system', 'content': SYSTEM + ('\n\n' + CREATE_HINT if mode == 'create' else '')},
@@ -218,6 +266,10 @@ def build_messages(ctx: dict, spec: dict, history: list[dict], message: str, mod
                 {'role': 'assistant', 'content': '{"explanation":"Registry loaded.","operations":[],"unsupported":[]}'}]
     example = worked_example(ctx) if mode == 'create' else None
     edit = edit_example(ctx, spec) if mode != 'create' else None
+    if mode == 'create':
+        messages += [{'role': 'user', 'content': 'WORKED EXAMPLE (automatic trigger + Slack). CURRENT SPEC: the new-workflow starting point '
+                                                 '(one trigger.manual node "trigger").\nREQUEST:\n' + INCIDENT_REQUEST + '\n\nReply with the JSON object only.'},
+                     {'role': 'assistant', 'content': incident_example(ctx)}]
     if edit:
         messages += [{'role': 'user', 'content': 'WORKED EXAMPLE (edit). CURRENT SPEC: an alert investigation with nodes get_alert, '
                                                  'check_citations and risk_router (cases ["high"]).\nREQUEST:\n' + EDIT_REQUEST +

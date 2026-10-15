@@ -1,5 +1,6 @@
 """Drive delegated reads inside a selected root and one bounded child-folder level."""
 import asyncio
+import dataclasses
 
 from ..config import settings
 from ..contracts import AccessContext, SearchHit, SearchPage, SourceError
@@ -18,16 +19,31 @@ def drive_literal(value: str) -> str:
     return "'" + value.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
+def roots(context: AccessContext) -> list[str]:
+    """The allowed root folder ids (comma-joined collection)."""
+    check_context(context, 'drive')
+    ids = [checked_id(v.strip()) for v in context.collection.split(',') if v.strip()]
+    if not ids or len(ids) > 20:
+        raise SourceError('denied')
+    return ids
+
+
 class DriveConnector:
     @source_operation
     async def health(self, context: AccessContext) -> dict:
-        check_context(context, 'drive')
-        folder_id = checked_id(context.collection)
         async with asyncio.timeout(settings().source_timeout):
             account = await request_json(f'{BASE}/about', context, {'fields': 'user'})
-            folder = await request_json(f'{BASE}/files/{folder_id}', context,
-                                        {'fields': 'id,mimeType,trashed', 'supportsAllDrives': 'true'})
-            if folder.get('trashed') or folder.get('mimeType') != FOLDER_TYPE:
+            visible = 0
+            for folder_id in roots(context):
+                try:
+                    folder = await request_json(f'{BASE}/files/{folder_id}', context,
+                                                {'fields': 'id,mimeType,trashed', 'supportsAllDrives': 'true'})
+                except SourceError as exc:
+                    if exc.code == 'denied':
+                        continue
+                    raise
+                visible += int(not folder.get('trashed') and folder.get('mimeType') == FOLDER_TYPE)
+            if not visible:
                 raise SourceError('denied')
             user = account.get('user', {})
             if not user.get('permissionId'):
@@ -39,16 +55,34 @@ class DriveConnector:
     @source_operation
     async def search(self, query: str, context: AccessContext, cursor: str | None = None,
                      limit: int = 8) -> SearchPage:
-        check_context(context, 'drive')
-        folder_id = checked_id(context.collection)
         terms = query_terms(query)
+        size = min(max(limit, 1), 25)
+        hits, seen, next_cursor = [], set(), None
+        all_roots = roots(context)
+        for folder_id in all_roots:
+            # A page cursor is only meaningful for a single root.
+            page_hits, page_cursor = await self._search_root(folder_id, terms, context, size, cursor if len(all_roots) == 1 else None)
+            if len(all_roots) == 1:
+                next_cursor = page_cursor
+            for hit in page_hits:
+                if hit.document_id not in seen and len(hits) < size:
+                    seen.add(hit.document_id)
+                    hits.append(hit)
+        return SearchPage(hits, checked_cursor(next_cursor))
+
+    async def _search_root(self, folder_id: str, terms: list[str], context: AccessContext, size: int, cursor: str | None):
         # A limited-access child folder can hold the restricted demonstration memo.
         # Enumerate only delegated-visible direct child folders; never recurse or follow shortcuts.
-        folders = await request_json(f'{BASE}/files', context,
-                                     {'q': f'{drive_literal(folder_id)} in parents and trashed = false and mimeType = {drive_literal(FOLDER_TYPE)}',
-                                      'fields': 'files(id)', 'pageSize': MAX_CHILD_FOLDERS,
-                                      'orderBy': 'name', 'spaces': 'drive',
-                                      'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+        try:
+            folders = await request_json(f'{BASE}/files', context,
+                                         {'q': f'{drive_literal(folder_id)} in parents and trashed = false and mimeType = {drive_literal(FOLDER_TYPE)}',
+                                          'fields': 'files(id)', 'pageSize': MAX_CHILD_FOLDERS,
+                                          'orderBy': 'name', 'spaces': 'drive',
+                                          'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+        except SourceError as exc:
+            if exc.code == 'denied':
+                return [], None  # a root folder this user cannot see contributes nothing
+            raise
         parents = [folder_id]
         for item in folders.get('files', [])[:MAX_CHILD_FOLDERS]:
             try:
@@ -57,11 +91,10 @@ class DriveConnector:
                 continue
             if child_id not in parents:
                 parents.append(child_id)
-        size = min(max(limit, 1), 25)
         # Query each parent separately: OR-ing in a limited-access child folder the delegated
         # user cannot list makes Drive return nothing at all, hiding the root's readable files.
         # A page cursor continues the selected root only.
-        hits, seen, next_cursor = [], set(), None
+        hits, next_cursor = [], None
         for parent in ([folder_id] if cursor else parents):
             clauses = [f'{drive_literal(parent)} in parents', 'trashed = false',
                        "mimeType != 'application/vnd.google-apps.folder'",
@@ -79,19 +112,46 @@ class DriveConnector:
             for item in result.get('files', [])[:size]:
                 if isinstance(item, dict):
                     try:
-                        identifier = checked_id(item.get('id', ''))
+                        hits.append(SearchHit(checked_id(item.get('id', '')), str(item.get('name', 'Untitled'))[:1000]))
                     except SourceError:
                         continue
-                    if identifier not in seen and len(hits) < size:
-                        seen.add(identifier)
-                        hits.append(SearchHit(identifier, str(item.get('name', 'Untitled'))[:1000]))
-        return SearchPage(hits, checked_cursor(next_cursor))
+        return hits, next_cursor
+
+    @source_operation
+    async def list_new(self, folder_id: str, context: AccessContext, limit: int = 20) -> list[dict]:
+        """Newest files directly in one allowed folder or a visible child of one (trigger polling): [{id, name, created}]."""
+        folder_id = checked_id(folder_id)
+        if folder_id not in roots(context):
+            folder = await request_json(f'{BASE}/files/{folder_id}', context, {'fields': 'id,mimeType,parents,trashed', 'supportsAllDrives': 'true'})
+            if folder.get('trashed') or folder.get('mimeType') != FOLDER_TYPE or not set(folder.get('parents', [])) & set(roots(context)):
+                raise SourceError('denied')
+        result = await request_json(f'{BASE}/files', context, {
+            'q': f"{drive_literal(folder_id)} in parents and trashed = false and mimeType != {drive_literal(FOLDER_TYPE)}",
+            'fields': 'files(id,name,createdTime)', 'orderBy': 'createdTime desc', 'pageSize': min(max(limit, 1), 50),
+            'spaces': 'drive', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
+        out = []
+        for item in result.get('files', [])[:50]:
+            try:
+                out.append({'id': checked_id(item.get('id', '')), 'name': str(item.get('name', ''))[:300], 'created': str(item.get('createdTime', ''))})
+            except SourceError:
+                continue
+        return out
+
+    @source_operation
+    async def folder_permissions(self, folder_id: str, context: AccessContext) -> list[dict]:
+        """permissions.list on an allowed root folder with the caller's own token: [{email, role, type}]."""
+        folder_id = checked_id(folder_id)
+        if folder_id not in roots(context):
+            raise SourceError('denied')
+        result = await request_json(f'{BASE}/files/{folder_id}/permissions', context,
+                                    {'fields': 'permissions(emailAddress,role,type)', 'supportsAllDrives': 'true', 'pageSize': 100})
+        return [{'email': str(p.get('emailAddress') or '').lower(), 'role': str(p.get('role') or ''), 'type': str(p.get('type') or '')}
+                for p in result.get('permissions', [])[:100] if isinstance(p, dict)]
 
     @source_operation
     async def read(self, document_id: str, context: AccessContext):
-        check_context(context, 'drive')
         identifier = checked_id(document_id)
-        folder_id = checked_id(context.collection)
+        allowed_roots = roots(context)
         async with asyncio.timeout(settings().source_timeout):
             item = await request_json(f'{BASE}/files/{identifier}', context,
                                       {'fields': 'id,name,mimeType,parents,size,modifiedTime,version,trashed,capabilities(canDownload)',
@@ -100,8 +160,8 @@ class DriveConnector:
             if item.get('id') != identifier or item.get('trashed'):
                 raise SourceError('denied')
             parents = item.get('parents', [])
-            inside_collection = folder_id in parents
-            if not inside_collection:
+            root = next((p for p in parents if p in allowed_roots), None)
+            if root is None:
                 for parent_id in parents[:MAX_CHILD_FOLDERS]:
                     parent_id = checked_id(parent_id)
                     try:
@@ -113,11 +173,11 @@ class DriveConnector:
                             continue
                         raise
                     if (parent.get('id') == parent_id and not parent.get('trashed')
-                            and parent.get('mimeType') == FOLDER_TYPE
-                            and folder_id in parent.get('parents', [])):
-                        inside_collection = True
-                        break
-            if not inside_collection:
+                            and parent.get('mimeType') == FOLDER_TYPE):
+                        root = next((p for p in parent.get('parents', []) if p in allowed_roots), None)
+                        if root:
+                            break
+            if root is None:
                 raise SourceError('denied')
             if item.get('capabilities', {}).get('canDownload') is False:
                 raise SourceError('denied')
@@ -145,5 +205,6 @@ class DriveConnector:
                 except UnicodeDecodeError:
                     raise SourceError('unsupported') from None
                 location = 'Document text'
-            return document(identifier, str(item.get('name', 'Untitled')), text, canonical,
-                            location, str(item.get('version') or item.get('modifiedTime') or ''), item.get('modifiedTime'))
+            doc = document(identifier, str(item.get('name', 'Untitled')), text, canonical,
+                           location, str(item.get('version') or item.get('modifiedTime') or ''), item.get('modifiedTime'))
+            return dataclasses.replace(doc, container=root)

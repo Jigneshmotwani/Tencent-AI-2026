@@ -1,4 +1,4 @@
-# Internal Brain: permission-aware Agent Studio (Tencent AI 2026), iteration 3
+# Internal Brain: permission-aware Agent Studio (Tencent AI 2026), iteration 4
 
 Product name: **Internal Brain** (from the approved design, `docs/design/prototype.html`).
 
@@ -176,11 +176,88 @@ uv run --frozen python -m backend.app.seed --as compliance --reset-demo   # loca
 - Drive (read-only scope): create a child folder **FinCrime cases** in the demo folder shared only with the compliance identity and upload `drive-fincrime-alr-2291-case-file.txt` and `drive-fincrime-prior-case-fc-2026-014.txt`; then rerun the seed to record their ids.
 - Seeded agents: *Policy Expert* (v4, everyone), *KYB Case Reviewer* (Onboarding), *Transaction Investigator* (v1 live for Compliance, v2 draft adds "Close with note"), *Audit Explorer* (v1 in review).
 
+## Demo packs (iteration 4)
+
+Everything demo-specific (people, groups, the containers the app searches, agents, subscriptions, budgets, policies,
+suggestion chips) lives in one folder: `demo-packs/<name>/pack.yaml` plus optional agent files next to it. Nothing in the
+code or UI names a demo user, space, project, channel or folder.
+
+```sh
+uv run --frozen python -m backend.app.demo_pack list                         # * marks the active pack
+uv run --frozen python -m backend.app.demo_pack export my-pack [--force]     # current local demo -> demo-packs/my-pack/
+uv run --frozen python -m backend.app.demo_pack load example-payments --reset
+uv run --frozen python -m backend.app.demo_pack load legacy-kyb --reset      # back to the iteration 1-3 demo
+```
+
+- `--reset` backs the app database up first (`.local/backups/<timestamp>.sql`, pg_dump), then clears conversations, runs,
+  approvals, agents, groups, subscriptions and budgets. Accounts that are not in the pack are **disabled**, not deleted, so
+  their linked source accounts survive a later reload. Audit rows are never deleted: an `audit.reset` event is appended to
+  the hash chain (it records the previous head), and Verify integrity still passes. Without `--reset` the pack is merged.
+- New pack users get generated passwords appended to `.local/demo-accounts.txt`. With `DEMO_MODE=true` the user menu's
+  *Switch demo user* lists every active account.
+- Once a pack is loaded, startup no longer re-seeds the iteration 1-3 demo.
+- `demo-packs/legacy-kyb/` is the iteration 1-3 demo (exported); `demo-packs/example-payments/` is a small **example** to copy.
+
+`pack.yaml` keys:
+
+| Key | Shape |
+|---|---|
+| `app` | `{org_name, timezone}` (timezone is the default for schedules) |
+| `users` | `[{username, display_name, email, title, roles: [user\|builder\|admin\|auditor], groups: [...]}]` (at least one admin) |
+| `groups` | `[{name, description}]` |
+| `scopes` | `{confluence_spaces, jira_projects, slack_channels, slack_write_channels, drive_folders}`; each entry a key/id string or `{key\|id, name}` (the name is a display label in Connections and Audit, never a grant) |
+| `agents` | agent files: `{name, description, icon, owner, status: draft\|published\|in_review, audience: {kind: only_me\|group\|everyone, groups: [names]}, spec: <WorkflowSpec> \| template: <key> + template_settings: {...}, draft_spec?}` |
+| `subscriptions` | `[{agent, username}]` (scheduled agents) |
+| `audit_suggestions`, `workspace_suggestions` | chips on the Audit page / starter prompts in a new Workspace chat |
+| `budgets` | `{org: {limit_usd, threshold_pct}, groups: {name: usd}, agents: {name: {limit_usd, max_steps, max_tokens}}, users: {username: usd}}` |
+| `policies` | `{publish_reviewer_group, approval_rules: {action: group}, allowed_models: [...]}` |
+| `audit_labels` | optional `{containers, resources, topics}` for audit display names and NL topics |
+
+Source scopes: the active pack's lists, else `.env` (`CONFLUENCE_SPACE_KEYS` or `CONFLUENCE_SPACE_KEY`, `JIRA_PROJECT_KEYS`,
+`SLACK_CHANNELS`, `GOOGLE_FOLDER_IDS` or `GOOGLE_FOLDER_ID`). Retrieval searches every allowed scope with the person's own
+token; the provider still decides what that person can read. Users do not need to reconnect when the lists change.
+
+## Triggers, run-as and subscriptions (iteration 4)
+
+The trigger step of an agent decides how it starts:
+
+| Type | How it works | Runs as |
+|---|---|---|
+| `manual` / `chat` | A person runs it (Test run, Workspace, @mention) | That person |
+| `jira_issue_created` | Every 60 s, the JQL in the step (always limited to the allowed projects) is checked; each **new** issue starts one run with its key as the input. Processed keys are remembered; the first check after publishing only records existing issues. | The agent owner |
+| `drive_file_added` | Every 60 s, one Drive folder (allowed, or inside an allowed one) is listed; each new file starts one run with its file id. | The agent owner |
+| `schedule` | Cron + timezone in the step. **Run now** in the step settings fires it immediately. | Each subscriber, one run each |
+
+- Automatic runs use only the run-as user's own linked accounts and may only write through approval steps.
+- Every triggered run records its trigger ("Triggered by Jira INC-12", "Scheduled, subscriber priya") on the run, in the audit
+  log (`workflow.run.triggered`), on the run card and run panel ("Runs as …") and on its approval card.
+- **Subscriptions:** a published scheduled agent shows **Subscribe** in Workspace. Each subscriber gets their own run with their
+  own access, so the same agent produces differently scoped results per person; the result lands in that person's Workspace
+  as a run card labelled *Scheduled*.
+- One background loop in the API process does the polling (`TRIGGER_POLL_S`, default 60; 0 turns it off). It holds a
+  PostgreSQL advisory lock, so it never runs twice. Studio's trigger step shows the type, its settings, Runs as, Last fired and
+  Run now / Check now.
+
+## Built-in tools added in iteration 4
+
+| Tool | Kind | Notes |
+|---|---|---|
+| `slack.read_channel {channel, since}` | read | Messages and threads of one allowed channel the person belongs to, since `2h` / `24h` / `7d` / an ISO time; added as evidence. No access means "no evidence", not a failure. |
+| `slack.post_message {channel, text}` | write | Same governed action as `slack.post`: always behind an approval, follows the "Post to Slack" approval rule, only to the pack's write channels. |
+| `drive.get_file {file_id}` | read | One file inside the allowed folders, as evidence. |
+| `access.inventory {user_email}` | read, admins/auditors | Where a person has access among the allowed scopes the calling admin can see: Slack channels, shared Drive folders, Jira project roles; each source says CHECKED or NOT CHECKED with the reason (Confluence is always NOT CHECKED). |
+| `audit.user_activity {username\|user_email, days}` | read, admins/auditors | That person's app activity from the audit log: counts by source and container, last 10 accesses, blocked requests. |
+
+Studio **Templates** adds four generic agents whose names, projects, channels and folders are settings (defaults come from the
+active scopes): *Incident Assembler* (Jira trigger), *Partner Change Radar* (Drive trigger), *Vulnerability Remediation
+Tracker* (schedule + subscriptions) and *Contractor Offboarding Sweep* (Jira trigger, access tools). Demo packs use them with
+`template:` + `template_settings:` (see `demo-packs/example-payments/agents/`).
+
 ## Using it
 
 - **Workspace**: ask questions (cited answers, source sheet with the cited passage highlighted), or pick an agent with **Answer with ▾** or **@mention**; agents with inputs show an inline form and an inline run card with live steps and the approval status.
 - **Studio** (builder):
-  - Open a template or create from a description.
+  - Open a template or create from a description. The bin icon on a row deletes an agent (owner or admin; runs and audit are kept).
   - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
   - Test run: the run panel shows each step's input, output and logs from `GET /api/workflow-runs/{id}/debug`, with **Retry from this step** on failures.
   - **Submit for review** with an audience (Only me publishes immediately; a group or everyone needs a reviewer in *Compliance leads* or an admin). Users keep the live version until the review is approved. Versions shows the diff against live and restores any version as a new draft.
@@ -204,4 +281,4 @@ docker compose exec -T postgres psql -U app -d app -c "ALTER TABLE audit_events 
 - **Grounding:** citation-based, with optional LLM entailment.
 - **Scope:** this is a local hackathon build with no production security or compliance claim.
 
-See [architecture](docs/architecture.md), [contracts](docs/contracts.md), [iteration 3 contracts](docs/iteration-3-contracts.md) and the [iteration 3 handoff](docs/iteration-3-handoff.md).
+See [architecture](docs/architecture.md), [contracts](docs/contracts.md), [iteration 3 contracts](docs/iteration-3-contracts.md), the [iteration 3 handoff](docs/iteration-3-handoff.md) and the [iteration 4 handoff](docs/iteration-4-handoff.md).

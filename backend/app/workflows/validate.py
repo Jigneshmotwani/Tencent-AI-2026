@@ -205,17 +205,28 @@ def validate_spec(spec: dict, db, user=None) -> dict:
             for s in cfg.get('sources') or []:
                 if s not in eff['allowed_sources']:
                     errors.append(_issue('source_not_allowed', f'Source {s} is not in the workflow allowed_sources', nid))
+        if ntype == 'trigger.schedule':
+            from .triggers import cron_ok, schedule_tz
+            if not cron_ok(str(cfg.get('cron') or ''), schedule_tz(cfg)):
+                errors.append(_issue('invalid_schedule', 'The schedule needs a valid five-field cron expression and IANA timezone', nid))
+            if any(i.get('required', True) for i in spec.get('inputs', [])):
+                errors.append(_issue('schedule_inputs_required', 'A scheduled agent cannot have required inputs (nothing fills them)', nid))
         if ntype == 'tool.builtin':
             tool = cfg.get('tool')
-            if tool and not tool_allowed('builtin:' + tool, eff):
+            from .registry import canonical_action
+            if tool and not (tool_allowed('builtin:' + tool, eff) or tool_allowed('builtin:' + canonical_action(tool), eff)):
                 errors.append(_blocked_issue('builtin:' + tool, eff, nid))
             if tool in ('jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue') and 'jira' not in eff['allowed_sources']:
                 errors.append(_issue('source_not_allowed', 'Jira is not in the workflow allowed_sources', nid))
-            if tool in ('slack.draft', 'slack.post') and 'slack' not in eff['allowed_sources']:
+            if tool == 'drive.get_file' and 'drive' not in eff['allowed_sources']:
+                errors.append(_issue('source_not_allowed', 'Drive is not in the workflow allowed_sources', nid))
+            if tool in ('slack.draft', 'slack.post', 'slack.post_message', 'slack.read_channel') and 'slack' not in eff['allowed_sources']:
                 errors.append(_issue('source_not_allowed', 'Slack is not in the workflow allowed_sources', nid))
             required = {'jira.get_issue': ['issue_key'], 'jira.search': ['jql'], 'jira.comment': ['issue_key', 'body'],
                         'jira.transition': ['issue_key', 'to_status'], 'jira.create_issue': ['project_key', 'summary'],
-                        'slack.draft': ['channel', 'text'], 'slack.post': ['channel', 'text']}.get(tool, [])
+                        'slack.draft': ['channel', 'text'], 'slack.post': ['channel', 'text'], 'slack.post_message': ['channel', 'text'],
+                        'slack.read_channel': ['channel'], 'drive.get_file': ['file_id'], 'access.inventory': ['user_email'],
+                        'audit.user_activity': ['days']}.get(tool, [])
             params = cfg.get('params') or {}
             missing = [p for p in required if p not in params]
             if missing:

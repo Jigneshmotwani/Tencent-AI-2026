@@ -25,6 +25,35 @@ NODE_TYPES: dict[str, dict] = {
         'config_schema': {'type': 'object', 'additionalProperties': False, 'properties': {}},
         'inputs': [], 'outputs': [{'name': 'inputs', 'type': 'object'}], 'side_effect': False,
     },
+    'trigger.jira_issue_created': {
+        'label': 'Jira issue created', 'category': 'trigger',
+        'description': 'AUTOMATIC. Every 60 s, polls Jira with the JQL filter (always limited to the allowed projects) and starts one run per '
+                       'NEW matching issue; the issue key fills the input named in `input` (default issue_key). Runs as the agent OWNER, with '
+                       "the owner's own Jira access. Processed keys are remembered, so no issue runs twice. Writes still need approval.",
+        'config_schema': {'type': 'object', 'additionalProperties': False, 'required': ['jql'], 'properties': {
+            'jql': {'type': 'string', 'maxLength': 1000, 'description': 'e.g. project = INC AND priority in (P1, P2)'},
+            'input': {'type': 'string', 'description': 'Workflow input that receives the issue key (default issue_key)'}}},
+        'inputs': [], 'outputs': [{'name': 'inputs', 'type': 'object'}], 'side_effect': False,
+    },
+    'trigger.drive_file_added': {
+        'label': 'Drive file added', 'category': 'trigger',
+        'description': 'AUTOMATIC. Every 60 s, lists one Drive folder (an allowed folder or a child of one) and starts one run per NEW file; the '
+                       'file id fills the input named in `input` (default file_id). Runs as the agent OWNER with their own Drive access.',
+        'config_schema': {'type': 'object', 'additionalProperties': False, 'required': ['folder_id'], 'properties': {
+            'folder_id': {'type': 'string', 'maxLength': 200, 'description': 'Drive folder id to watch'},
+            'input': {'type': 'string', 'description': 'Workflow input that receives the file id (default file_id)'}}},
+        'inputs': [], 'outputs': [{'name': 'inputs', 'type': 'object'}], 'side_effect': False,
+    },
+    'trigger.schedule': {
+        'label': 'Schedule', 'category': 'trigger',
+        'description': 'AUTOMATIC. Runs on a cron schedule in a timezone. Users SUBSCRIBE to the published agent; each fire starts one run per '
+                       "subscriber, as that subscriber, with the subscriber's own access (different people get differently scoped results). "
+                       'Owners can "Run now" for demos. Inputs must be optional (none are filled).',
+        'config_schema': {'type': 'object', 'additionalProperties': False, 'required': ['cron'], 'properties': {
+            'cron': {'type': 'string', 'maxLength': 100, 'description': 'Five-field cron, e.g. "0 9 * * 1" (Mondays 09:00)'},
+            'timezone': {'type': 'string', 'maxLength': 64, 'description': 'IANA timezone, e.g. Asia/Singapore (default: the demo pack timezone)'}}},
+        'inputs': [], 'outputs': [{'name': 'inputs', 'type': 'object'}], 'side_effect': False,
+    },
     'knowledge.retrieve': {
         'label': 'Knowledge retrieval', 'category': 'knowledge',
         'description': "Federated, query-time search + read across the INVOKER's own connected sources (drive, confluence, jira, slack). "
@@ -73,15 +102,21 @@ NODE_TYPES: dict[str, dict] = {
     },
     'tool.builtin': {
         'label': 'Built-in tool', 'category': 'tool',
-        'description': 'Jira/Slack operations under the invoker identity. Reads: jira.get_issue (adds the issue as evidence), jira.search. '
+        'description': 'Jira/Slack operations under the invoker (or run-as) identity. Reads: jira.get_issue (adds the issue as evidence), jira.search, '
+                       'slack.read_channel (messages + threads of one channel in a time window, added as evidence), drive.get_file (one Drive file as evidence), '
+                       'access.inventory and audit.user_activity (admins/auditors only, read-only, added as evidence). '
                        'In-app: slack.draft (stored, never sent). Writes (require an upstream human.approval): jira.comment, jira.transition, '
-                       'jira.create_issue, slack.post.',
+                       'jira.create_issue, slack.post_message (slack.post is the same action).',
         'config_schema': {'type': 'object', 'additionalProperties': False, 'required': ['tool'], 'properties': {
-            'tool': {'enum': ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.draft', 'slack.post']},
+            'tool': {'enum': ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.read_channel',
+                              'slack.draft', 'slack.post_message', 'slack.post', 'drive.get_file', 'access.inventory', 'audit.user_activity']},
             'params': {'type': 'object', 'description': (
                 'jira.get_issue {issue_key}; jira.search {jql, max_results}; jira.comment {issue_key, body}; '
                 'jira.transition {issue_key, to_status}; jira.create_issue {project_key, summary, description, issue_type, labels[]}; '
-                'slack.draft {channel, text}; slack.post {channel, text}')}}},
+                'slack.read_channel {channel, since} (since: "2h", "24h", "7d" or an ISO time; default 24h); '
+                'slack.draft {channel, text}; slack.post_message {channel, text}; drive.get_file {file_id}; '
+                'access.inventory {user_email} (admins/auditors: where that person has access, per source, or "not checked"); '
+                'audit.user_activity {username|user_email, days} (admins/auditors: that person\'s app audit summary)')}}},
         'inputs': [{'name': 'in', 'type': 'any'}], 'outputs': [{'name': 'result', 'type': 'object'}], 'side_effect': 'by_tool',
     },
     'logic.router': {
@@ -145,8 +180,15 @@ NODE_TYPES: dict[str, dict] = {
     },
 }
 
-BUILTIN_TOOLS = ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.draft', 'slack.post']
-WRITE_TOOLS = {'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.post'}
+BUILTIN_TOOLS = ['jira.get_issue', 'jira.search', 'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.read_channel', 'slack.draft',
+                 'slack.post_message', 'slack.post', 'drive.get_file', 'access.inventory', 'audit.user_activity']
+WRITE_TOOLS = {'jira.comment', 'jira.transition', 'jira.create_issue', 'slack.post', 'slack.post_message'}
+# Tool names that are the same governed action: approval rules, policies, previews and execution use the canonical name.
+ACTION_ALIASES = {'slack.post_message': 'slack.post'}
+
+
+def canonical_action(tool: str) -> str:
+    return ACTION_ALIASES.get(tool, tool)
 AGENT_READ_TOOLS = ['knowledge.search', 'builtin:jira.get_issue', 'builtin:jira.search']
 
 

@@ -14,6 +14,7 @@ import { Composer } from './Composer'
 import { DraftView, Invocation, RunCard } from './RunCard'
 import { SourceSheet, SourceTarget } from './SourceSheet'
 import './workspace.css'
+import { useAppConfig } from '../appConfig'
 
 interface Live { runId: string; convId: string; text: string; cites: CiteRef[]; status: string; usage: Usage | null; error: string }
 type SheetState = { kind: 'source'; target: SourceTarget } | { kind: 'draft'; draft: DraftView } | null
@@ -35,6 +36,7 @@ export default function WorkspacePage() {
   const isHistory = route.parts[0] === 'history'
   const isNew = !convId && !isHistory
   const firstName = me.name.split(/\s+/)[0]
+  const starters = useAppConfig().workspace_suggestions
   const chats = useRecentChats(hasCap(me, 'user'))
 
   // ---------------------------------------------------------------- agents for you
@@ -182,6 +184,14 @@ export default function WorkspacePage() {
     if (c) setSheet({ kind: 'source', target: { kind: 'chat', evidenceId: c.evidence_id, runId, claim, provider: c.provider, title: knownTitle(runId, c.evidence_id) } })
   }
   const openRunCite = (runId: string, label: string, claim: string) => setSheet({ kind: 'source', target: { kind: 'run', runId, label, claim } })
+  // Scheduled agents: each subscriber gets their own run with their own access; results land here as run cards.
+  const toggleSubscription = async (a: Agent) => {
+    try {
+      await api(`/workflows/${encodeURIComponent(a.id)}/subscription`, a.subscribed ? 'DELETE' : 'POST')
+      setAgents(list => list.map(x => x.id === a.id ? { ...x, subscribed: !a.subscribed } : x))
+      toast(a.subscribed ? `Unsubscribed from ${a.name}` : `Subscribed. ${a.name} will run with your own access on its schedule.`)
+    } catch (e) { toast(safeError(e)) }
+  }
   const pickAgent = (a: Agent | null) => { setSelected(a); requestAnimationFrame(() => textarea.current?.focus({ preventScroll: true })) }
 
   // ---------------------------------------------------------------- title row
@@ -238,11 +248,17 @@ export default function WorkspacePage() {
         <Composer agents={agents} looks={looks} selected={selected} onSelect={pickAgent} isNew={isNew} firstName={firstName}
           busy={!!liveId} onStop={() => void stop()} onAsk={ask} onRun={runAgent} inputRef={textarea} />
         <div className="newst gut"><div className="wrap">
+          {starters.length > 0 && <div className="sugs" style={{ marginBottom: 20 }}>{starters.map(t => <button key={t} type="button" className="sug" onClick={() => void ask(t)}>{t}</button>)}</div>}
           {agents.length > 0 && <><div className="agt-h">Agents for you</div>
-            <div className="agrid">{agents.map(a => <button key={a.id} type="button" className={cx('ag', selected?.id === a.id && 'on')} aria-pressed={selected?.id === a.id}
-              onClick={() => pickAgent(selected?.id === a.id ? null : a)}>
-              <Tile cat={looks[a.id]?.cat ?? 'ai'} icon={looks[a.id]?.icon} /><span><b>{a.name}</b><span className="d">{a.description}</span><small>{a.audience_label || a.owner_name || a.owner}</small></span>
-            </button>)}</div></>}
+            <div className="agrid">{agents.map(a => <div key={a.id} style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={cx('ag', selected?.id === a.id && 'on')} aria-pressed={selected?.id === a.id} style={{ width: '100%' }}
+                onClick={() => pickAgent(selected?.id === a.id ? null : a)}>
+                <Tile cat={looks[a.id]?.cat ?? 'ai'} icon={looks[a.id]?.icon} /><span style={a.scheduled ? { paddingRight: 92 } : undefined}><b>{a.name}</b><span className="d">{a.description}</span>
+                  <small>{a.scheduled ? 'Scheduled · runs with your own access' : a.audience_label || a.owner_name || a.owner}</small></span>
+              </button>
+              {a.scheduled && <Button size="sm" variant={a.subscribed ? undefined : 'primary'} style={{ position: 'absolute', top: 12, right: 12 }}
+                aria-label={`${a.subscribed ? 'Unsubscribe from' : 'Subscribe to'} ${a.name}`} onClick={() => void toggleSubscription(a)}>{a.subscribed ? 'Subscribed' : 'Subscribe'}</Button>}
+            </div>)}</div></>}
         </div></div>
       </div>
     </div>
@@ -277,8 +293,8 @@ function AnswerBlock({ message, onCite, failedNote, onRetry }: { message: Messag
   const shown = titles.state === 'done' ? sources.filter(s => titles.map[s.evidence_id]) : []
   const tips = Object.fromEntries(shown.map(s => [s.label, titles.map[s.evidence_id]]))
   const stopped = message.status === 'cancelled', failed = message.status === 'failed'
-  if (message.status === 'denied') return <div className="ans-turn ans-denied">
-    <p className="denied-tag"><Icon name="lock" small />Not authorized</p>
+  if (message.status === 'denied' || message.status === 'blocked') return <div className="ans-turn ans-denied">
+    <p className="denied-tag"><Icon name="lock" small />{message.status === 'blocked' ? 'Request blocked' : 'Not authorized'}</p>
     <Answer className="ans" text={tidy(message.text)} labels={[]} onCite={onCite} />
   </div>
   return <div className="ans-turn">

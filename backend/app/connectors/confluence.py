@@ -1,5 +1,6 @@
 """Confluence Cloud CQL search and current v2 page reads under the linked identity."""
 import asyncio
+import dataclasses
 from urllib.parse import parse_qs, quote, urlsplit
 
 from bs4 import BeautifulSoup
@@ -30,6 +31,15 @@ def site_base(context: AccessContext) -> str:
     return f'https://{parsed.hostname}'
 
 
+def spaces(context: AccessContext) -> list[str]:
+    """The allowed space keys (comma-joined collection). Every search and read is bounded to them."""
+    check_context(context, 'confluence')
+    keys = [k.strip() for k in context.collection.split(',') if k.strip()]
+    if not keys or len(keys) > 30 or any(len(k) > 256 or any(ord(c) < 32 for c in k) for k in keys):
+        raise SourceError('denied')
+    return keys
+
+
 def readable_html(value: str) -> str:
     soup = BeautifulSoup(value, 'html.parser')
     for element in soup(['script', 'style', 'iframe', 'object', 'embed', 'noscript', 'svg']):
@@ -46,10 +56,10 @@ class ConfluenceConnector:
             user = await request_json(f'{base}/rest/api/user/current', context)
             if not user.get('accountId') or user['accountId'] != context.subject:
                 raise SourceError('denied')
-            # Verify space is visible with delegated identity, without requiring any page to exist.
-            spaces = await request_json(f'{base}/api/v2/spaces', context,
-                                         {'keys': context.collection, 'limit': 1})
-            if not any(s.get('key') == context.collection for s in spaces.get('results', [])):
+            # Verify at least one allowed space is visible with the delegated identity, without requiring any page to exist.
+            keys = spaces(context)
+            visible = await request_json(f'{base}/api/v2/spaces', context, {'keys': ','.join(keys), 'limit': len(keys)})
+            if not any(s.get('key') in keys for s in visible.get('results', [])):
                 raise SourceError('denied')
             return {'status': 'connected', 'identity_label': user.get('displayName') or context.subject,
                     'provider_subject': context.subject, 'tenant_id': context.tenant_id,
@@ -59,9 +69,8 @@ class ConfluenceConnector:
     async def search(self, query: str, context: AccessContext, cursor: str | None = None,
                      limit: int = 8) -> SearchPage:
         base = api_base(context)
-        if len(context.collection) > 256 or any(ord(c) < 32 for c in context.collection):
-            raise SourceError('denied')
-        clauses = ['type = page', f'space = {cql_literal(context.collection)}']
+        keys = spaces(context)
+        clauses = ['type = page', 'space in (' + ', '.join(cql_literal(k) for k in keys) + ')']
         terms = query_terms(query)
         if terms:
             clauses.append('(' + ' or '.join(f'text ~ {cql_literal(term)}' for term in terms) + ')')
@@ -96,7 +105,8 @@ class ConfluenceConnector:
                 raise SourceError('denied')
             space_id = checked_id(str(metadata.get('spaceId', '')), numeric=True)
             space = await request_json(f'{base}/api/v2/spaces/{space_id}', context)
-            if space.get('key') != context.collection:
+            space_key = space.get('key')
+            if space_key not in spaces(context):
                 raise SourceError('denied')
             page = await request_json(f'{base}/api/v2/pages/{identifier}', context,
                                        {'body-format': 'storage'})
@@ -107,7 +117,8 @@ class ConfluenceConnector:
                 raise SourceError('unsupported')
             text = readable_html(body)
             version = page.get('version', {})
-            canonical = f'{origin}/wiki/spaces/{quote(context.collection, safe="")}/pages/{identifier}'
-            return document(identifier, str(page.get('title', 'Untitled')), text, canonical,
-                            f'Confluence page in {context.collection}', str(version.get('number', '')),
-                            version.get('createdAt'))
+            canonical = f'{origin}/wiki/spaces/{quote(space_key, safe="")}/pages/{identifier}'
+            doc = document(identifier, str(page.get('title', 'Untitled')), text, canonical,
+                           f'Confluence page in {space_key}', str(version.get('number', '')),
+                           version.get('createdAt'))
+            return dataclasses.replace(doc, container=space_key)

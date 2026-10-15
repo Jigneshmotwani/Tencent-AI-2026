@@ -438,7 +438,13 @@ BUILTINS = {
     'jira': ('Jira', [('jira.get_issue', 'Read one Jira issue', True), ('jira.search', 'Search issues with JQL', True),
                       ('jira.comment', 'Comment on an issue (needs approval)', False), ('jira.transition', 'Move an issue to a status (needs approval)', False),
                       ('jira.create_issue', 'Create an issue (needs approval)', False)]),
-    'slack': ('Slack', [('slack.draft', 'Store a draft message (never sent)', True), ('slack.post', 'Post a message (needs approval)', False)]),
+    'slack': ('Slack', [('slack.read_channel', 'Read channel history and threads in a time window', True),
+                        ('slack.search', 'Search messages in your channels (knowledge retrieval)', True),
+                        ('slack.draft', 'Store a draft message (never sent)', True),
+                        ('slack.post_message', 'Post a message (needs approval)', False)]),
+    'drive': ('Google Drive', [('drive.get_file', 'Read one file in the allowed folders', True)]),
+    'access': ('Access review', [('access.inventory', "Where a person has access (admins and auditors; uses your own access)", True),
+                                 ('audit.user_activity', "A person's app activity from the audit log (admins and auditors)", True)]),
 }
 
 
@@ -453,7 +459,8 @@ def _builtin_public(db, key: str) -> dict:
     state = _builtin_state(db)
     tstate = state.get('tools') or {}
     org_enabled = state.get(key + '_enabled', True) is not False
-    configured = bool(cfg.atlassian_client_id and cfg.atlassian_client_secret) if key == 'jira' else cfg.slack_enabled
+    configured = {'jira': bool(cfg.atlassian_client_id and cfg.atlassian_client_secret), 'slack': cfg.slack_enabled,
+                  'drive': bool(cfg.google_client_id and cfg.google_client_secret)}.get(key, True)
     return {'id': 'builtin:' + key, 'name': name, 'kind': 'builtin', 'transport': 'builtin', 'tool_count': len(tools),
             'status': 'ok' if configured else 'not_configured', 'approval_status': 'approved', 'org_enabled': org_enabled, 'added_by': 'System',
             'tools': [{'name': t, 'description': d, 'read_only': ro, 'enabled': (tstate.get(t) or {}).get('enabled', True) is not False,
@@ -477,7 +484,7 @@ def tools_list(user: User = Depends(identity.current_user), db: DBSession = Depe
     admin = 'admin' in identity.effective_capabilities(user)
     servers = [s for s in db.scalars(select(McpServer).order_by(McpServer.created_at))
                if admin or (s.approval_status or 'approved') == 'approved' or s.created_by == user.id]
-    out = [_builtin_public(db, 'jira')] + ([_builtin_public(db, 'slack')] if settings().slack_enabled else [])
+    out = [_builtin_public(db, k) for k in BUILTINS if k != 'slack' or settings().slack_enabled]
     return out + [_mcp_public(db, s) for s in servers]
 
 

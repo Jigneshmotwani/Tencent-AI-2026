@@ -63,24 +63,23 @@ def _decrypt(value: str) -> dict:
         raise SourceError('unavailable') from None
 
 
-def _slack_channels() -> str:
-    return ','.join(dict.fromkeys(c.strip().lstrip('#').lower() for c in settings().slack_channels.split(',') if c.strip().lstrip('#')))
-
-
 def _collection(provider: str) -> str:
-    cfg = settings()
-    return {'drive': cfg.google_folder_id, 'confluence': cfg.confluence_space_key,
-            'jira': ','.join(cfg.jira_projects), 'slack': _slack_channels()}.get(provider, '')
+    from .scopes import collection
+    return collection(provider)
 
 
 def availability():
+    from .scopes import entries
     cfg = settings()
     atlassian = bool(cfg.atlassian_client_id and cfg.atlassian_client_secret and cfg.encryption_key)
-    return {'drive': {'configured': bool(cfg.google_client_id and cfg.google_client_secret and cfg.google_folder_id and cfg.encryption_key), 'collection': cfg.google_folder_id},
-            'confluence': {'configured': bool(atlassian and cfg.confluence_space_key), 'collection': cfg.confluence_space_key},
-            'jira': {'configured': bool(atlassian and cfg.jira_projects), 'collection': _collection('jira')},
-            'slack': {'configured': bool(cfg.slack_client_id and cfg.slack_client_secret and cfg.slack_team_id and _slack_channels() and cfg.encryption_key
-                                         and urlparse(cfg.api_tls_origin).scheme == 'https'), 'collection': _collection('slack')}}
+    configured = {'drive': bool(cfg.google_client_id and cfg.google_client_secret and cfg.encryption_key),
+                  'confluence': atlassian, 'jira': atlassian,
+                  'slack': bool(cfg.slack_enabled and cfg.encryption_key and urlparse(cfg.api_tls_origin).scheme == 'https')}
+    out = {}
+    for provider in PROVIDERS:
+        scopes = entries(provider)
+        out[provider] = {'configured': configured[provider] and bool(scopes), 'collection': ','.join(e['id'] for e in scopes), 'scopes': scopes}
+    return out
 
 
 def _provider(provider: str):
@@ -201,6 +200,10 @@ async def _exchange_code(client: httpx.AsyncClient, provider: str, code: str, en
     client_id, client_secret = _client_credentials(provider)
     payload = {'code': code, 'redirect_uri': _callback_url(provider), 'client_id': client_id, 'client_secret': client_secret}
     if provider == 'slack':
+        # PKCE (Slack treats localhost redirects of a PKCE-enabled app as desktop redirects): send the verifier and, as a
+        # public client, no client_secret (docs.slack.dev/authentication/using-pkce).
+        payload.pop('client_secret')
+        payload['code_verifier'] = _decrypt(encrypted)['verifier']
         result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
         authed = result.get('authed_user') or {}
         team = (result.get('team') or {}).get('id')
@@ -229,6 +232,7 @@ async def _refresh(client: httpx.AsyncClient, provider: str, token: dict) -> tup
     client_id, client_secret = _client_credentials(provider)
     payload = {'grant_type': 'refresh_token', 'refresh_token': token['refresh_token'], 'client_id': client_id, 'client_secret': client_secret}
     if provider == 'slack':
+        payload.pop('client_secret')  # PKCE public client: refresh with client_id + refresh_token only
         # Token rotation: refresh tokens are single-use; store the replacement every time.
         result = await _slack(client, 'POST', SLACK_TOKEN_URL, data=payload)
         source = result.get('authed_user') if isinstance(result.get('authed_user'), dict) and result['authed_user'].get('access_token') else result
@@ -274,8 +278,6 @@ async def hub(user: User = Depends(current_user), db: DBSession = Depends(get_db
     sources = []
     for provider in PROVIDERS:
         connection = own.get(provider)
-        if provider not in settings().enabled_sources and connection is None:
-            continue  # hidden until configured (Slack)
         last_ok = db.scalar(select(AuditEvent.timestamp).where(AuditEvent.actor_id == user.id, AuditEvent.provider == provider,
                                                                AuditEvent.operation == 'source.read', AuditEvent.outcome == 'allowed')
                             .order_by(AuditEvent.timestamp.desc()).limit(1))
@@ -283,6 +285,7 @@ async def hub(user: User = Depends(current_user), db: DBSession = Depends(get_db
                                                                     AuditEvent.operation.in_(('source.read', 'source.search')))
                                  .order_by(AuditEvent.timestamp.desc()).limit(1))
         entry = {'provider': provider, 'configured': available[provider]['configured'], 'configured_collection': available[provider]['collection'],
+                 'scopes': available[provider]['scopes'],
                  'requested_scopes': sorted(REQUIRED_SCOPES[provider]), 'connection': None,
                  'freshness': {'last_successful_fetch': last_ok, 'last_attempt': last_attempt}}
         if connection is not None:
@@ -330,8 +333,10 @@ def authorize(provider: str, request: Request, user: User = Depends(current_user
                        'code_challenge_method': 'S256'})
         endpoint = 'https://accounts.google.com/o/oauth2/v2/auth'
     elif provider == 'slack':
-        # User-token scopes only (no bot); `team` pre-selects the configured workspace.
-        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id})
+        # User-token scopes only (no bot); `team` pre-selects the configured workspace. PKCE S256 (required for localhost redirects).
+        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id,
+                       'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='),
+                       'code_challenge_method': 'S256'})
         endpoint = 'https://slack.com/oauth/v2/authorize'
     else:
         # Atlassian documents confidential-client 3LO, not a PKCE public-client flow.
@@ -410,9 +415,15 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
     async with _locks.setdefault(connection_id, asyncio.Lock()):
         connection = _own(db, user, connection_id)
         db.refresh(connection)
-        if (connection.provider not in PROVIDERS or connection.status != 'connected' or not connection.credential_ref
-                or not connection.collection or connection.collection != _collection(connection.provider)):
+        if connection.provider not in PROVIDERS or connection.status != 'connected' or not connection.credential_ref:
             raise SourceError('unavailable')
+        # The allowed scopes come from the active demo pack or .env and can change (a pack load). The connection follows
+        # them: they only bound which containers are searched; the user's own token still decides what is readable.
+        current = _collection(connection.provider)
+        if not current:
+            raise SourceError('unavailable')
+        if connection.collection != current:
+            connection.collection = current
         required = REQUIRED_SCOPES[connection.provider]
         if not required.issubset(set(connection.scopes or [])):
             raise SourceError('scope_missing')

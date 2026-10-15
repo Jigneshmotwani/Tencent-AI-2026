@@ -28,14 +28,17 @@ class AuditQuery(BaseModel):
     model_config = ConfigDict(extra='forbid')
     actor: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_.@-]{1,64}$', description='username')
     provider: str | None = Field(default=None, pattern=r'^[a-z0-9_.-]{1,40}$', description='drive|confluence|jira|slack|mcp server|...')
-    container: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_.:@/-]{1,200}$', description='space/project key, channel id, folder id')
+    container: str | None = Field(default=None, pattern=r'^[A-Za-z0-9 _.:@/#-]{1,200}$', description='space/project/channel/folder key, id or display name')
     resource_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_.:@/#-]{1,300}$')
-    outcome: Literal['allowed', 'denied', 'error'] | None = None
+    outcome: Literal['allowed', 'denied', 'error', 'blocked'] | None = None  # blocked = guardrail.blocked events
     workflow: str | None = Field(default=None, min_length=1, max_length=100, description='workflow id or exact name')
     operation: str | None = Field(default=None, max_length=80, description="exact name or prefix wildcard, e.g. 'source.*'")
     run_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9-]{1,64}$')
     topic: str | None = Field(default=None, min_length=1, max_length=80, description='a named topic from the audit_labels policy')
     last_days: int | None = Field(default=None, ge=1, le=366, description='rolling window ending now')
+    last_hours: int | None = Field(default=None, ge=1, le=720, description='rolling window of hours ending now')
+    document: str | None = Field(default=None, min_length=2, max_length=200, description='a document title; resolved to ids with the auditor\'s own access')
+    resource_ids: list[str] | None = Field(default=None, max_length=50, description='any of these provider resource ids')
     period: Literal['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month'] | None = Field(
         default=None, description='calendar period in the viewer timezone (weeks start Monday)')
     tz: str | None = Field(default=None, max_length=64, description='IANA timezone the calendar period is read in; default UTC')
@@ -98,11 +101,19 @@ def _filters(db, q: AuditQuery):
     if q.provider:
         conditions.append(AuditEvent.provider == q.provider)
     if q.container:
-        conditions.append(func.lower(AuditEvent.container) == q.container.lower())
+        keys = container_keys(db, q.container)
+        # Exact key, or one entry of a comma-joined multi-scope search container.
+        pattern = '(^|,)(' + '|'.join(re.escape(k) for k in keys) + ')(,|$)'
+        conditions.append(or_(func.lower(AuditEvent.container).in_(keys), AuditEvent.container.op('~*')(pattern)))
     if q.resource_id:
         conditions.append(cast(AuditEvent.resource_ids, JSONB).contains([q.resource_id]))
-    if q.outcome:
+    if q.outcome == 'blocked':
+        conditions.append(AuditEvent.operation == 'guardrail.blocked')
+    elif q.outcome:
         conditions.append(AuditEvent.outcome == q.outcome)
+    if q.resource_ids is not None:
+        ids = [r for r in q.resource_ids if isinstance(r, str) and r][:50]
+        conditions.append(or_(*[cast(AuditEvent.resource_ids, JSONB).contains([r]) for r in ids]) if ids else AuditEvent.id.is_(None))
     if q.workflow:
         ids = list(db.scalars(select(Workflow.id).where(or_(Workflow.id == q.workflow, func.lower(Workflow.name) == q.workflow.lower()))))
         conditions.append(AuditEvent.workflow_id.in_(ids))
@@ -123,9 +134,10 @@ def _filters(db, q: AuditQuery):
         parts += [cast(AuditEvent.resource_ids, JSONB).contains([r]) for r in topic.get('resource_ids') or []]
         conditions.append(or_(*parts))
     since = q.since
-    if q.last_days:
-        window = datetime.now(timezone.utc) - timedelta(days=q.last_days)
-        since = max(since, window) if since else window
+    for window in ((datetime.now(timezone.utc) - timedelta(days=q.last_days)) if q.last_days else None,
+                   (datetime.now(timezone.utc) - timedelta(hours=q.last_hours)) if q.last_hours else None):
+        if window is not None:
+            since = max(since, window) if since else window
     until = q.until
     if q.period:
         start, end = period_bounds(q.period, q.tz)
@@ -138,14 +150,66 @@ def _filters(db, q: AuditQuery):
     return and_(*conditions) if conditions else None
 
 
+def container_keys(db, text: str) -> list[str]:
+    """Lower-cased container keys matching `text` by key OR display name (pack scope names and audit labels),
+    ignoring case, spaces and punctuation: "payment-gateway", "Payment Gateway" and "PGW" are the same space."""
+    from ..scopes import match_containers, slug
+    from .labels import load_labels
+    keys = {text.lower()}
+    keys |= {k.lower() for k in match_containers(text)}
+    wanted = slug(text)
+    for key, label in load_labels(db)['containers'].items():
+        if wanted and wanted in (slug(key), slug(label)):
+            keys.add(key.lower())
+    return sorted(keys)
+
+
+async def resolve_document(db, user, title: str) -> list[str]:
+    """Provider ids of documents titled like `title` that the AUDITOR can see, found with the auditor's own linked
+    accounts (titles are never stored in audit). [] when the auditor cannot identify it."""
+    import asyncio
+    from ..config import settings
+    from ..connections import access_context
+    from ..connectors import registry
+    from ..contracts import SourceError
+    from ..db import SessionLocal, SourceConnection
+    from ..knowledge import name_matcher
+    from ..telemetry import audit
+    named = name_matcher(title)
+    words = {w for w in re.findall(r'\w+', title.lower()) if len(w) > 2}
+    connections = list(db.scalars(select(SourceConnection).where(SourceConnection.owner_id == user.id, SourceConnection.status == 'connected')))
+
+    async def one(conn):
+        try:
+            async with asyncio.timeout(settings().source_timeout):
+                with SessionLocal() as own:
+                    context = await access_context(own, user, conn.id)
+                page = await registry[conn.provider].search(title, context, limit=10)
+        except (SourceError, TimeoutError, KeyError):
+            return []
+        with SessionLocal() as own:
+            audit(own, user.id, 'source.search', provider=conn.provider, container=context.collection,
+                  details={'purpose': 'audit_document_lookup', 'hit_count': len(page.hits)})
+        out = []
+        for hit in page.hits:
+            hit_words = {w for w in re.findall(r'\w+', hit.title.lower()) if len(w) > 2}
+            # The title must name the document: an identifier match, or most of the asked-for words.
+            if named(hit.title) or (words and len(words & hit_words) / len(words) >= 0.75):
+                out.append(hit.document_id)
+        return out
+
+    found = await asyncio.gather(*(one(c) for c in connections if c.provider in registry))
+    return list(dict.fromkeys(i for ids in found for i in ids))[:50]
+
+
 def event_row(row: AuditEvent, user: User | None, ctx: tuple | None = None) -> dict:
-    from .labels import action_label, resource_label
+    from .labels import action_label, container_label, resource_label
     labels, workflows, inputs = ctx or ({'containers': {}, 'resources': {}, 'topics': {}}, {}, {})
     res, mono = resource_label(row, labels, workflows, inputs)
     return {'seq': row.seq, 'timestamp': row.timestamp, 'actor': user.username if user else row.actor_id,
             'actor_name': user.name if user else ('Unknown' if row.actor_id == 'unknown' else row.actor_id),
             'actor_title': (user.title if user else '') or '', 'label': action_label(row.operation, row.outcome),
-            'resource_label': res, 'resource_mono': mono, 'hash': row.hash, 'operation': row.operation,
+            'resource_label': res, 'resource_mono': mono, 'container_label': container_label(row.container, labels), 'hash': row.hash, 'operation': row.operation,
             'provider': row.provider, 'outcome': row.outcome, 'reason': row.reason, 'container': row.container,
             'resource_ids': list(row.resource_ids or []), 'decision': dict(row.decision or {}), 'workflow_id': row.workflow_id,
             'workflow_version': row.workflow_version, 'node_id': row.node_id, 'run_id': row.run_id, 'trace_id': row.trace_id,
@@ -277,16 +341,18 @@ def _system_prompt(db, tz: str | None = None) -> str:
         'Allowed keys (omit any key the request does not constrain):\n'
         '  actor: username of the person whose activity is requested\n'
         f'  provider: one of {json.dumps(providers)}\n'
-        '  container: Confluence space key, Jira project key, Slack channel id or Drive folder id, copied verbatim (e.g. "NSDEMO", "KYB")\n'
+        '  container: a Confluence space, Jira project, Slack channel or Drive folder, as its key OR its display name, copied verbatim (e.g. "NSDEMO", "KYB", "Payment Gateway")\n'
         '  resource_id: one provider resource id\n'
-        '  outcome: "allowed", "denied" or "error"\n'
+        '  outcome: "allowed", "denied", "error", or "blocked" (requests stopped by the chat guardrail)\n'
         '  workflow: workflow name or id\n'
         '  operation: exact operation name or a prefix wildcard such as "source.*"\n'
         '  run_id: one run id\n'
         '  topic: exact name of a known topic when the request is about it (e.g. a kind of case file)\n'
         '  period: calendar period, one of "today", "yesterday", "this_week", "last_week", "this_month", "last_month" '
         '(use for "today", "yesterday", "this week", "last week", "this month", "last month")\n'
-        '  last_days: integer 1-366 for rolling windows ending now ("last 30 days" -> 30, "past 3 days" -> 3); never for today/yesterday\n'
+        '  last_days: integer 1-366 for rolling windows of days ending now ("in the last 30 days" -> 30, "past 3 days" -> 3, "last week" is NOT this; never for today/yesterday)\n'
+        '  last_hours: integer 1-720 for rolling windows of hours ("past 6 hours" -> 6, "last 24 hours" -> 24)\n'
+        '  document: the title of ONE document when the request asks who retrieved/opened/read a named document (e.g. "the payment gateway runbook"); copy the title words\n'
         '  since / until: ISO-8601 UTC timestamps for absolute windows\n'
         '  limit: integer 1-200 (default 50)\n'
         'Guidance: "accessed", "read", "viewed", "retrieved" or "searched" source content means operation "source.*". '
@@ -303,6 +369,9 @@ def _system_prompt(db, tz: str | None = None) -> str:
         'Example: "who opened STR case files this week" (with a known topic "STR case files") -> '
         '{"operation":"source.read","topic":"STR case files","period":"this_week"}\n'
         'Example: "denied access yesterday" -> {"outcome":"denied","period":"yesterday"}\n'
+        'Example: "everything priya accessed in the last 30 days" -> {"actor":"priya","operation":"source.*","last_days":30}\n'
+        'Example: "blocked requests in the past 12 hours" -> {"outcome":"blocked","last_hours":12}\n'
+        'Example: "who retrieved the payment gateway runbook" -> {"operation":"source.*","document":"payment gateway runbook"}\n'
         'Example: "denied Slack reads by compliance this week" -> '
         '{"actor":"compliance","provider":"slack","operation":"source.read","outcome":"denied","period":"this_week"}'
     )
@@ -366,17 +435,24 @@ def describe(db, q: AuditQuery) -> str:
         else:
             parts.append(action_label(q.operation, 'allowed'))
     if q.container:
-        parts.append(q.container)
+        from .labels import load_labels
+        keys = container_keys(db, q.container)
+        names = load_labels(db)['containers']
+        parts.append(next((names[k] for k in names if k.lower() in keys), q.container))
     if q.provider and not q.container:
         parts.append(q.provider.capitalize())
     if q.workflow:
         parts.append(q.workflow)
     if q.outcome:
-        parts.append({'allowed': 'Allowed', 'denied': 'Denied', 'error': 'Errors'}[q.outcome])
+        parts.append({'allowed': 'Allowed', 'denied': 'Denied', 'error': 'Errors', 'blocked': 'Blocked requests'}[q.outcome])
+    if q.document:
+        parts.insert(0, f'"{q.document[:60]}"')
     if q.period:
         parts.append(q.period.replace('_', ' '))
     elif q.last_days:
-        parts.append('last 24 hours' if q.last_days == 1 else 'last 7 days' if q.last_days == 7 else f'last {q.last_days} days')
+        parts.append('last 24 hours' if q.last_days == 1 else f'last {q.last_days} days')
+    elif q.last_hours:
+        parts.append('last hour' if q.last_hours == 1 else f'last {q.last_hours} hours')
     if q.since or q.until:
         fmt = lambda d: d.strftime('%d %b')
         parts.append(f"{fmt(q.since) if q.since else '…'} – {fmt(q.until) if q.until else 'now'}")

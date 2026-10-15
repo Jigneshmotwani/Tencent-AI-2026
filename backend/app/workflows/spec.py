@@ -56,8 +56,10 @@ class InputDef(Strict):
 
 
 class Trigger(Strict):
-    type: Literal['manual', 'chat', 'jira_issue_poll'] = 'manual'
-    config: dict[str, Any] = Field(default_factory=dict)  # jira_issue_poll: {jql, input: 'case_key', interval_s}
+    type: Literal['manual', 'chat', 'jira_issue_poll', 'jira_issue_created', 'drive_file_added', 'schedule'] = 'manual'
+    # jira_issue_created: {jql, input}; drive_file_added: {folder_id, input}; schedule: {cron, timezone}. The trigger node's
+    # config is the source of truth (workflows/triggers.py); this mirrors it for older readers.
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class Policies(Strict):

@@ -1,0 +1,12 @@
+# EXAMPLE. Built from the generic `partner_change_radar` template.
+name: Partner Change Radar
+description: Watches the partner folder, maps a partner change to affected services and drafts a ticket for approval.
+owner: arjun
+status: published
+audience: {kind: group, groups: [payments-leads]}
+template: partner_change_radar
+template_settings:
+  folder_id: REPLACE-partner-folder-id
+  partner_channels: [partner-updates]
+  ticket_project: PAY
+  approver_group: payments-leads

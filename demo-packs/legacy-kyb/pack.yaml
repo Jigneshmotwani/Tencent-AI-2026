@@ -1,0 +1,160 @@
+# Demo pack "legacy-kyb", exported 2026-10-15 11:57 UTC from the local database.
+# Load: uv run python -m backend.app.demo_pack load legacy-kyb --reset
+app:
+  org_name: Northstar Pay (synthetic)
+  timezone: Asia/Singapore
+users:
+- username: admin
+  display_name: Wei Ming Tan
+  email: weiming.tan@northstarpay.example
+  title: Compliance lead
+  roles:
+  - admin
+  groups:
+  - Compliance
+  - Compliance leads
+- username: auditor
+  display_name: Aisha Rahman
+  email: aisha.rahman@northstarpay.example
+  title: Auditor
+  roles:
+  - auditor
+  - user
+  groups:
+  - Audit
+- username: compliance
+  display_name: Priya Raman
+  email: priya.raman@northstarpay.example
+  title: Compliance
+  roles:
+  - builder
+  groups:
+  - Compliance
+  - Onboarding
+- username: operations
+  display_name: Daniel Koh
+  email: daniel.koh@northstarpay.example
+  title: Operations
+  roles:
+  - user
+  groups:
+  - Onboarding
+  - Operations
+groups:
+- name: Audit
+  description: Internal audit and risk reviewers.
+  used_for:
+  - audiences
+- name: Compliance
+  description: Fincrime and compliance analysts.
+  used_for:
+  - audiences
+  - tool_access
+  - budgets
+- name: Compliance leads
+  description: Approve STR filings and publish requests.
+  used_for:
+  - approvers
+- name: Onboarding
+  description: Business onboarding and KYB reviewers.
+  used_for:
+  - audiences
+  - tool_access
+- name: Operations
+  description: Customer operations and support.
+  used_for:
+  - audiences
+  - budgets
+scopes:
+  confluence_spaces:
+  - key: NSDEMO
+    name: Northstar Demo
+  jira_projects:
+  - key: KYB
+    name: KYB cases
+  - key: FINCRIME
+    name: FinCrime cases
+  slack_channels:
+  - id: all-tencent-ai-2026
+    name: Team announcements
+  - id: new-channel
+    name: Ops chatter
+  slack_write_channels:
+  - id: new-channel
+  drive_folders:
+  - id: 1ksmfdCpCk-hpZCWPv9qQP2jyC5xXrW5p
+agents:
+- agents/kyb-case-reviewer.yaml
+- agents/kyb-quick-check-starter.yaml
+- agents/policy-expert.yaml
+- agents/incident-assistant.yaml
+- agents/audit-explorer.yaml
+- agents/transaction-investigator.yaml
+- agents/untitled-agent.yaml
+- agents/untitled-agent-2.yaml
+subscriptions: []
+audit_suggestions:
+- Who opened STR case files this week?
+- Denied access attempts today
+- Everything that happened yesterday
+- What did operations ask about Acme?
+workspace_suggestions:
+- A customer received S$480k in 9 transfers from 6 new overseas senders in 48 hours. What does our policy say we must do?
+- What does SG KYB Policy v3 require for UBO verification?
+budgets:
+  groups:
+    Compliance: 40.0
+    Compliance leads: 20.0
+    Operations: 10.0
+    Onboarding: 30.0
+    Audit: 20.0
+  users:
+    operations: 10.0
+    compliance: 30.0
+    admin: 30.0
+    auditor: 20.0
+  agents:
+    Incident Assistant:
+      limit_usd: 10.0
+      max_steps: 10
+      max_tokens: 30000
+    KYB Case Reviewer:
+      limit_usd: 15.0
+      max_steps: 15
+      max_tokens: 40000
+    Policy Expert:
+      limit_usd: 10.0
+      max_steps: 8
+      max_tokens: 20000
+    Audit Explorer:
+      limit_usd: 20.0
+      max_steps: 10
+      max_tokens: 30000
+    Transaction Investigator:
+      limit_usd: 40.0
+      max_steps: 20
+      max_tokens: 60000
+  org:
+    limit_usd: 200.0
+    threshold_pct: 80
+policies:
+  publish_reviewer_group: Compliance leads
+  approval_rules: {}
+  allowed_models: []
+audit_labels:
+  containers:
+    FINCRIME: FINCRIME Jira project
+    1im4QAyYDLzPf_s-X0kbzx7bu3CKPYtGa: FinCrime cases folder
+  resources:
+    '1474585': FINCRIME case notes
+    1E-a0ZL2-6-ta6O32qrcJmedR3s_UblAp: ALR-2291 case file
+    1OZjPOF7NnMXE-60uiNP0edIYLh-0nCbZ: FC-2026-014 case file
+  topics:
+    STR case files:
+      containers:
+      - FINCRIME
+      - 1im4QAyYDLzPf_s-X0kbzx7bu3CKPYtGa
+      resource_ids:
+      - '1474585'
+      - 1E-a0ZL2-6-ta6O32qrcJmedR3s_UblAp
+      - 1OZjPOF7NnMXE-60uiNP0edIYLh-0nCbZ

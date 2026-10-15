@@ -60,6 +60,8 @@ def _published_for(db, wf: Workflow, user: User) -> WorkflowVersion | None:
 
 def _owned_wf(db, wf_id, user, edit=False) -> Workflow:
     wf = db.get(Workflow, wf_id)
+    if wf is not None and wf.status == 'archived':
+        wf = None  # deleted agents cannot be opened or edited
     if wf is None or wf.owner_id != user.id or (edit and 'builder' not in _caps(user)):
         if wf is not None and wf.owner_id == user.id:
             raise HTTPException(403, 'capability_required')
@@ -70,7 +72,7 @@ def _owned_wf(db, wf_id, user, edit=False) -> Workflow:
 def _readable_wf(db, wf_id, user):
     """(workflow, is_owner, published_version_row) or 404."""
     wf = db.get(Workflow, wf_id)
-    if wf is None:
+    if wf is None or wf.status == 'archived':
         _not_found(db, user)
     if wf.owner_id == user.id:
         return wf, True, None
@@ -91,6 +93,7 @@ def summary(db, wf: Workflow, user: User) -> dict:
             'template_key': wf.template_key, 'owner': owner.username if owner else '', 'draft_version': wf.draft_version,
             'published_version': wf.published_version, 'updated_at': wf.updated_at,
             'can_edit': is_owner and 'builder' in _caps(user), 'can_run': can_run,
+            'can_delete': (is_owner and 'builder' in _caps(user)) or 'admin' in _caps(user),
             'display_status': R.display_status(wf) if is_owner else wf.status, 'live_version': wf.published_version,
             'review_state': wf.review_state or '', 'review_version': wf.review_version,
             'audience_label': R.audience_label(db, (live or shown).spec if (live or shown) else None),
@@ -127,6 +130,8 @@ def detail(db, wf: Workflow, user: User) -> dict:
 
 
 def _normalize(spec: dict, wf: Workflow, version: int, status: str) -> dict:
+    from .triggers import sync_trigger
+    spec = sync_trigger(dict(spec))
     try:
         model = WorkflowSpec.model_validate({**spec, 'id': wf.id, 'version': version, 'status': status})
     except ValidationError as exc:
@@ -157,6 +162,9 @@ def run_summary(db, run: WorkflowRun) -> dict:
                                          'steps_used', 'tokens_used', 'cost_usd', 'error_code', 'created_at', 'finished_at', 'latency_ms',
                                          'paused_node_id', 'model_alias')}
     out['outputs'] = run.outputs or {}
+    out['trigger_info'] = dict(run.trigger_info or {})
+    owner = db.get(User, run.owner_id)
+    out['runs_as'] = (owner.name or owner.username) if owner else ''
     out['workflow_name'] = wf.name if wf else ''
     out['grafana_trace_url'] = grafana_trace_url(run.trace_id) if run.trace_id else None
     return out
@@ -219,10 +227,8 @@ def workflows_list(user: User = Depends(identity.current_user), db: DBSession = 
 @router.get('/workflow-templates')
 def templates_list(user: User = Depends(identity.current_user)):
     identity.require_capability(user, 'builder')
-    try:
-        from .templates import TEMPLATES
-    except ImportError:
-        TEMPLATES = {}
+    from .templates import studio_templates
+    TEMPLATES = studio_templates()
     return [{'key': k, 'name': t.get('name', k), 'description': t.get('description', ''), 'icon': t.get('icon', 'flow'),
              'node_count': len(t.get('nodes', []))} for k, t in TEMPLATES.items()]
 
@@ -247,10 +253,8 @@ def workflows_create(body: NewWorkflow, request: Request, user: User = Depends(i
 @router.post('/workflows/from-template')
 def workflows_from_template(body: FromTemplate, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
-    try:
-        from .templates import TEMPLATES
-    except ImportError:
-        TEMPLATES = {}
+    from .templates import studio_templates
+    TEMPLATES = studio_templates()
     if body.template_key not in TEMPLATES:
         raise HTTPException(404, 'template_not_found')
     spec = copy.deepcopy(TEMPLATES[body.template_key])
@@ -333,6 +337,38 @@ def workflow_publish(wf_id: str, request: Request, user: User = Depends(identity
     return detail(db, wf, user)
 
 
+@router.delete('/workflows/{wf_id}')
+async def workflow_delete(wf_id: str, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
+    """Delete an agent (owner with builder, or admin). Soft delete: the agent is archived, so it leaves Studio, Workspace, the
+    catalog and the trigger loop, while its runs, approvals and audit history stay for the record. In-flight runs and
+    pending approvals (run actions and publish requests) are cancelled; subscriptions and trigger state are removed."""
+    from ..db import Subscription, TriggerState
+    identity.require_capability(user, 'user'); identity.require_mutation(request, user, db)
+    wf = db.get(Workflow, wf_id)
+    allowed = wf is not None and wf.status != 'archived' and (
+        (wf.owner_id == user.id and 'builder' in _caps(user)) or ('admin' in _caps(user) and (wf.owner_id == user.id or _published_for(db, wf, user) is not None)))
+    if not allowed:
+        _not_found(db, user)
+    live = [r for r in db.scalars(select(WorkflowRun.id).where(WorkflowRun.workflow_id == wf.id,
+                                                                WorkflowRun.status.in_(('pending', 'running', 'paused'))))]
+    for run_id in live:
+        await engine.cancel_run(run_id)  # also cancels the run's pending approvals
+    db.expire_all()
+    wf = db.get(Workflow, wf_id)
+    for a in db.scalars(select(Approval).where(Approval.workflow_id == wf.id, Approval.status == 'pending')):
+        a.status, a.decided_at, a.reason = 'cancelled', now(), 'agent deleted'
+    subs = db.execute(Subscription.__table__.delete().where(Subscription.workflow_id == wf.id)).rowcount
+    state = db.get(TriggerState, wf.id)
+    if state is not None:
+        db.delete(state)
+    previous = wf.status
+    wf.status, wf.review_state, wf.updated_at = 'archived', '', now()
+    audit(db, user.id, 'workflow.delete', workflow_id=wf.id, workflow_version=wf.published_version or wf.draft_version,
+          details={'previous_status': previous, 'runs_cancelled': len(live), 'subscriptions_removed': subs, 'owner_id': wf.owner_id}, commit=False)
+    db.commit()
+    return {'ok': True, 'runs_cancelled': len(live)}
+
+
 @router.post('/workflows/{wf_id}/suspend')
 def workflow_suspend(wf_id: str, request: Request, user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'builder'); identity.require_mutation(request, user, db)
@@ -388,13 +424,16 @@ def workflow_restore(wf_id: str, version: int, request: Request, user: User = De
 @router.get('/catalog')
 def catalog(user: User = Depends(identity.current_user), db: DBSession = Depends(get_db)):
     identity.require_capability(user, 'user')
+    from .triggers import subscribed_ids, trigger_of
+    mine = subscribed_ids(db, user)
     out = []
     for wf in db.scalars(select(Workflow).where(Workflow.status == 'published').order_by(Workflow.name)):
         pub = _published_for(db, wf, user)
         if pub is None:
             continue
-        out.append({**summary(db, wf, user), 'inputs': pub.spec.get('inputs', []), 'trigger': pub.spec.get('trigger', {}),
-                    'version': pub.version})
+        kind, config, _ = trigger_of(pub.spec or {})
+        out.append({**summary(db, wf, user), 'inputs': pub.spec.get('inputs', []), 'trigger': {'type': kind, 'config': config},
+                    'version': pub.version, 'scheduled': kind == 'schedule', 'subscribed': wf.id in mine})
     return out
 
 
@@ -422,7 +461,8 @@ async def run_create(wf_id: str, body: RunBody, request: Request, user: User = D
     if engine.active_count() >= settings().workflow_max_active:
         raise HTTPException(429, 'run_capacity_reached')
     try:
-        run = engine.create_run(db, wf, row, user, body.inputs, trigger=(row.spec.get('trigger') or {}).get('type', 'manual'))
+        from .triggers import invocation_trigger
+        run = engine.create_run(db, wf, row, user, body.inputs, trigger=invocation_trigger(row.spec))
     except ValueError as exc:
         code = str(exc)
         if code == 'validation_failed':

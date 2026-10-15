@@ -51,6 +51,8 @@ ACTIONS = {
     'mcp.tool_call': ('Called tool', 'Tool call failed'),
     'tool.mcp': ('Called tool', 'Tool call failed'),
     'guardrail.chat': ('Chat request checked against role', 'Chat request denied (not authorized)'),
+    'guardrail.blocked': ('Blocked request', 'Blocked request'),
+    'workflow.delete': ('Deleted agent', 'Deleted agent'),
     'guardrail.relevance': ('Dropped irrelevant sources', None),
     'guardrail.ungrounded': ('Replaced an unsupported answer', 'Replaced an unsupported answer'),
     'guardrail.pii': ('Masked PII', None),
@@ -103,6 +105,9 @@ def container_label(container: str | None, labels: dict) -> str:
     """Admin label, or a short space/project key (NSDEMO, KYB). Opaque ids (Drive folder ids) are not shown."""
     if not container:
         return ''
+    if ',' in container:  # a search across several allowed scopes
+        parts = [container_label(c.strip(), labels) for c in container.split(',') if c.strip()]
+        return ', '.join(p for p in parts if p)
     if container in labels['containers']:
         return labels['containers'][container]
     return container if SHORT_KEY.match(container) else ''
@@ -111,8 +116,12 @@ def container_label(container: str | None, labels: dict) -> str:
 def load_labels(db) -> dict:
     row = db.get(PlatformPolicy, 'audit_labels')
     value = dict(row.value or {}) if row else {}
-    return {'containers': dict(value.get('containers') or {}), 'resources': dict(value.get('resources') or {}),
-            'topics': dict(value.get('topics') or {})}
+    containers = dict(value.get('containers') or {})
+    # Display names of the allowed scopes (demo pack) label their containers: "Payment Gateway" instead of "PGW".
+    from ..scopes import labels as scope_labels
+    for key, name in scope_labels().items():
+        containers.setdefault(key, name)
+    return {'containers': containers, 'resources': dict(value.get('resources') or {}), 'topics': dict(value.get('topics') or {})}
 
 
 def action_label(operation: str, outcome: str) -> str:
