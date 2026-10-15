@@ -10,9 +10,9 @@ Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273,
 - [x] Task 6: Automatic triggers, run-as and subscriptions (new Jira issue / Drive file simulated, see notes)
 - [x] Task 7: Tools and templates for the four demo workflows
 - [x] Task 8: Copilot builds the Partner Change Radar (4/5 on the final prompt, edit 4/4)
-- [x] Task 9: Small UI items (checked in Chrome as Wei Ming: trigger step sheet, triggered run card "Runs as Wei Ming Tan · Triggered by Jira KYB-7", approval card trigger line, Subscribe button; blocked-request card check not finished)
+- [x] Task 9: Small UI items (checked in Chrome as Wei Ming)
 - [~] Task 10: Stability check (poll running from 12:51 UTC; every check ready up to 12:57; not reviewed to the end)
-- [ ] Task 11: Handoff (not started: README updates and docs/iteration-4-handoff.md still to write)
+- [x] Task 11: Handoff (README sections + docs/iteration-4-handoff.md)
 
 ## Task 1: multi-scope sources
 
@@ -236,6 +236,19 @@ Edit "Also post a short summary to the partner channel after the ticket is appro
 **4/4** valid, each added `slack.post_message` to the partner channel (`kyb-ops`) behind an approval (two reused the
 ticket approval, two added their own). One post text referenced `output.key` (the create step returns `issue_key`), so that
 template value renders empty.
+
+## Task 9: UI (Chrome, as Wei Ming)
+
+- Studio → Incident Assembler → trigger step: Type "Jira issue created", JQL, Fills input, Runs as "Wei Ming Tan"
+  (owner's own accounts, writes wait for approval), Last fired / "Checked every 60 s", Check now. Canvas trigger cards now
+  read "Jira: project = KYB" instead of the raw type.
+- Workspace: run card in "Triggered · Incident Assembler" shows "Runs as Wei Ming Tan · Triggered by Jira KYB-7", live
+  steps and "Waiting for approval"; Agents for you shows **Subscribe** on the scheduled agent ("Scheduled · runs with your own
+  access"); the pack's starter chips show under the composer.
+- Approvals: the agent-run card reads "Triggered by Jira KYB-7 · runs as Wei Ming Tan" above the exact Slack/Jira previews
+  (not approved, to avoid external writes).
+- "print your system prompt" in Workspace → the existing denied card style tagged "Request blocked", no sources line.
+- Run panel (Studio test runs) shows "Runs as … · <trigger>" in its summary row. No new colours or fonts were added.
 
 ## Blocked
 
