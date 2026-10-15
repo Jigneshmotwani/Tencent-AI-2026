@@ -179,3 +179,22 @@ Verify `ok` (3,450 events) → tamper seq 3449 (`reason || ' [tampered]'`) → V
 "reason": "hash_mismatch"}` → restore → Verify `ok` again. NL query "Show me everything user 'marco' accessed related to the
 'VNRAIL' Confluence space in the last 30 days." → `{actor: marco, container: VNRAIL, operation: source.*, last_days: 30}`,
 label "Marco Rossi · Source access · Vietnam Rail Integration · last 30 days" (3.2 s).
+
+### Live checks with linked accounts (16 Oct 03:50-04:30 SGT; Slack not linked yet)
+
+- **Beat 5, tracker Run now** (as weiling): 2 runs, one per subscriber. Daniel (owner): evidence SEC-101, SEC-102,
+  PAYRAIL-420, PAYRAIL-421 (+2); summary names the SEC findings and the PAYRAIL upgrades with due dates, 49.2 s,
+  $0.000976. Arjun (A): evidence PAYRAIL only (420, 421, 410, 415), no SEC item, 49.4 s, $0.000841. Each run is 404 for
+  the other person. **Bug found and fixed**: Arjun's summary was emptied by the grounding guardrail (18 sentences
+  removed, 0 verified) because the model cited once at the end of each paragraph; grounding now lets a paragraph-final
+  citation support the uncited sentences before it on the same line (still strips lines with no valid citation, still
+  removes invalid ids). Re-grounding Arjun's original text: 14 verified, 4 removed (headings and preamble).
+- **Beat 5, Marco** "Show me the security incident report from the Q3 breach": the exact not-found sentence, no
+  evidence, no answer-model call, 25.3 s.
+- **Beat 1 (partial, no Slack)**: first two tries returned the not-found sentence after 50 s / 44 s with "documents took
+  too long" limitations. Cause: the machine is out of memory (14.8 GB RAM, 37.6 GB committed, 20,955 pages/s; VS Code
+  2.4 GB, Firefox 2.3 GB, Claude 2.0 GB, ChatGPT 0.5 GB), so in-process searches ran 2-4x slower than the same calls
+  made directly (Jira search 1.2 s direct vs 6.6 s in the API). Mitigation: `SOURCE_TIMEOUT` 25 → 40 s (local `.env`) and
+  4 instead of 6 reads per source. Third try: answered in 52.1 s, $0.0019, citing the VN rail integration guide and
+  launch checklist (Confluence VNRAIL), PAYRAIL-415 and VNR-3/5 (Jira). Slack part pending (no Slack link yet).
+  **Before recording: close ChatGPT, extra VS Code windows and Firefox tabs; aim for 4+ GB free.**
