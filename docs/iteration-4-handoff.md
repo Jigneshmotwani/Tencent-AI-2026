@@ -95,6 +95,14 @@ requires `jira.search`): 2/5. Final (8,192-token output cap + sharper rule): **4
   and publish requests cancelled, triggers and subscriptions removed; runs and audit are kept (`workflow.delete`, "Deleted
   agent"). Checked: owner delete, non-owner builder 404, user 403, second delete 404, Escape does not delete.
 
+- **Live Jira trigger checked.** Published an Incident Assembler (`project = KYB`) as Wei Ming; after priming, created
+  **KYB-8** (labelled SYNTHETIC / trigger-check, via Wei Ming's own Jira link). A run started **44 s** later as the owner,
+  "Triggered by Jira KYB-8", gathered 6 evidence items and paused at approval. The test agent was then deleted (its run was
+  cancelled). KYB-8 stays in Jira; close or delete it whenever you like.
+- **Slack scope now matches the real workspace:** `legacy-kyb` allows `#all-tencent-ai-2026` ("Team announcements") and
+  `#new-channel` ("Ops chatter"; also the write channel); `#social` is deliberately not allowed. Posting test messages was
+  refused by the local permission policy, so the Slack filtering check still needs messages in those channels.
+
 ## What the human must do next
 
 1. **Finish the Slack checks** (Task 5). The connected workspace has only `#all-tencent-ai-2026`, `#social`, `#new-channel`
@@ -104,8 +112,7 @@ requires `jira.search`): 2/5. Final (8,192-token output cap + sharper rule): **4
    search as admin and confirm results only come from member channels; remove the admin from `#kyb-ops` and time how long
    until its messages stop appearing (expected ≈20 s, the member-channel cache). Add `users:read.email` if `access.inventory`
    should check Slack membership.
-2. **Check a live trigger:** create one Jira issue matching an agent's JQL (or add a file to the watched folder) and watch the
-   trigger step's Last fired within ~60 s.
+2. ~~Check a live trigger~~ done (KYB-8, 44 s). Drive's live check is still open: drop a file into a watched folder.
 3. **Write the iteration 5 demo pack:**
    1. `cp -r demo-packs/example-payments demo-packs/<new-name>` and edit `pack.yaml`: people, groups, the real space keys /
       project keys / channel names / folder ids (names are only labels), suggestions, budgets, policies.

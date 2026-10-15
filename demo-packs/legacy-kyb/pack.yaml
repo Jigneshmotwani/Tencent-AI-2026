@@ -75,8 +75,12 @@ scopes:
   - key: FINCRIME
     name: FinCrime cases
   slack_channels:
-  - id: kyb-ops
-  - id: compliance-escalations
+  - id: all-tencent-ai-2026
+    name: Team announcements
+  - id: new-channel
+    name: Ops chatter
+  slack_write_channels:
+  - id: new-channel
   drive_folders:
   - id: 1ksmfdCpCk-hpZCWPv9qQP2jyC5xXrW5p
 agents:
