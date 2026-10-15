@@ -520,39 +520,56 @@ class PaymentsSeeder:
             out(f'  ~ "{title}": restored to the seed content (version {number})')
 
     async def _space_readers(self, client: Atlassian, key: str, space_id: str, visible_to: list):
-        granted, cursor = [], None
+        """Readers per `visible_to`. Sites in roles-only mode take v2 role assignments ("Viewer"); older sites the v1
+        space-permission API. App accounts (integrations) are ignored when checking for extra readers."""
+        assignments, cursor = [], None
         for _ in range(10):
-            params = {'limit': 250, **({'cursor': cursor} if cursor else {})}
-            page = await client.call('GET', f'/wiki/api/v2/spaces/{space_id}/permissions', params)
-            granted += page.get('results', [])
+            page = await client.call('GET', f'/wiki/api/v2/spaces/{space_id}/role-assignments',
+                                     {'limit': 100, **({'cursor': cursor} if cursor else {})})
+            assignments += page.get('results', [])
             nxt = (page.get('_links') or {}).get('next') or ''
             cursor = re.search(r'cursor=([^&]+)', nxt).group(1) if 'cursor=' in nxt else None
             if not cursor:
                 break
-        readers = {g['principal']['id'] for g in granted if (g.get('principal') or {}).get('type') == 'user'
-                   and (g.get('operation') or {}).get('key') == 'read' and (g.get('operation') or {}).get('targetType') == 'space'}
-        groups = sorted({g['principal']['id'] for g in granted if (g.get('principal') or {}).get('type') == 'group'})
+        principals = {(a.get('principal') or {}).get('principalId') for a in assignments
+                      if (a.get('principal') or {}).get('principalType') == 'USER'}
+        groups = sorted({(a.get('principal') or {}).get('principalId') for a in assignments
+                         if (a.get('principal') or {}).get('principalType') == 'GROUP'})
+        roles = (await client.call('GET', '/wiki/api/v2/space-roles', {'limit': 50})).get('results', [])
+        viewer = next((r['id'] for r in roles if r.get('name') == 'Viewer'), None)
         for who in visible_to:
             account = self.ids.get(who, {}).get('atlassian')
-            if who == 'owner' or not account or account in readers:
+            if who == 'owner' or not account or account in principals:
                 continue
             if self.dry:
-                out(f'  + {key}: would let account {who} view the space')
+                out(f'  + {key}: would give account {who} the Viewer role')
                 continue
             try:
-                await client.call('POST', f'/wiki/rest/api/space/{key}/permission', body={
-                    'subject': {'type': 'user', 'identifier': account}, 'operation': {'key': 'read', 'target': 'space'}})
-                out(f'  + {key}: account {who} can view the space')
+                if viewer:
+                    await client.call('POST', f'/wiki/api/v2/spaces/{space_id}/role-assignments', body=[
+                        {'principal': {'principalType': 'USER', 'principalId': account}, 'roleId': viewer}])
+                else:
+                    await client.call('POST', f'/wiki/rest/api/space/{key}/permission', body={
+                        'subject': {'type': 'user', 'identifier': account}, 'operation': {'key': 'read', 'target': 'space'}})
+                out(f'  + {key}: account {who} can view the space (Viewer)')
             except AtlassianError as exc:
                 out(f'  ! {key}: could not add account {who} as a reader ({exc}).')
-                self.manual.append(f'Confluence: Space settings > Permissions for {key} > Add people > account {who} > View.')
+                self.manual.append(f'Confluence: Space settings > Permissions for {key} > Add people > account {who} > Viewer.')
         allowed = {self.ids[w].get('atlassian') for w in ('owner', *visible_to) if self.ids.get(w, {}).get('atlassian')}
-        others = sorted(readers - allowed)
+        others = []
+        for account in sorted(principals - allowed):
+            try:
+                person = await client.call('GET', '/rest/api/3/user', {'accountId': account})
+            except AtlassianError:
+                person = {}
+            if person.get('accountType') != 'app':
+                others.append(person.get('displayName') or account)
         if groups or others:
-            out(f'  ! {key}: also readable by {len(groups)} group(s) and {len(others)} other user(s); the space was not created by this '
-                'seeder as private, or someone added them.')
+            out(f'  ! {key}: also readable by {len(groups)} group(s) and {len(others)} other person(s).')
             self.manual.append(f'Confluence: Space settings > Permissions for {key}: remove every group and every person except the owner'
                                f' and {", ".join(w for w in visible_to if w != "owner") or "no one else"}.')
+        else:
+            out(f'  = {key}: readable only by ' + ', '.join(dict.fromkeys(['owner', *visible_to])) + ' (plus app accounts)')
 
     # ============================================================================================ Slack
     async def slack(self, refresh_only: bool = False):
