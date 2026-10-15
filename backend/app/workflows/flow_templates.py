@@ -52,9 +52,13 @@ def _spec(name, description, icon, trigger, inputs, nodes, edges, tools, sources
 
 # ------------------------------------------------------------------------------------------------ 1. Incident Assembler
 def incident_assembler(jql: str | None = None, alert_channel: str | None = None, deploy_channel: str | None = None,
-                       incident_channel: str | None = None, approver_group: str = '', window: str = '2h') -> dict:
+                       incident_channel: str | None = None, approver_group: str = '', window: str = '2h', deploy_window: str = '',
+                       context_channels: list | None = None) -> dict:
+    """context_channels: extra channels read for context, e.g. [{channel: partner-updates, since: 7d}] (partner notices)."""
     d = _defaults()
     jql, alert, deploy, incident = jql or d['jql'], alert_channel or d['alert_channel'], deploy_channel or d['deploy_channel'], incident_channel or d['incident_channel']
+    deploy_window = deploy_window or window
+    extra = [c if isinstance(c, dict) else {'channel': str(c)} for c in (context_channels or [])][:3]
     summary = '{{nodes.get_issue.output.fields.summary}}'
     nodes = [
         node('trigger', 'trigger.jira_issue_created', 'New incident', {'jql': jql, 'input': 'issue_key'}),
@@ -62,8 +66,10 @@ def incident_assembler(jql: str | None = None, alert_channel: str | None = None,
         node('past', 'knowledge.retrieve', 'Similar incidents & postmortems', {'query': f'postmortem incident {summary}', 'sources': ['confluence', 'jira'],
                                                                               'max_documents': 5}),
         node('runbook', 'knowledge.retrieve', 'Current runbook', {'query': f'runbook {summary}', 'sources': ['confluence'], 'max_documents': 3}),
-        node('alerts', 'tool.builtin', 'Alert channel (last 2 h)', {'tool': 'slack.read_channel', 'params': {'channel': alert, 'since': window}}),
-        node('deploys', 'tool.builtin', 'Deploy channel (last 2 h)', {'tool': 'slack.read_channel', 'params': {'channel': deploy, 'since': window}}),
+        node('alerts', 'tool.builtin', f'Alert channel (last {window})', {'tool': 'slack.read_channel', 'params': {'channel': alert, 'since': window}}),
+        node('deploys', 'tool.builtin', f'Deploy channel (last {deploy_window})', {'tool': 'slack.read_channel', 'params': {'channel': deploy, 'since': deploy_window}}),
+        *[node(f'context_{i + 1}', 'tool.builtin', f"#{c['channel']} (last {c.get('since', '7d')})",
+               {'tool': 'slack.read_channel', 'params': {'channel': c['channel'], 'since': c.get('since', '7d')}}) for i, c in enumerate(extra)],
         node('guard_in', 'guardrail.input', 'Mask PII', {'pii': ['nric', 'iban', 'card', 'phone', 'email'], 'injection': True}),
         node('brief', 'llm.generate', 'Incident brief', {'prompt': (
             'Write an incident brief for {{inputs.issue_key}} using ONLY the evidence. Cite [E#] after every factual sentence. '
@@ -84,10 +90,11 @@ def incident_assembler(jql: str | None = None, alert_channel: str | None = None,
         node('output', 'output', 'Brief', {'template': '## Incident brief: {{inputs.issue_key}}\n{{nodes.check.output.result.summary}}\n\n'
                                                        '**Suspected cause:** {{nodes.check.output.result.suspected_cause}}', 'include_nodes': ['check']}),
     ]
-    order = ['trigger', 'get_issue', 'past', 'runbook', 'alerts', 'deploys', 'guard_in', 'brief', 'check', 'approval', 'post', 'comment', 'output']
+    order = ['trigger', 'get_issue', 'past', 'runbook', 'alerts', 'deploys', *[f'context_{i + 1}' for i in range(len(extra))], 'guard_in', 'brief',
+             'check', 'approval', 'post', 'comment', 'output']
     edges = [edge(a, b) for a, b in zip(order, order[1:])]
     if not approver_group:
-        nodes[9]['config'].pop('approver_group')
+        next(n for n in nodes if n['id'] == 'approval')['config'].pop('approver_group')
     _vertical(nodes, order, [], [])
     return _spec('Incident Assembler', 'Assembles a cited incident brief from past incidents, the runbook and recent alert and deploy chatter, then posts it after approval.',
                  'siren', {'type': 'jira_issue_created', 'config': {'jql': jql, 'input': 'issue_key'}},

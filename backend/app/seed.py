@@ -4,6 +4,8 @@
         [--atlassian-basic .local/atlassian-setup.env] [--update-page "<title>" --append "<text>"]
         [--str-only] [--review-log-issue]
   .venv/Scripts/python.exe -m backend.app.seed --as compliance --reset-demo   # LOCAL DB only: STR video starting state
+  .venv/Scripts/python.exe -m backend.app.seed --as weiling --content payments --atlassian-basic .local/atlassian-setup.env
+        # Northstar Pay / ROSS content (demo-content/payments/): see backend/app/seed_payments.py
 
 Writes go only to the configured Jira projects (JIRA_PROJECT_KEYS), the configured Slack write channels and
 the Confluence space CONFLUENCE_SPACE_KEY. Idempotent: existing items are detected and skipped. Where an API or
@@ -692,6 +694,8 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--review-log-issue', action='store_true', help='also ensure ONE non-case FINCRIME issue that low/medium alerts are closed against')
     parser.add_argument('--reset-demo', action='store_true', help='LOCAL DB ONLY: reset the STR video starting state (no source writes)')
     parser.add_argument('--str-only', action='store_true', help='only the STR scenario content: its Confluence pages, the FINCRIME project, Drive ids')
+    parser.add_argument('--content', choices=['kyb', 'payments'], default='kyb',
+                        help='kyb (default): the iteration 1-4 content; payments: demo-content/payments/ (ROSS pack)')
     args = parser.parse_args(argv)
     only = [p.strip() for p in args.only.split(',') if p.strip()]
     if any(p not in ALL for p in only):
@@ -706,6 +710,15 @@ async def main(argv: list[str] | None = None) -> int:
             out('Unknown app user (or user lacks the "user" capability).')
             return 2
         db.expunge(user)
+    if args.content == 'payments':
+        from . import seed_payments
+        out(f'Seeding SYNTHETIC Northstar Pay content as app user "{user.username}"{" (DRY RUN: no writes)" if args.dry_run else ""}.')
+        seeder = await seed_payments.run(user, args.dry_run, args.atlassian_basic, only)
+        if seeder.manual:
+            out('\nManual steps:')
+            for index, step in enumerate(dict.fromkeys(seeder.manual), 1):
+                out(f'  {index}. {step}')
+        return 0
     if args.reset_demo:
         from .workflows.templates import reset_demo
         out('Resetting the STR demo state (local database only; nothing is written to Jira, Confluence or Drive).')

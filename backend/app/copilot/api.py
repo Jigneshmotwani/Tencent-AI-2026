@@ -103,7 +103,10 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
     usage = {'calls': 0, 'total_tokens': 0, 'cost_usd': 0.0}
     best = None
     attempts = 3 if mode == 'create' else 2
-    for attempt in range(attempts):
+    first_messages, empty_retry = messages, mode == 'create'
+    attempt = -1
+    while attempt < attempts - 1:
+        attempt += 1
         completion = await _model(user, wf_id, wf_name, messages)
         usage['calls'] += 1
         usage['total_tokens'] += int((completion.usage or {}).get('total_tokens') or 0)
@@ -114,8 +117,16 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
         except ValueError:
             data, parse_error = {}, 'The reply was not a single valid JSON object.'
         ops, preview, warnings, unsupported = core.apply_sanitized(ctx, base, data.get('operations'), mode)
+        if mode == 'create' and not ops and empty_retry:
+            # An empty build is intermittent (usually a cut-off reply): retry once with the original request, unseen by the user.
+            empty_retry, attempts, messages = False, attempts + 1, first_messages
+            usage['empty_retries'] = usage.get('empty_retries', 0) + 1
+            continue
         from ..workflows.triggers import sync_trigger
         preview = sync_trigger(preview)
+        # Template references to another node's output must name a field that node declares; repair once (key -> issue_key).
+        preview, repairs, _ = core.repair_output_refs(preview)
+        warnings = warnings + [f"Fixed a reference in {r['node_id']}: {r['from']} -> {r['to']}" for r in repairs]
         unsupported = [str(u)[:300] for u in (data.get('unsupported') or []) if isinstance(u, (str, dict))][:10] + unsupported
         unsupported = list(dict.fromkeys(unsupported))
         validation = core.validate(preview, db, ctx)

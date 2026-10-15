@@ -1,6 +1,10 @@
 """Drive delegated reads inside a selected root and one bounded child-folder level."""
 import asyncio
 import dataclasses
+import html
+import io
+import re
+import zipfile
 
 from ..config import settings
 from ..contracts import AccessContext, SearchHit, SearchPage, SourceError
@@ -11,12 +15,29 @@ from .pdf_extract import extract_pdf
 BASE = 'https://www.googleapis.com/drive/v3'
 TEXT_TYPES = {'text/plain', 'text/markdown', 'text/csv', 'text/tab-separated-values'}
 DOC_TYPE = 'application/vnd.google-apps.document'
+DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 FOLDER_TYPE = 'application/vnd.google-apps.folder'
 MAX_CHILD_FOLDERS = 5
 
 
 def drive_literal(value: str) -> str:
     return "'" + value.replace('\\', '\\\\').replace("'", "\\'") + "'"
+
+
+def docx_text(data: bytes) -> str:
+    """Plain text of an uploaded Word file: paragraphs of word/document.xml. Bounded; text only (regex, no XML entity expansion)."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            info = archive.getinfo('word/document.xml')
+            if info.file_size > 5_000_000:
+                raise SourceError('unsupported')
+            xml = archive.read(info).decode('utf-8', 'replace')
+    except (KeyError, zipfile.BadZipFile, OSError):
+        raise SourceError('unsupported') from None
+    xml = re.sub(r'<w:tab/>', '\t', xml)
+    xml = re.sub(r'<w:br/>|</w:p>', '\n', xml)
+    text = html.unescape(re.sub(r'<[^>]+>', '', xml))
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
 def roots(context: AccessContext) -> list[str]:
@@ -190,7 +211,7 @@ class DriveConnector:
             if mime_type == DOC_TYPE:
                 content = await request_bytes(f'{BASE}/files/{identifier}/export', context, {'mimeType': 'text/plain'})
                 canonical = f'https://docs.google.com/document/d/{identifier}/edit'
-            elif mime_type in TEXT_TYPES or mime_type == 'application/pdf':
+            elif mime_type in TEXT_TYPES or mime_type in ('application/pdf', DOCX_TYPE):
                 content = await request_bytes(f'{BASE}/files/{identifier}', context,
                                              {'alt': 'media', 'supportsAllDrives': 'true'})
                 canonical = f'https://drive.google.com/file/d/{identifier}/view'
@@ -199,6 +220,9 @@ class DriveConnector:
             if mime_type == 'application/pdf':
                 text = await extract_pdf(content)
                 location = 'Text PDF; page numbers included in excerpt'
+            elif mime_type == DOCX_TYPE:
+                text = docx_text(content)
+                location = 'Word document text'
             else:
                 try:
                     text = content.decode('utf-8-sig')

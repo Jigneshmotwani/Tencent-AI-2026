@@ -19,6 +19,14 @@ from ..db import AuditEvent, SessionLocal, User, now
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$')
 
 
+def canonical_email(email: str) -> str:
+    """Lower-case; Gmail ignores dots and +tags in the local part, so first.last@gmail.com == firstlast@gmail.com."""
+    local, _, domain = str(email or '').strip().lower().partition('@')
+    if domain in ('gmail.com', 'googlemail.com'):
+        local, domain = local.split('+', 1)[0].replace('.', ''), 'gmail.com'
+    return f'{local}@{domain}'
+
+
 def allowed_for(user) -> bool:
     from ..identity import effective_capabilities
     return bool({'admin', 'auditor'} & set(effective_capabilities(user)))
@@ -39,12 +47,18 @@ async def _slack_check(user, email: str) -> dict:
     from ..connectors import slack as S
     try:
         _, ctx = await _context(user, 'slack')
+        uid = ''
         try:
-            found = await S.call('users.lookupByEmail', ctx, {'email': email})
+            uid = str(((await S.call('users.lookupByEmail', ctx, {'email': email})).get('user') or {}).get('id', ''))
         except SourceError as exc:
-            reason = 'needs the users:read.email scope' if exc.code == 'scope_missing' else 'person not found in this workspace'
-            return {'source': 'slack', 'status': 'not_checked', 'reason': reason, 'items': []}
-        uid = str((found.get('user') or {}).get('id', ''))
+            if exc.code == 'scope_missing':
+                return {'source': 'slack', 'status': 'not_checked', 'reason': 'needs the users:read.email scope', 'items': []}
+            # The exact lookup misses Gmail spelling variants (dots): compare canonical addresses across the members.
+            listed = await S.call('users.list', ctx, {'limit': 500})
+            uid = next((str(m.get('id')) for m in listed.get('members', []) if isinstance(m, dict)
+                        and canonical_email((m.get('profile') or {}).get('email', '')) == canonical_email(email)), '')
+        if not uid:
+            return {'source': 'slack', 'status': 'not_checked', 'reason': 'person not found in this workspace', 'items': []}
         channels = await S.collection(ctx)  # allowed channels the ADMIN is a member of (what the admin can see)
         member_of = []
         for cid, name in list(channels.items())[:20]:
@@ -68,7 +82,7 @@ async def _drive_check(user, email: str) -> dict:
             except SourceError:
                 continue
             checked += 1
-            hits = [p for p in perms if p['email'] == email.lower()]
+            hits = [p for p in perms if canonical_email(p['email']) == canonical_email(email)]
             if hits:
                 from ..scopes import entries
                 name = next((e['name'] for e in entries('drive') if e['id'] == folder_id and e['name']), 'allowed folder')
@@ -87,8 +101,11 @@ async def _jira_check(user, email: str) -> dict:
         _, ctx = await _context(user, 'jira')
         base = api_base(ctx)
         found = await request_api('GET', f'{base}/user/search', ctx, {'query': email, 'maxResults': 5})
-        account = next((u.get('accountId') for u in (found if isinstance(found, list) else []) if isinstance(u, dict)
-                        and str(u.get('emailAddress', '')).lower() == email.lower()), None)
+        people = [u for u in (found if isinstance(found, list) else []) if isinstance(u, dict) and u.get('accountType') == 'atlassian']
+        account = next((u.get('accountId') for u in people if canonical_email(u.get('emailAddress', '')) == canonical_email(email)), None)
+        if account is None and len(people) == 1 and not people[0].get('emailAddress'):
+            # Email hidden by the person's privacy settings: Jira still matched the exact address, and only one person.
+            account = people[0].get('accountId')
         if account is None:
             return {'source': 'jira', 'status': 'not_checked', 'reason': 'person not visible by email (Jira privacy settings)', 'items': []}
         roles_found = []
@@ -139,6 +156,8 @@ def user_activity(username_or_email: str, days: int) -> dict:
     ref = str(username_or_email or '').strip().lower()
     with SessionLocal() as db:
         person = db.scalar(select(User).where(or_(func.lower(User.username) == ref, func.lower(User.email) == ref)))
+        if person is None and '@' in ref:
+            person = next((u for u in db.scalars(select(User).where(User.email != '')) if canonical_email(u.email) == canonical_email(ref)), None)
         if person is None:
             return {'found': False, 'text': f'No app account matches {ref[:80]}; no activity to report.', 'days': days}
         since = now() - timedelta(days=days)

@@ -1,0 +1,15 @@
+# SYNTHETIC DEMO. Known-good copy of the agent Arjun builds live with the Copilot in beat 2. Use only if the live build fails:
+#   uv run --frozen python -m backend.app.demo_pack import-agent ross-payments backup/partner-change-radar.yaml
+# It lands "in review" so Wei Ling still approves the publish (add --status published to skip the review).
+name: Partner Change Radar
+description: Watches the VN Rail partner folder, maps a partner change to affected services using the service catalog and drafts a PAYRAIL ticket for approval if none exists.
+owner: arjun
+status: in_review
+review_note: Watches Partners/VN Rail; drafts a PAYRAIL ticket for approval when a partner change has no ticket yet.
+audience: {kind: group, groups: [payments-eng, payments-leads]}
+template: partner_change_radar
+template_settings:
+  folder_id: "${drive:Partners/VN Rail}"
+  partner_channels: [ext-vn-rail-partner]
+  ticket_project: PAYRAIL
+  approver_group: payments-leads

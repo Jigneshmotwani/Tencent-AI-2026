@@ -1,0 +1,144 @@
+# ROSS demo pack: Northstar Pay, Payments Platform Engineering. SYNTHETIC DEMO DATA (fictional company and people).
+#
+#   Before each take:  uv run --frozen python -m backend.app.demo_pack load ross-payments --reset --refresh-sources
+#   Content:           demo-content/payments/ (seed once: python -m backend.app.seed --as <owner user> --content payments ...)
+#   Backup agent:      uv run --frozen python -m backend.app.demo_pack import-agent ross-payments backup/partner-change-radar.yaml
+#
+# Roles and groups decide pages, audiences and approvers; they never grant document access. Every source read uses the
+# person's own linked account (weiling, daniel -> owner account; priya, arjun -> account A; marco -> account B).
+# `${NAME}` values come from .local/demo-identities.env and `${drive:Path}` from the Drive folder ids the seeder resolved,
+# so no real email address or folder id is stored in the repository.
+app:
+  org_name: Northstar Pay (synthetic)
+  timezone: Asia/Singapore
+
+users:
+  # Passwords are generated on first load and appended to .local/demo-accounts.txt (never stored here).
+  - username: weiling
+    display_name: Wei Ling Tan
+    email: weiling.tan@northstarpay.example
+    title: Head of Payments Engineering
+    roles: [admin]
+    groups: [payments-eng, payments-leads]
+  - username: daniel
+    display_name: Daniel Ong
+    email: daniel.ong@northstarpay.example
+    title: Security liaison
+    roles: [auditor, user]
+    groups: [security]
+  - username: priya
+    display_name: Priya Nair
+    email: priya.nair@northstarpay.example
+    title: SRE (on call)
+    roles: [user]
+    groups: [payments-eng, oncall]
+  - username: arjun
+    display_name: Arjun Mehta
+    email: arjun.mehta@northstarpay.example
+    title: Backend engineer, Payout Rails
+    roles: [builder]
+    groups: [payments-eng]
+  - username: marco
+    display_name: Marco Rossi
+    # The offboarding sweep looks the contractor up by email in Slack, Drive, Jira and the audit trail, so this is the
+    # real account B address (from .local/demo-identities.env); the fallback is fictional.
+    email: ${ROSS_B_EMAIL:-marco.rossi@lumen-integrations.example}
+    title: External contractor, Vietnam rail (Lumen Integrations)
+    roles: [user]
+    groups: [contractors]
+
+groups:
+  - name: payments-eng
+    description: Payments Platform Engineering.
+  - name: payments-leads
+    description: Approve PAYRAIL and IT tickets, Slack posts and agent publishing.
+  - name: security
+    description: Security liaison and audit.
+  - name: oncall
+    description: Payments on-call rotation.
+  - name: contractors
+    description: External contractors (offboarding sweeps check their access).
+
+scopes:
+  # The name is a display label (Connections, Audit filters), never a grant.
+  confluence_spaces:
+    - {key: PAYENG, name: Payments Engineering}
+    - {key: VNRAIL, name: Vietnam Rail Integration}
+    - {key: PAYPART, name: Payments Partners}
+    - {key: SEC, name: Security}
+  jira_projects:
+    - {key: INC, name: Incidents}
+    - {key: PAYRAIL, name: Payout Rails}
+    - {key: VNR, name: VN Rail Contractor}
+    - {key: SEC, name: Security findings}
+    - {key: IT, name: IT requests}
+  slack_channels:
+    - {id: payments-eng, name: "#payments-eng"}
+    - {id: ext-vn-rail-partner, name: "#ext-vn-rail-partner"}
+    - {id: infra-alerts, name: "#infra-alerts"}
+    - {id: deployments, name: "#deployments"}
+    - {id: payments-leads, name: "#payments-leads"}
+    - {id: payments-oncall, name: "#payments-oncall"}
+  slack_write_channels: [payments-oncall, ext-vn-rail-partner, payments-eng]
+  drive_folders:
+    - {id: "${drive:Payments Platform}", name: Payments Platform}
+    - {id: "${drive:Partners/VN Rail}", name: Partners / VN Rail}
+    - {id: "${drive:Partners/Commercial}", name: Partners / Commercial}
+
+agents:
+  # The default chat agent is the built-in "ROSS Knowledge assistant" (APP_NAME + "Knowledge assistant").
+  # The Partner Change Radar is NOT seeded: Arjun builds it live with the Copilot (backup in backup/).
+  - agents/incident-assembler.yaml
+  - agents/vulnerability-remediation-tracker.yaml
+  - agents/contractor-offboarding-sweep.yaml
+
+subscriptions:
+  - {agent: Vulnerability Remediation Tracker, username: daniel}
+  - {agent: Vulnerability Remediation Tracker, username: arjun}
+
+audit_suggestions:
+  - What did marco access this week?
+  - Blocked requests today
+  - Who opened the Q3 security incident report?
+  - Everything that happened yesterday
+
+workspace_suggestions:
+  - What's the status of the Vietnam rail integration and were there any blockers raised in Slack last week?
+  - What does the payout-orchestrator runbook say to do when VN payouts fail?
+  - Which of my services have security upgrade tickets due?
+
+budgets:
+  org: {limit_usd: 100, threshold_pct: 80}
+  groups: {payments-eng: 40, payments-leads: 30, security: 20, contractors: 5}
+  agents:
+    Incident Assembler: {limit_usd: 15, max_steps: 25, max_tokens: 80000}
+    Vulnerability Remediation Tracker: {limit_usd: 10, max_steps: 10, max_tokens: 30000}
+    Contractor Offboarding Sweep: {limit_usd: 10, max_steps: 15, max_tokens: 40000}
+  users: {priya: 10, arjun: 15, marco: 5}
+
+policies:
+  publish_reviewer_group: payments-leads
+  approval_rules:
+    jira.create_issue: payments-leads
+    slack.post: payments-leads
+  allowed_models: []   # [] = every enabled model
+
+# `load ross-payments --reset --refresh-sources`: what the last take wrote to the sources and must be undone.
+# Only items the demo created are removed: app-created Jira issues (idem-* label), issues labelled ross-live, or the
+# exact live summaries below; seeded issues (label synthetic-demo) are never touched.
+reset:
+  as: [weiling, admin]          # whose own linked accounts do the cleanup (the owner identity)
+  jira_projects: [INC, IT, PAYRAIL]
+  jira_live_issues:
+    - {project: INC, summary: "P1: VN payouts failing - payout-orchestrator 5xx and TLS handshake errors"}
+    - {project: IT, summary: "Offboard contractor Marco Rossi"}
+  confluence_pages: [runbook-payout-orchestrator-degradation]   # Step 4a is added live in beat 4
+  slack_clear_app_posts: [payments-oncall, ext-vn-rail-partner, payments-eng]
+  slack_restore_members:
+    - {channel: ext-vn-rail-partner, identity: B}
+  drive_restore_shares:
+    - {folder: Partners/VN Rail, identity: B}
+  drive_remove_files:
+    - {folder: Partners/VN Rail, title: "VN Partner – API v2 retirement notice", file: vn-partner-api-v2-retirement-notice.docx}
+  notes:
+    - Jira never reuses a key, so after a reset the next live incident is INC-2302, then INC-2303 (same for IT-78 ...).

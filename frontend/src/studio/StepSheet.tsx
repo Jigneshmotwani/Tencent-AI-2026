@@ -123,9 +123,9 @@ export function StepSheet({ node, spec, registry, groups, readOnly, onSave, onDe
     body = <>{name}
       <Field label="Type" htmlFor={id('ttype')}><Select id={id('ttype')} value={type} disabled={dis} onChange={e => setKind(e.target.value)}
         options={kinds.map(([value, l]) => ({ value, label: l }))} /></Field>
-      {type === 'trigger.jira_issue_created' && <Field label="Jira filter (JQL)" htmlFor={id('jql')} hint="Only the allowed projects are searched. Checked every 60 s; each new issue starts one run.">
+      {type === 'trigger.jira_issue_created' && <Field label="Jira filter (JQL)" htmlFor={id('jql')} hint="Only the allowed projects are searched. Checked every 30 s; each new issue starts one run.">
         <Input id={id('jql')} value={s(cfg.jql)} disabled={dis} maxLength={1000} placeholder="project = INC AND priority in (P1, P2)" onChange={e => set({ jql: e.target.value })} /></Field>}
-      {type === 'trigger.drive_file_added' && <Field label="Drive folder ID" htmlFor={id('folder')} hint="An allowed folder or a folder inside one. Checked every 60 s; each new file starts one run.">
+      {type === 'trigger.drive_file_added' && <Field label="Drive folder ID" htmlFor={id('folder')} hint="An allowed folder or a folder inside one. Checked every 30 s; each new file starts one run.">
         <Input id={id('folder')} value={s(cfg.folder_id)} disabled={dis} maxLength={200} onChange={e => set({ folder_id: e.target.value })} /></Field>}
       {type === 'trigger.schedule' && <>
         <Field label="Cron" htmlFor={id('cron')} hint="Five fields, e.g. 0 9 * * 1 for Mondays at 09:00."><Input id={id('cron')} className="mono" value={s(cfg.cron)} disabled={dis} maxLength={100} onChange={e => set({ cron: e.target.value })} /></Field>

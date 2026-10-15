@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     guardrail_model_alias: str = ''  # cheap model for the intent check; empty = default model alias
     guardrail_check_timeout: float = Field(default=8,ge=1,le=15)
     # ---- Iteration 4: automatic triggers (seconds between polls; 0 disables the background loop) ----
-    trigger_poll_s: int = Field(default=60,ge=0,le=3600)
+    trigger_poll_s: int = Field(default=30,ge=0,le=3600)
 
     @property
     def slack_enabled(self) -> bool:
