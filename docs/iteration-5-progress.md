@@ -130,3 +130,17 @@ VNRAIL owner+A+B, PAYPART and SEC owner only. Rerun prints `=` for every item (i
 
 Check: a JQL naming a project the user cannot see (`project in ("INC","NOPEX")`) still returns 200 with the visible
 issues, so the app's `project in (<all pack projects>)` clause works for A and B.
+
+## Task 7: repository
+
+- **Secrets scan** (16 Oct 02:30 SGT; gitleaks is not installed, so a pattern grep): AWS keys, Slack `xox*` tokens, `sk-`
+  keys, GitHub PATs, Google API keys and OAuth client secrets (`GOCSPX-`), Atlassian API tokens (`ATATT`), private-key
+  blocks, Google access tokens (`ya29.`) and JWTs, over the working tree **and every commit** (`git log --all -p`):
+  **0 hits**. Assigned `*SECRET|*API_KEY|*TOKEN|*PASSWORD` values in tracked files: one, the placeholder
+  `check-password-123` in the old offline script `backend/app/chat_guardrail_check.py` (not a real credential). Only
+  `.env.example` was ever committed (no `.env`, `.local/`, token or password files). No history rewrite is needed.
+  Note: earlier handoff docs (already pushed) name the owner's own Gmail address; it is not a secret.
+- `.gitignore` covers `.env`, `.env.*`, `.local/` (passwords, identities, Drive ids, backups, logs) and now `backups/`,
+  `*.sql.gz`, `*.dump`. MIT `LICENSE` added. README rewritten for ROSS (includes the Slack setup section).
+- GitHub remote `origin` exists; nothing was pushed in this iteration.
+- Architecture doc: triggers, run-as, subscriptions, Slack PKCE, demo packs, guardrail flow, Copilot reliability.
