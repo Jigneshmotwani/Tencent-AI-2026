@@ -3,12 +3,12 @@
 Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273, API :8100, TLS shim :8543).
 
 - [x] Task 1: Multiple spaces, projects, channels and folders
-- [~] Task 2: Demo-pack loader (example-payments load check runs after Task 7, which adds its templates)
+- [x] Task 2: Demo-pack loader
 - [x] Task 3: Guardrail fixes
 - [x] Task 4: Audit fixes
 - [~] Task 5: Slack live (configured and ready; connecting an account is blocked on the Slack consent page, see Blocked)
-- [ ] Task 6: Automatic triggers, run-as and subscriptions
-- [ ] Task 7: Tools and templates for the four demo workflows
+- [x] Task 6: Automatic triggers, run-as and subscriptions (new Jira issue / Drive file simulated, see notes)
+- [x] Task 7: Tools and templates for the four demo workflows
 - [ ] Task 8: Copilot builds the Partner Change Radar
 - [ ] Task 9: Small UI items
 - [ ] Task 10: Stability check
@@ -62,6 +62,15 @@ Checked:
 - After the load: `GET /api/audit/verify` → `{"ok": true, "count": 2862}`; `/api/app-config` serves the pack's chips;
   nav per role: admin 10 pages; auditor workspace/audit/connections/settings; builder workspace/studio/approvals/tools/
   connections/settings; user workspace/connections/settings.
+- `load example-payments --reset` (after Task 7): backup `20261015T124014Z.sql`; 5 new users (passwords appended to
+  `.local/demo-accounts.txt`), 4 groups, 4 template agents, 2 subscriptions, 8 budgets, reviewer `payments-leads`, approval
+  rules; the 4 legacy accounts were disabled. Signed in as each user over the API: weiling admin → 10 pages; arjun
+  builder → workspace/studio/approvals/tools/connections/settings; priya and marco user → workspace/connections/settings;
+  daniel auditor+user → workspace/audit/connections/settings. Verify `{"ok": true, "count": 3203}`. `/api/app-config`
+  served the pack's 3 audit chips and 2 starter prompts. Daniel's catalog showed the scheduled agent as subscribed.
+- `load legacy-kyb --reset` again: the 4 legacy accounts are active with their old nav, their Drive/Confluence/Jira links
+  are still connected, 8 agents and 15 budgets are back, the example accounts are refused at login (401), and Verify
+  `{"ok": true, "count": 3211}`.
 
 ## Task 3: guardrail fixes
 
@@ -150,6 +159,60 @@ Checked (as `auditor` unless noted; NL = ask box `/api/audit/nl-query`, filters 
   By design the member-channel list is cached 20 s per token (`COLLECTION_TTL`), so removal from a channel should be
   excluded within about 20 s of the next search.
 
+## Task 6: triggers, run-as, subscriptions
+
+- Trigger node types `trigger.jira_issue_created {jql, input}`, `trigger.drive_file_added {folder_id, input}`,
+  `trigger.schedule {cron, timezone}` (manual and chat kept; `jira_issue_poll` is read as jira_issue_created).
+- `backend/app/workflows/triggers.py`: one background loop in the API process (every `TRIGGER_POLL_S`, default 60 s; 0 disables)
+  holding a PostgreSQL advisory lock on its own connection, plus an in-process lock, so it never runs twice. Processed Jira
+  keys / Drive file ids per agent in `trigger_states` (first poll after publish or a config change only records what exists).
+- Run-as: Jira/Drive → the agent owner; schedule → one run per subscriber; each uses only that user's own linked accounts.
+  Automatic runs may only write through approval nodes (`nodes._write` refuses any un-approved write for automatic runs,
+  whatever the policy). Runs started by a person (test run, Workspace, chat) are recorded as `manual` even for automatic agents.
+- Every triggered run stores `trigger_info` (type, ref, label, run-as) and writes `workflow.run.triggered`
+  ("Triggered by Jira KYB-7", "Triggered by Drive file <id>" in audit, "Scheduled, subscriber priya"), and lands in the run-as
+  user's Workspace as a run card (conversation "Scheduled · <agent>" / "Triggered · <agent>").
+- API: `GET /api/workflows/{id}/trigger` (type, config, Runs as, last fired/checked/error, next run), `POST …/trigger/run-now`
+  (owner/admin; schedule = one run per subscriber, Jira/Drive = check now), `POST|DELETE /api/workflows/{id}/subscription`
+  (published scheduled agents you can use). Catalog items carry `scheduled` and `subscribed`.
+- UI: Studio trigger step settings show type, its config, Runs as, Last fired / next run and Run now (Check now);
+  Workspace agent cards show Subscribe / Subscribed for scheduled agents.
+
+Checked (four template agents seeded for Wei Ming, published, legacy data):
+- First poll primed Incident Assembler (`project = KYB`, 7 existing issues) and Partner Change Radar (Drive root, 3 files);
+  no runs started for existing items. Trigger status API: "Runs as Wei Ming Tan"; schedule "2 subscribers: Priya Raman,
+  Daniel Koh", next run 2026-10-19 09:00 +08:00.
+- **New Jira issue / new Drive file were simulated**, not created: writing to Jira or Drive from this session is blocked
+  by the permission policy (see Blocked). I removed the newest key (KYB-7) and newest file id from the processed lists;
+  the next poll (30 s later) started one run each **as the owner**: Incident Assembler → get issue, 5 past incidents, 3
+  runbook pages, both Slack reads "no readable messages" (Slack not connected), brief, citation check, paused at approval;
+  Partner Change Radar → read file, catalog, analysis, Jira search, decided "ticket exists", completed. Both have
+  `trigger_info`, a `workflow.run.triggered` audit row and a "Triggered · <agent>" Workspace card.
+- Schedule "Run now" → 2 runs, one per subscriber, each as that subscriber: Priya's read FINCRIME-1, KYB-7, KYB-6, KYB-5,
+  KYB-4, KYB-3 and summarised them; Daniel (no Jira link) read nothing and completed with no evidence. Both cards are in
+  their own Workspace ("Scheduled · Vulnerability Remediation Tracker").
+
+## Task 7: tools and templates
+
+- Built-in read-only tools (admins and auditors only, the caller's/run-as admin's own access, added as evidence):
+  `access.inventory {user_email}`: Slack channels (users.lookupByEmail + conversations.members on the allowed channels the
+  admin is in), Drive (permissions.list on allowed folders), Jira (user search + project roles, if allowed), Confluence
+  always "not checked" (no permission scope). Each source says CHECKED or NOT CHECKED with the reason.
+  `audit.user_activity {username|user_email, days}`: counts by source/container, last 10 accesses, blocked requests.
+  Also `drive.get_file {file_id}` (read one file in the allowed folders).
+- Templates (`workflows/flow_templates.py`), every name a setting: `incident_assembler`, `partner_change_radar`,
+  `vulnerability_remediation_tracker`, `contractor_offboarding`; shown in Studio Templates with defaults from the active
+  scopes; demo packs use `template:` + `template_settings:`.
+- Soft steps: `slack.read_channel` and `jira.search` return "no evidence" (not a failure) when the person has no access.
+
+Checked: all four validate (`validate_spec` ok, no errors) against the legacy scopes; runs end to end:
+Incident Assembler (paused at approval), Partner Change Radar (completed), Vulnerability Remediation Tracker (completed for
+both subscribers, after raising its summary step to 1,800 tokens: one earlier run hit `output_truncated` at 900),
+Contractor Offboarding Sweep test run on KYB-7 (no email in the ticket → inventory NOT CHECKED for every source, activity
+"no matching account", checklist asks IT to check manually; paused at approval). Direct call: `access.inventory` for
+daniel.koh@… as Wei Ming → Drive CHECKED (none), Slack/Jira/Confluence NOT CHECKED with reasons; `audit.user_activity`
+for operations, 30 days → 846 events, by source/container, last 10 accesses, 10 blocked requests.
+
 ## Blocked
 
 - Creating content on the Atlassian site with the API token (a synthetic service-catalog page in `MFS`) was refused by
@@ -165,3 +228,7 @@ Checked (as `auditor` unless noted; NL = ask box `/api/audit/nl-query`, filters 
      `scopes.slack_channels` / `slack_write_channels` (or `SLACK_CHANNELS` / `SLACK_WRITE_CHANNELS`).
   5. Then measure revocation: remove the user from a channel and re-run a search every 5 s until the channel's messages
      stop appearing.
+- **Creating a Jira issue / Drive file for the trigger checks (Task 6).** External writes from this session are refused,
+  and the Drive scope is read-only by design. The poll → run path was checked by un-marking an existing item (see Task 6).
+  To check live: create an issue matching the trigger JQL (or drop a file into the watched folder) and watch Studio →
+  trigger step → Last fired within about 60 s.
