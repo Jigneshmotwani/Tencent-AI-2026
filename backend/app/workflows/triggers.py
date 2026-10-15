@@ -50,6 +50,14 @@ def trigger_of(spec: dict) -> tuple[str, dict, str | None]:
     return kind, config, node['id'] if node else None
 
 
+def sync_trigger(spec: dict) -> dict:
+    """Mirror the trigger node into spec.trigger (older readers use it). Returns the same dict."""
+    kind, config, node_id = trigger_of(spec or {})
+    if node_id is not None and kind in ('manual', 'chat', *AUTOMATIC):
+        spec['trigger'] = {'type': kind, 'config': dict(config) if kind in AUTOMATIC else {}}
+    return spec
+
+
 def invocation_trigger(spec: dict) -> str:
     """Trigger recorded for a run a PERSON starts (test run, Workspace, chat): automatic agents started by hand are 'manual'."""
     kind = trigger_of(spec or {})[0]

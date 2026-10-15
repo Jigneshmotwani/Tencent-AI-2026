@@ -127,6 +127,8 @@ def detail(db, wf: Workflow, user: User) -> dict:
 
 
 def _normalize(spec: dict, wf: Workflow, version: int, status: str) -> dict:
+    from .triggers import sync_trigger
+    spec = sync_trigger(dict(spec))
     try:
         model = WorkflowSpec.model_validate({**spec, 'id': wf.id, 'version': version, 'status': status})
     except ValidationError as exc:

@@ -9,7 +9,7 @@ Branch `iteration-4`. Stack: `./scripts/start.sh --services compose` (app :5273,
 - [~] Task 5: Slack live (configured and ready; connecting an account is blocked on the Slack consent page, see Blocked)
 - [x] Task 6: Automatic triggers, run-as and subscriptions (new Jira issue / Drive file simulated, see notes)
 - [x] Task 7: Tools and templates for the four demo workflows
-- [ ] Task 8: Copilot builds the Partner Change Radar
+- [x] Task 8: Copilot builds the Partner Change Radar (4/5 on the final prompt, edit 4/4)
 - [ ] Task 9: Small UI items
 - [ ] Task 10: Stability check
 - [ ] Task 11: Handoff
@@ -212,6 +212,30 @@ Contractor Offboarding Sweep test run on KYB-7 (no email in the ticket → inven
 "no matching account", checklist asks IT to check manually; paused at approval). Direct call: `access.inventory` for
 daniel.koh@… as Wei Ming → Drive CHECKED (none), Slack/Jira/Confluence NOT CHECKED with reasons; `audit.user_activity`
 for operations, 30 days → 846 events, by source/container, last 10 accesses, 10 blocked requests.
+
+## Task 8: Copilot
+
+- The node registry text now covers `trigger.jira_issue_created`, `trigger.drive_file_added`, `trigger.schedule`,
+  `slack.read_channel`, `slack.post_message`, `drive.get_file`, `access.inventory`, `audit.user_activity`. Copilot rules 13-15:
+  how to pick and replace the trigger, which read tool fits which source, "search Jira first, then decide with an enum field
+  and a router". The Copilot also gets `SCOPES` (allowed projects, channels, spaces, folders with names) so it uses real names.
+- New worked example (create mode, always offered): the Incident Assembler built from the generic template (Jira trigger,
+  Slack reads, approval, Slack post), so the Partner Change Radar prompt tests generalisation, not copying.
+- Copilot output cap raised from 4,096 to 8,192 tokens (whole builds with two worked examples were being cut off).
+
+Prompt: "Build an agent that watches the partner Drive folder … drafts one for approval." Success = valid graph,
+`drive_file_added` trigger, Slack + Confluence + Jira steps, router, approval before `jira.create_issue`.
+
+| Batch | Prompt state | Result | Notes |
+|---|---|---|---|
+| 1 | registry + rules 13-15 + incident example | 5/5 | 2 of 5 had no `jira.search` (decided "ticket exists" without searching) |
+| 2 | + "search Jira first", stricter check (requires `jira.search`) | 2/5 | 1 build came back empty (3 attempts, 0 ops: output cut at 4,096 tokens); 2 skipped the search |
+| 3 (final) | + 8,192-token cap, rule 15 "ALWAYS a jira.search node before the decision" | **4/5** (strict) | 1 empty build again; 4 more in-process tries could not reproduce it (27-31 ops each) |
+
+Edit "Also post a short summary to the partner channel after the ticket is approved." on the 4 good batch-3 builds:
+**4/4** valid, each added `slack.post_message` to the partner channel (`kyb-ops`) behind an approval (two reused the
+ticket approval, two added their own). One post text referenced `output.key` (the create step returns `issue_key`), so that
+template value renders empty.
 
 ## Blocked
 
