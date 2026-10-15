@@ -280,8 +280,8 @@ function AnswerBlock({ message, onCite, failedNote, onRetry }: { message: Messag
   const shown = titles.state === 'done' ? sources.filter(s => titles.map[s.evidence_id]) : []
   const tips = Object.fromEntries(shown.map(s => [s.label, titles.map[s.evidence_id]]))
   const stopped = message.status === 'cancelled', failed = message.status === 'failed'
-  if (message.status === 'denied') return <div className="ans-turn ans-denied">
-    <p className="denied-tag"><Icon name="lock" small />Not authorized</p>
+  if (message.status === 'denied' || message.status === 'blocked') return <div className="ans-turn ans-denied">
+    <p className="denied-tag"><Icon name="lock" small />{message.status === 'blocked' ? 'Request blocked' : 'Not authorized'}</p>
     <Answer className="ans" text={tidy(message.text)} labels={[]} onCite={onCite} />
   </div>
   return <div className="ans-turn">

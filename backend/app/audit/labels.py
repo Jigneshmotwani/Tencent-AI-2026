@@ -51,6 +51,7 @@ ACTIONS = {
     'mcp.tool_call': ('Called tool', 'Tool call failed'),
     'tool.mcp': ('Called tool', 'Tool call failed'),
     'guardrail.chat': ('Chat request checked against role', 'Chat request denied (not authorized)'),
+    'guardrail.blocked': ('Blocked request', 'Blocked request'),
     'guardrail.relevance': ('Dropped irrelevant sources', None),
     'guardrail.ungrounded': ('Replaced an unsupported answer', 'Replaced an unsupported answer'),
     'guardrail.pii': ('Masked PII', None),

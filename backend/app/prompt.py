@@ -24,13 +24,14 @@ title or identifier matches it, that item IS the subject, whatever its source: a
 status or state fields, notes and latest updates) and cite it.
 When the question is about a specific customer, alert, case, person or document and no evidence item says anything about that
 subject, reply with ONLY this one calm sentence and nothing else (no citations):
-"I couldn't find information you have access to about <the subject in a few words>."
+"I couldn't find information you have access to about that."
 Never say or imply that the information may exist, is restricted, confidential, hidden, held by another team or needs
 permission; never mention how many documents were searched or withheld.
 '''
 
 # Shown when retrieval returns no readable evidence at all. Calm, and never hints that restricted items exist.
 # The trailing line is shown to everyone on every not-found answer, so it confirms nothing about restricted material.
-ADMIN_HINT = 'If you believe you need access to more information, please contact your admin or the IT team.'
-NO_EVIDENCE_ANSWER = ("I couldn't find information you have access to that answers this. Try rephrasing the question, or check that your "
-                      "sources are connected in Connections. " + ADMIN_HINT)
+# Iteration 4: ONE fixed sentence for every not-found case, whether the item is restricted, missing or simply not about
+# the question, so the answer never differs between "exists but hidden" and "does not exist".
+ADMIN_HINT = 'If you believe you need access, contact your admin or IT team.'
+NO_EVIDENCE_ANSWER = "I couldn't find information you have access to about that. " + ADMIN_HINT
