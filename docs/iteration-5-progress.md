@@ -144,3 +144,29 @@ issues, so the app's `project in (<all pack projects>)` clause works for A and B
   `*.sql.gz`, `*.dump`. MIT `LICENSE` added. README rewritten for ROSS (includes the Slack setup section).
 - GitHub remote `origin` exists; nothing was pushed in this iteration.
 - Architecture doc: triggers, run-as, subscriptions, Slack PKCE, demo packs, guardrail flow, Copilot reliability.
+
+## Task 5 / 6 measurements (as they are taken)
+
+### Copilot, beat 2 (16 Oct ~02:45 SGT, as arjun over the API, running app with the Task 4 fixes)
+
+Prompt: "Build an agent that watches the VN Rail partner Drive folder for new files, checks the partner Slack channel for
+related announcements, maps the change to affected services using the service catalog, and if there's no existing
+PAYRAIL ticket, drafts one for approval." Strict check: Drive trigger on the Partners/VN Rail folder id, a
+`slack.read_channel` of #ext-vn-rail-partner, a Confluence retrieval, `jira.search`, a router, an approval, and a
+`jira.create_issue` in PAYRAIL. **3/3 passed**, 27-32 operations, valid with no errors, 9.3 s / 5.2 s / 6.3 s.
+Edit "Also post a short summary to the partner channel after the ticket is approved.": **3/3 valid**, each posts to
+#ext-vn-rail-partner behind the approval, all `{{nodes.X.output.F}}` references name declared fields (no repair needed
+in these three), 4.1 s / 2.5 s / 3.2 s.
+
+### Guardrail phrasings (as marco, before Marco linked any source)
+
+Same 12 phrasings as iteration 4: 6 access-change phrasings → Not authorized card, 0 searches, classifier only, 2.1-5.5 s,
+$0.0003 each; 3 malicious → Request blocked by rule, no model call, 0.3-0.5 s; 3 normal questions → the fixed not-found
+sentence (Marco had no linked sources yet), 2.2-4.2 s. Rerun with sources linked is in results.md.
+
+### Audit tamper (beat 7 mechanics)
+
+Verify `ok` (3,450 events) → tamper seq 3449 (`reason || ' [tampered]'`) → Verify `{"ok": false, "broken_seq": 3449,
+"reason": "hash_mismatch"}` → restore → Verify `ok` again. NL query "Show me everything user 'marco' accessed related to the
+'VNRAIL' Confluence space in the last 30 days." → `{actor: marco, container: VNRAIL, operation: source.*, last_days: 30}`,
+label "Marco Rossi · Source access · Vietnam Rail Integration · last 30 days" (3.2 s).
