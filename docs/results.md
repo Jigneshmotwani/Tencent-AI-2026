@@ -132,8 +132,29 @@ False positives, checked by hand:
 | Run | Runbook edited | P1 created (as Priya, her own Jira token) | Run started | Brief ready | Cost | Step 4a in brief |
 |---|---|---|---|---|---|---|
 | INC-2301 | 11:21:18 | 11:21:28 | 11:22:00 (32 s) | ~11:22:40 (72 s) | $0.00247 | yes |
-| INC-2302 | 11:28:37 | 11:28:45 | 11:28:51 (6 s) | ~11:29:31 (46 s) | $0.00241 | yes |
+| INC-2302 | 11:28:37 | 11:28:45 | 11:28:51 (6 s) | ~11:29:31 (46 s) | $0.00241 | yes (post refused: 3,997 chars over the old 3,800 cap; cap raised to 12,000) |
+| INC-2303 | 11:34:41 | 11:34:48 | 11:35:13 (25 s) | ~11:35:50 (62 s) | $0.00240 | yes; approved → posted and commented once |
 
 Approving INC-2301 posted the brief once to #payments-oncall and commented once on INC-2301 (both `deduplicated: false`);
 a second approve returned 409 `already_decided`. The brief names the VN Partner TLS rotation to a new intermediate CA
 (INC-2214 precedent) as the suspected cause and the vn-rail-adapter 2.14.0 deploy as the other candidate.
+
+## Partner Change Radar (beat 3)
+
+| Run | What happened | Timing | Cost |
+|---|---|---|---|
+| Drive trigger, 16 Oct 11:44 | The human uploaded the v2 retirement notice to Partners/VN Rail; the Radar (backup copy, run as Arjun) started 16.7 s after Drive's `createdTime` and finished at 59.8 s. It decided PAYRAIL-410 (the v3 migration) already tracked the change, so no ticket was drafted. | 16.7 s trigger | $0.00322 |
+| Manual run on the same file after a prompt fix | A ticket now counts as existing only if it is about this specific change and deadline; a broader migration ticket is named as related. Decision "no", draft linked PAYRAIL-410; approval → PAYRAIL-422 created once (`deduplicated: false`); a second approve → 409 `already_decided`. | | |
+
+## Beat 1 with Slack (Arjun)
+
+"What's the status of the Vietnam rail integration and were there any blockers raised in Slack last week?" → 34.5 s wall,
+33.0 s run, $0.00222. Cites the VN rail integration guide and launch checklist (Confluence VNRAIL) and the partner-channel
+post about the v3 sandbox 502s (Slack #ext-vn-rail-partner). Nothing from #payments-leads (private; Arjun's account is not a
+member).
+
+## Access matrix rerun for Marco (corrected Slack membership)
+
+Marco's 12 questions rerun at 11:40 after account B was removed from the five channels it had joined by mistake: 0 leak
+markers; 9 of 10 no-access questions return the exact not-found sentence. The tenth ("payout-orchestrator degradation
+runbook") cites only the VNRAIL launch checklist (which names the runbook) and says the runbook itself is not available to him.
