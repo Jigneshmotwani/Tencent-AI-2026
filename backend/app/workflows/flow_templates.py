@@ -130,12 +130,15 @@ def partner_change_radar(folder_id: str | None = None, partner_channels: list | 
             'jql': f'project = {project} AND text ~ "{{{{nodes.analyze.output.search_phrase}}}}"', 'max_results': 5}}),
         node('decide', 'llm.generate', 'Decide: ticket exists?', {'prompt': (
             'Does one of the Jira issues in the evidence already track this partner change: {{nodes.analyze.output.change}}? '
-            'Answer ticket_exists "yes" with existing_key only if an issue clearly covers it; otherwise "no".'), 'include_evidence': True,
+            'Answer ticket_exists "yes" with existing_key only if an issue is specifically about this change (the same change and '
+            'deadline). A broader project or migration ticket that the change merely relates to does not count: answer "no" and name '
+            'it in reason so the new ticket can link to it.'), 'include_evidence': True,
             'output_schema': EXISTS_SCHEMA, 'max_tokens': 300}),
         node('router', 'logic.router', 'Ticket exists?', {'value': '{{nodes.decide.output.ticket_exists}}', 'cases': ['yes', 'no'], 'default': 'no'}),
         node('draft', 'llm.generate', 'Draft the ticket', {'prompt': (
             'Draft a Jira ticket for the partner change {{nodes.analyze.output.change}} (partner {{nodes.analyze.output.partner}}). Description: '
-            'what changes and when, affected services and their owners from the service catalog, and the next steps. Cite [E#].'),
+            'what changes and when, affected services and their owners from the service catalog, any broader ticket it relates to '
+            '({{nodes.decide.output.reason}}), and the next steps. Cite [E#].'),
             'include_evidence': True, 'output_schema': TICKET_SCHEMA, 'max_tokens': 1500}),
         node('approval', 'human.approval', 'Approve the ticket', {'title': 'Create a ticket for the partner change', 'approver_roles': ['builder', 'admin'],
                                                                   'approver_group': approver_group, 'allow_requester': True,

@@ -152,7 +152,9 @@ Rules:
     decision step; never decide "ticket exists" from memory.
     "If there is no existing ticket" / "if X then Y": decide with an llm.generate step whose output_schema has an enum field
     (e.g. {"ticket_exists": {"enum": ["yes","no"]}}), then a logic.router on {{nodes.<that step>.output.ticket_exists}} with cases
-    ["yes","no"] and default "no"; wire the follow-up actions on the matching branch (sourceHandle).
+    ["yes","no"] and default "no"; wire the follow-up actions on the matching branch (sourceHandle). The decision prompt counts
+    a ticket as existing only if it is specifically about this change (same change and deadline), not a broader project or
+    migration ticket it relates to.
 12. explanation: one or two short plain sentences for a business user, no node ids, no JSON, no jargon. When you build a whole
     workflow start with "Done. I added N steps:" (N = nodes you added, the trigger included) and say what it does in one breath.
     For an edit, say what changed, e.g. "Added a 'Close with note' branch for low and medium risk."'''
