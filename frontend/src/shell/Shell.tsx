@@ -141,7 +141,7 @@ function UserMenu({ user }: { user: SessionUser }) {
   return <div className="uwrap">
     <button ref={btn} type="button" className="user" aria-haspopup="menu" aria-expanded={open} data-tip="Account" onClick={() => setOpen(o => !o)}>
       <Avatar name={user.name} />
-      <span className="user-text"><span className="user-name" style={{ display: 'block' }}>{user.name}</span><span className="user-role" style={{ display: 'block' }}>{title}</span></span>
+      <span className="user-text"><span className="user-name" style={{ display: 'block' }}>{user.name}</span><span className="user-role" style={{ display: 'block' }} title={title}>{title}</span></span>
     </button>
     {open && <div ref={menu} className="umenu" role="menu">
       <button type="button" className="um" role="menuitem" onClick={() => { setOpen(false); navigate('/settings') }}>Profile</button>
