@@ -752,15 +752,15 @@ class PaymentsSeeder:
         resolved = {}
 
         async def child(parent: str | None, name: str):
-            q = [f'name = {drive_literal(name)}', f'mimeType = {drive_literal(FOLDER_TYPE)}', 'trashed = false']
-            # Top-level folders must sit directly in My Drive: inside a shared folder they inherit its sharing.
-            q.append(f'{drive_literal(parent)} in parents' if parent else "'root' in parents")
-            found = await request_json(f'{BASE}/files', context, {'q': ' and '.join(q), 'fields': 'files(id,name,parents)', 'pageSize': 10,
-                                                                   'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'})
-            files = found.get('files', [])
-            if parent is None:  # top-level folder: prefer one directly in My Drive
-                files = files[:1]
-            return files[0]['id'] if files else None
+            base = [f'name = {drive_literal(name)}', f'mimeType = {drive_literal(FOLDER_TYPE)}', 'trashed = false']
+            # Top-level folders: prefer one directly in My Drive, else any folder the owner owns. A shared parent folder passes
+            # its sharing down; the permission check below flags any demo account that gets access that way.
+            for where in [f'{drive_literal(parent)} in parents'] if parent else ["'root' in parents", "'me' in owners"]:
+                found = await request_json(f'{BASE}/files', context, {'q': ' and '.join(base + [where]), 'fields': 'files(id,name)',
+                                                                       'pageSize': 10})
+                if found.get('files'):
+                    return found['files'][0]['id']
+            return None
 
         for folder in manifest.get('folders') or []:
             path = str(folder['path'])
@@ -776,8 +776,8 @@ class PaymentsSeeder:
                 folder_id = parent
             files = [f for f in folder.get('files') or [] if f.get('upload', True)]
             if folder_id is None:
-                out(f'  ! "{path}": not found directly under the owner\'s My Drive')
-                self.manual.append(f'Drive: create folder "{path}" directly in the owner\'s My Drive (not inside a shared folder), upload '
+                out(f'  ! "{path}": not found in the owner\'s Drive')
+                self.manual.append(f'Drive: create folder "{path}" in the owner\'s My Drive, upload'
                                    + ', '.join(f'demo-content/payments/drive/{f["file"]}' for f in files)
                                    + (f', and share the folder with {", ".join(emails)} (Viewer)' if emails else ' (do not share it)') + '.')
                 continue
@@ -800,12 +800,17 @@ class PaymentsSeeder:
                 self.manual.append(f'Drive: upload demo-content/payments/drive/{f["file"]} into "{path}".')
             if unshared:
                 self.manual.append(f'Drive: share "{path}" with {", ".join(self.ids[w].get("email") or w for w in unshared)} (Viewer).')
-            extra = [p.get('emailAddress') for p in perms if p.get('type') in ('user', 'group') and p.get('role') != 'owner'
-                     and str(p.get('emailAddress') or '').lower() not in {(self.ids[w].get('email') or '').lower() for w in shared}]
-            if extra or any(p.get('type') in ('anyone', 'domain') for p in perms):
-                out(f'  ! "{path}": also shared with {len(extra)} other account(s) or a link; restricted content would leak.')
-                self.manual.append(f'Drive: remove every share on "{path}" except the manifest\'s accounts (inherited shares come from a '
-                                   'shared parent folder: move the top folder to My Drive).')
+            allowed = {(self.ids[w].get('email') or '').lower() for w in shared}
+            demo = {(self.ids[w].get('email') or '').lower() for w in ('A', 'B')} - {''}
+            emails = {str(p.get('emailAddress') or '').lower() for p in perms if p.get('type') in ('user', 'group') and p.get('role') != 'owner'}
+            leaked = sorted((emails & demo) - allowed)  # a demo persona's account that should not see this folder
+            others = emails - demo - allowed  # people outside the demo, for example a teammate on a shared parent folder
+            if leaked or any(p.get('type') in ('anyone', 'domain') for p in perms):
+                out(f'  ! "{path}": also shared with {", ".join(leaked) or "a link"}; restricted content would leak in the demo.')
+                self.manual.append(f'Drive: remove {", ".join(leaked) or "the link share"} from "{path}" (if the share is inherited, '
+                                   'remove it from the parent folder or move the folder out of it).')
+            if others:
+                out(f'  . "{path}": also visible to {len(others)} account(s) outside the demo personas (no effect on the demo)')
         for folder in manifest.get('folders') or []:
             for f in folder.get('files') or []:
                 if not f.get('upload', True):
