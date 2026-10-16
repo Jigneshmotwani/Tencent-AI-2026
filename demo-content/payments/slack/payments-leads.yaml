@@ -1,0 +1,11 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+channel: payments-leads
+private: true
+purpose: "SYNTHETIC DEMO DATA – Payments leadership (restricted)"
+members: [owner]
+refresh: false
+messages:
+  - date: 2026-10-12
+    speaker: Wei Ling Tan
+    post_as: owner
+    text: "VN go-live fee renegotiation pending; don't share commercial terms with the contractor."

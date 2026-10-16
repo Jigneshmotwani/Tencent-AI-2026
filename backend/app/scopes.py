@@ -86,7 +86,9 @@ def entries(provider: str) -> list[dict]:
     if provider not in SCOPE_FIELDS:
         return []
     pack_scopes = (pack_info().get('scopes') or {})
-    if pack_scopes.get(SCOPE_FIELDS[provider]):
+    # A pack that lists the field owns it, even when the list is empty (e.g. Drive folders not created yet): falling back
+    # to .env would silently search another demo's containers.
+    if SCOPE_FIELDS[provider] in pack_scopes and pack_scopes[SCOPE_FIELDS[provider]] is not None:
         return _entries(provider, pack_scopes[SCOPE_FIELDS[provider]])
     return _env_entries(provider)
 

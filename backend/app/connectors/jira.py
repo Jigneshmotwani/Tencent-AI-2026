@@ -17,7 +17,7 @@ ISSUE_RE = re.compile(r'([A-Z][A-Z0-9_]{1,9})-([0-9]{1,9})')
 LABEL_RE = re.compile(r'[A-Za-z0-9_.:-]{1,50}')
 FACT_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9 /&()._-]{0,40}?)\s*:\s*(\S.{0,299})$')
 IDEM_RE = re.compile(r'[A-Za-z0-9_-]{8,128}')
-READ_FIELDS = 'summary,status,description,labels,issuetype,project,updated,created'
+READ_FIELDS = 'summary,status,description,labels,issuetype,project,updated,created,duedate'
 MAX_COMMENTS = 10
 COMMENT_PROPERTY = 'nsdemo.idempotency'
 
@@ -255,7 +255,9 @@ class JiraConnector:
             issue_type = str((fields.get('issuetype') or {}).get('name') or '')
             labels = [str(label) for label in (fields.get('labels') or []) if isinstance(label, str)][:30]
             description = adf_to_text(fields.get('description')).strip() if isinstance(fields.get('description'), dict) else str(fields.get('description') or '')
-            lines = [f'{real_key}: {summary}', f'Status: {status} | Type: {issue_type} | Labels: {", ".join(labels) or "none"}',
+            due = str(fields.get('duedate') or '')[:10]
+            lines = [f'{real_key}: {summary}', f'Status: {status} | Type: {issue_type} | Labels: {", ".join(labels) or "none"}'
+                     + (f' | Due: {due}' if due else ''),
                      '', 'Description:', description or '(empty)']
             recent = [c for c in comments.get('comments', []) if isinstance(c, dict)][:MAX_COMMENTS]
             if recent:
@@ -268,7 +270,7 @@ class JiraConnector:
                            f'Jira issue in {project_key}', str(fields.get('updated') or ''), fields.get('updated'))
             return dataclasses.replace(doc, container=project_key, fields={
                 'key': real_key, 'status': status, 'summary': summary[:1000], 'labels': labels,
-                'issue_type': issue_type, 'facts': parse_facts(description)})
+                'issue_type': issue_type, 'due': due, 'facts': parse_facts(description)})
 
     # ---- writes (approval executor only; invoker's delegated token; idempotent per key) ----
     @source_operation

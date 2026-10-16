@@ -51,7 +51,7 @@ function ToolSheet({ server, onClose, onChanged }: { server: ToolServer | null; 
   const [confirm, setConfirm] = useState(false)
   const [testing, setTesting] = useState(false)
   const [local, setLocal] = useState<Record<string, boolean>>({})
-  useEffect(() => { setOpenTool(server?.tools[0]?.name ?? null); setConfirm(false); setLocal({}) }, [server?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setOpenTool(null); setConfirm(false); setLocal({}) }, [server?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!server) return null
   const builtin = server.kind === 'builtin'
   const isAdmin = hasCap(me, 'admin')

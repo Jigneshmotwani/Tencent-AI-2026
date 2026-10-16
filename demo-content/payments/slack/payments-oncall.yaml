@@ -1,0 +1,11 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+channel: payments-oncall
+private: false
+purpose: "Incident briefs (SYNTHETIC DEMO DATA)"
+members: [owner, A]
+refresh: false
+messages:
+  - date: 2026-10-12
+    speaker: Priya Nair
+    post_as: owner
+    text: "On-call handover: payments-primary is Priya this week."

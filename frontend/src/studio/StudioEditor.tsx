@@ -13,6 +13,7 @@ import { type Detail, type Group, getVersion, getWorkflow, listGroups, retryFrom
 import Canvas, { useView } from './Canvas'
 import { BRANCH_EXTRA, NODE_W, PITCH, edgeId, isRouter, layoutSpec, needsLayout, nodeSubtitle, paletteGroups, routerHandles, uniqueNodeId, type PaletteItem } from './model'
 import { RunDrawer } from './RunDrawer'
+import { RunApproval } from './RunApproval'
 import { StepSheet } from './StepSheet'
 import { SubmitModal } from './SubmitModal'
 import { TERMINAL_RUN, useRunStream } from './useRunStream'
@@ -212,10 +213,13 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
     if (!id) return
     setRunSel(null); openDrawer(); setCopMin(true)
   }
-  const retry = async (nodeId: string) => {
+  const retry = async (nodeId: string, inputs?: Record<string, unknown>) => {
     if (!stream.runId) return
-    try { const r = await retryFrom(stream.runId, nodeId); stream.attach(r.run_id); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
+    try { const r = await retryFrom(stream.runId, nodeId, inputs); stream.attach(r.run_id, true); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
   }
+  // A test run waiting for approval: shown in the Copilot chat (opened if minimised) so it can be decided in place.
+  const pendingApproval = !viewing && stream.status === 'paused' ? stream.detail?.approvals.find(a => a.status === 'pending') : undefined
+  useEffect(() => { if (pendingApproval) setCopMin(false) }, [pendingApproval?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   const resetRun = () => { stream.attach(null); setDrawer(d => ({ ...d, open: false })); setRunSel(null) }
   const waitingNode = overlay && stream.status === 'paused' ? display?.nodes.find(n => overlay.nodeStates[n.id] === 'awaiting_approval') : undefined
   const waitText = waitingNode ? `Waiting for ${(waitingNode.label || 'approval')[0].toLowerCase()}${(waitingNode.label || 'approval').slice(1)}` : 'Waiting for approval'
@@ -273,7 +277,8 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
       {canEdit && <div hidden={!copVisible}>
         <CopilotPanel workflowId={workflowId} draftVersion={detail.draft_version} autoFocus={route.query.has('copilot')} beforeSend={flush}
           onPreview={p => { setProposal(p); if (p) { autoV.current = true; setSheet(null) } }} onApplied={p => void onApplied(p)} onUndo={onUndo}
-          onTestRun={() => setRunPop(true)} onMinimise={() => setCopMin(true)} />
+          onTestRun={() => setRunPop(true)} onMinimise={() => setCopMin(true)}
+          runApproval={pendingApproval && <RunApproval approval={pendingApproval} onDone={() => void stream.refresh()} />} />
       </div>}
       {canEdit && copMin && !anySheet && <button type="button" className="fab" aria-label="Open Copilot" onClick={() => setCopMin(false)}><Icon name="spark" /></button>}
       {sheet === 'step' && selNode && <StepSheet key={selNode.id + (viewing?.version ?? '') + (proposal?.proposal_id ?? '')} node={selNode} spec={display} registry={registry} groups={groups} readOnly={locked}
@@ -283,7 +288,7 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
         onRestored={() => { setViewing(null); setSheet(null); setHist({ past: [], future: [] }); void load() }} />}
       {drawer.open && stream.runId && <RunDrawer spec={spec} stream={stream} groupName={groupName} selected={runSel} onSelect={setRunSel} canvasRef={canvasRef}
         collapsed={drawer.col} onCollapse={() => setDrawer(d => ({ ...d, col: !d.col }))} onResize={h => setDrawer(d => ({ ...d, col: false, h }))}
-        onClose={() => { setDrawer(d => ({ ...d, open: false })); if (TERMINAL_RUN.has(stream.status)) stream.attach(null) }} onRetry={id => void retry(id)} />}
+        onClose={() => { setDrawer(d => ({ ...d, open: false })); if (TERMINAL_RUN.has(stream.status)) stream.attach(null) }} onRetry={(id, inputs) => void retry(id, inputs)} />}
     </div>
     {submit && <SubmitModal detail={detail} onClose={() => setSubmit(false)} onDone={() => { setSubmit(false); void load() }} />}
   </div>

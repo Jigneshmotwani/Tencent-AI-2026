@@ -62,9 +62,10 @@ export function PersonAvatar({ name }: { name: string }) { return <Avatar name={
 export const cap = (s: string) => s ? s[0].toUpperCase() + s.slice(1) : s
 export const usedLabel: Record<string, string> = { audiences: 'Agent audiences', approvers: 'Approvers', tool_access: 'Tool access', budgets: 'Budgets' }
 
-/** Linked personal identities are shown masked: "jane.doe@gmail.com" → "j•••@gmail.com". Non-email labels pass through. */
+/** Linked personal identities are shown masked: "jane.doe@gmail.com" → "j•••doe@gmail.com" (first and last 3 characters of the
+ *  name; names of 6 characters or fewer show only the first). Non-email labels pass through. */
 export function maskEmail(label: string) {
   const at = label.lastIndexOf('@')
   if (at < 1 || at === label.length - 1 || label.includes(' ')) return label
-  return `${label[0]}•••${label.slice(at)}`
+  return `${label[0]}•••${at > 6 ? label.slice(at - 3, at) : ''}${label.slice(at)}`
 }

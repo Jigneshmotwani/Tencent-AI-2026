@@ -1,0 +1,5 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay is a fictional company.
+key: PAYPART
+name: Payments Partners
+description: "SYNTHETIC DEMO DATA. Restricted: Payments leadership only. Partner commercial terms, SLAs and contract notes."
+visible_to: [owner]

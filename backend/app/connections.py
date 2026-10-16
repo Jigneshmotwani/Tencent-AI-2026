@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session as DBSession
 from .config import settings
 from .contracts import PROVIDERS, AccessContext, SourceError
 from .db import AuditEvent, Credential, OAuthState, SourceConnection, User, get_db, now
-from .identity import browser_session, current_user, digest, require_capability, require_mutation
+from .identity import browser_session, current_user, digest, effective_capabilities, require_capability, require_mutation
 
 router = APIRouter(prefix='/connections', tags=['connections'])
 DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
@@ -33,6 +33,9 @@ ATLASSIAN_SCOPES = sorted(CONFLUENCE_SCOPES | {'read:confluence-user', 'read:me'
 JIRA_SCOPES = {'read:jira-work', 'write:jira-work'}
 JIRA_REQUEST_SCOPES = sorted(set(ATLASSIAN_SCOPES) | JIRA_SCOPES | {'read:jira-user'})
 SLACK_USER_SCOPES = ['search:read', 'channels:history', 'channels:read', 'groups:history', 'groups:read', 'users:read', 'chat:write']
+# Requested only for admins (never required): demo seeding/reset creates channels and invites members, and the
+# access.inventory tool looks people up by email. Ordinary users connect with the read + post scopes above.
+SLACK_ADMIN_SCOPES = ['channels:write', 'groups:write', 'users:read.email']
 REQUIRED_SCOPES = {'drive': {DRIVE_SCOPE}, 'confluence': CONFLUENCE_SCOPES, 'jira': JIRA_SCOPES, 'slack': set(SLACK_USER_SCOPES)}
 ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token'
 SLACK_TOKEN_URL = 'https://slack.com/api/oauth.v2.access'
@@ -334,7 +337,8 @@ def authorize(provider: str, request: Request, user: User = Depends(current_user
         endpoint = 'https://accounts.google.com/o/oauth2/v2/auth'
     elif provider == 'slack':
         # User-token scopes only (no bot); `team` pre-selects the configured workspace. PKCE S256 (required for localhost redirects).
-        params.update({'user_scope': ','.join(SLACK_USER_SCOPES), 'team': settings().slack_team_id,
+        user_scopes = SLACK_USER_SCOPES + (SLACK_ADMIN_SCOPES if 'admin' in effective_capabilities(user) else [])
+        params.update({'user_scope': ','.join(user_scopes), 'team': settings().slack_team_id,
                        'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='),
                        'code_challenge_method': 'S256'})
         endpoint = 'https://slack.com/oauth/v2/authorize'
@@ -409,7 +413,8 @@ async def callback(provider: str, request: Request, user: User = Depends(current
         return RedirectResponse(settings().app_origin + '/?connection=' + code, status_code=303)
 
 
-async def access_context(db: DBSession, user: User, connection_id: str) -> AccessContext:
+async def access_context(db: DBSession, user: User, connection_id: str, lookup_only: bool = False) -> AccessContext:
+    """lookup_only: CLI seeding only (folder lookup before any Drive scope exists); never used for document reads."""
     require_capability(user, 'user')
     # One local API process: serialize rotating-token refresh and disconnect per account.
     async with _locks.setdefault(connection_id, asyncio.Lock()):
@@ -419,7 +424,7 @@ async def access_context(db: DBSession, user: User, connection_id: str) -> Acces
             raise SourceError('unavailable')
         # The allowed scopes come from the active demo pack or .env and can change (a pack load). The connection follows
         # them: they only bound which containers are searched; the user's own token still decides what is readable.
-        current = _collection(connection.provider)
+        current = _collection(connection.provider) or (connection.collection if lookup_only else '')
         if not current:
             raise SourceError('unavailable')
         if connection.collection != current:

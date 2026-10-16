@@ -1,8 +1,9 @@
 """Template rendering for node configs. W2-owned.
 
 `{{inputs.x}}`, `{{nodes.<id>.output.<path>}}` (also `nodes.<id>.status`), `{{run.id}}`, `{{evidence}}` (labels list only).
-A string that is exactly one template keeps the JSON type of the value; inside a larger string, objects/arrays render
-as compact JSON. A missing path renders '' (or None for whole-value templates) and is reported as a warning.
+A string that is exactly one template keeps the JSON type of the value; inside a larger string, a list of strings renders
+as "- item" lines and other objects/arrays as compact JSON. A missing path renders '' (or None for whole-value templates)
+and is reported as a warning.
 """
 from __future__ import annotations
 
@@ -44,6 +45,8 @@ def resolve(path: str, env: dict):
 def _text(value) -> str:
     if value is None:
         return ''
+    if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+        return '\n'.join('- ' + v for v in value)  # a list of strings inside text reads as bullet lines
     if isinstance(value, (dict, list)):
         return json.dumps(value, separators=(',', ':'), ensure_ascii=False)
     if isinstance(value, bool):

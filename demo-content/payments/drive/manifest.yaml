@@ -1,0 +1,14 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional. Markdown sources for each .docx are in drive/src/.
+folders:
+  - path: Payments Platform
+    shared_with: [owner, A]
+    files: [{file: capacity-test-results-oct-2026.docx, title: "Capacity test results Oct 2026", upload: true}]
+  - path: Partners/VN Rail
+    watched: true
+    shared_with: [owner, A, B]
+    files:
+      - {file: vn-partner-api-v3-spec-summary.docx, title: "VN partner API v3 spec (summary)", upload: true}
+      - {file: vn-partner-api-v2-retirement-notice.docx, title: "VN Partner – API v2 retirement notice", upload: false, note: "dropped live in beat 3"}
+  - path: Partners/Commercial
+    shared_with: [owner]
+    files: [{file: vn-contract-summary.docx, title: "VN contract summary", upload: true}]

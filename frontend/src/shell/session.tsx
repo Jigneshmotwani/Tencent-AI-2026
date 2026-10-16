@@ -1,6 +1,6 @@
 // Session context: the signed-in user, their page access and demo switching. Lead-owned.
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
-import { ApiError, User, api, setCsrf } from '../api'
+import { ApiError, DEFAULT_APP_NAME, User, api, loadAppName, setCsrf } from '../api'
 import { PageKey, PAGE_KEYS } from '../ui/router'
 
 export interface SessionUser extends User {
@@ -26,7 +26,7 @@ export function roleLabel(user: Pick<SessionUser, 'capabilities'>) {
 }
 
 interface SessionValue {
-  user: SessionUser | null; loading: boolean; pages: PageKey[]
+  user: SessionUser | null; loading: boolean; pages: PageKey[]; appName: string
   setUser: (u: SessionUser | null) => void; refresh: () => Promise<void>; logout: () => Promise<void>
 }
 const Ctx = createContext<SessionValue>(null as unknown as SessionValue)
@@ -36,6 +36,7 @@ export const useMe = () => useContext(Ctx).user as SessionUser
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<SessionUser | null>(null)
+  const [appName, setAppName] = useState(DEFAULT_APP_NAME)
   const [loading, setLoading] = useState(true)
   const setUser = useCallback((u: SessionUser | null) => { if (u) setCsrf(u.csrf_token); setUserState(u) }, [])
   const refresh = useCallback(async () => {
@@ -43,7 +44,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     catch (e) { if (e instanceof ApiError && e.status === 401) setUserState(null) }
     finally { setLoading(false) }
   }, [setUser])
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh(); void loadAppName().then(setAppName) }, [refresh])
+  useEffect(() => { document.title = appName }, [appName])
   useEffect(() => {
     const expired = () => setUserState(null)
     const changed = () => { void refresh() }
@@ -55,7 +57,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try { await api('/auth/logout', 'POST', {}) } catch { /* the session may already be gone */ }
     setUserState(null)
   }, [])
-  return <Ctx.Provider value={{ user, loading, pages: user ? pagesOf(user) : [], setUser, refresh, logout }}>{children}</Ctx.Provider>
+  return <Ctx.Provider value={{ user, loading, pages: user ? pagesOf(user) : [], appName, setUser, refresh, logout }}>{children}</Ctx.Provider>
 }
 
 /** Fire after a change that alters nav access (page matrix, roles) so the shell re-reads /auth/me. */

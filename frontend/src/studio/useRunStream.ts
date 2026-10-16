@@ -88,6 +88,8 @@ export function useRunStream() {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [error, setError] = useState('')
   const [streamNote, setStreamNote] = useState('')
+  // Bumped by every attach: a retry reuses the run id, and the stream must reconnect to see the resumed run.
+  const [epoch, setEpoch] = useState(0)
   const last = useRef(0)
   const current = useRef<string | null>(null)
 
@@ -97,7 +99,11 @@ export function useRunStream() {
     try { const value = await api<RunDetail>(`/workflow-runs/${encodeURIComponent(target)}`); if (current.current === target) setDetail(value); return value } catch (failure) { if (current.current === target) setError(safeError(failure)); return null }
   }, [])
 
-  const attach = useCallback((id: string | null) => { last.current = 0; current.current = id; setEvents([]); setDetail(null); setError(''); setStreamNote(''); setRunId(id) }, [])
+  // resume: the same run continues (a retry), so keep what was received and reconnect after the last event.
+  const attach = useCallback((id: string | null, resume = false) => {
+    if (!(resume && id && id === current.current)) { last.current = 0; setEvents([]); setDetail(null) }
+    current.current = id; setError(''); setStreamNote(''); setRunId(id); setEpoch(e => e + 1)
+  }, [])
 
   useEffect(() => {
     if (!runId) return
@@ -111,7 +117,8 @@ export function useRunStream() {
         last.current = payload.event_id
         setEvents(previous => [...previous, payload])
         setStreamNote('')
-        if (TERMINAL_EVENTS.has(payload.type)) { closed = true; source?.close(); void refresh(runId) }
+        // A retried run has an earlier run_failed in its history: stop listening only when the run itself has ended.
+        if (TERMINAL_EVENTS.has(payload.type)) void refresh(runId).then(value => { if (!value || TERMINAL_RUN.has(value.run.status)) { closed = true; source?.close() } })
         else if (payload.type === 'run_paused' || payload.type === 'approval_requested' || payload.type === 'budget_blocked') void refresh(runId)
       }
       EVENT_TYPES.forEach(type => source!.addEventListener(type, receive as EventListener))
@@ -130,7 +137,7 @@ export function useRunStream() {
     }
     connect()
     return () => { closed = true; source?.close(); if (timer) clearTimeout(timer) }
-  }, [runId, refresh])
+  }, [runId, epoch, refresh])
 
   const overlay = useMemo(() => {
     const value = deriveOverlay(events)

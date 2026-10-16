@@ -5,6 +5,7 @@ import type { InputDef } from '../contracts'
 import { Icon } from '../ui/icons'
 import { Button, Tile, cx, useDismiss } from '../ui/kit'
 import { Agent, Look, inputLabel, textInput } from './api'
+import { useSession } from '../shell/session'
 
 export interface ComposerProps {
   agents: Agent[]; looks: Record<string, Look>; selected: Agent | null; onSelect: (a: Agent | null) => void
@@ -92,7 +93,8 @@ export function Composer({ agents, looks, selected, onSelect, isNew, firstName, 
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit() }
   }
 
-  const rows: [Agent | null, string, string, Look][] = [[null, 'Knowledge assistant', 'Answers from company sources', { cat: 'trigger', icon: 'spark' }], ...agents.map(a => [a, a.name, a.description, looks[a.id] ?? { cat: 'ai', icon: 'spark' }] as [Agent, string, string, Look])]
+  const assistant = `${useSession().appName} Knowledge assistant`
+  const rows: [Agent | null, string, string, Look][] = [[null, assistant, 'Answers from company sources', { cat: 'trigger', icon: 'spark' }], ...agents.map(a => [a, a.name, a.description, looks[a.id] ?? { cat: 'ai', icon: 'spark' }] as [Agent, string, string, Look])]
   const firstField = formInputs.find(i => i.type !== 'boolean')?.name
 
   return <div className="composer gut"><div className="wrap cwrap">
@@ -127,7 +129,7 @@ export function Composer({ agents, looks, selected, onSelect, isNew, firstName, 
         onClick={e => updMention(e.currentTarget.value, e.currentTarget.selectionStart)} onKeyDown={onKey} />
       <div className="cbox-row">
         <button ref={aBtn} type="button" className="sel-btn" aria-haspopup="listbox" aria-expanded={answerOpen} onClick={() => { setMention(null); setAnswerOpen(o => !o) }}>
-          Answer with&nbsp;<b>{selected?.name ?? 'Knowledge assistant'}</b><Icon name="chev" small /></button>
+          Answer with&nbsp;<b>{selected?.name ?? assistant}</b><Icon name="chev" small /></button>
         <button type="button" className="send" aria-label={busy ? 'Stop' : 'Send'} aria-disabled={!busy && (!ready || sending)} onClick={() => void submit()}>
           <Icon name={busy ? 'x' : 'send'} small /></button>
       </div>

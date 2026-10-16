@@ -1,0 +1,22 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional. Messages have no date; they represent "just now" and are re-posted with fresh timestamps before each recording.
+channel: infra-alerts
+private: false
+purpose: "SYNTHETIC DEMO DATA – Northstar Pay production alerts (Alertmanager)"
+members: [owner, A]
+refresh: true
+messages:
+  - speaker: Alertmanager
+    post_as: owner
+    text: "[FIRING] payout-orchestrator 5xx rate 4.8% (threshold 2%), up from 2.1% 10 min ago — env=prod"
+  - speaker: Alertmanager
+    post_as: owner
+    text: "[FIRING] vn-rail-adapter TLS handshake failures 37/min (threshold 5/min) — env=prod"
+  - speaker: Alertmanager
+    post_as: owner
+    text: "[FIRING] payout-orchestrator payout queue depth 7,940 (threshold 5,000) — env=prod"
+  - speaker: Alertmanager
+    post_as: owner
+    text: "[WARNING] payout-orchestrator p95 dispatch latency 1.9 s (threshold 1.5 s) — env=prod"
+  - speaker: Alertmanager
+    post_as: owner
+    text: "[RESOLVED] id-rail-adapter 5xx rate 0.3% (threshold 2%) — env=prod"

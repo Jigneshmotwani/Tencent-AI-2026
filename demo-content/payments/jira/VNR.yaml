@@ -1,0 +1,109 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+project_key: VNR
+name: VN Rail Contractor
+description: "SYNTHETIC DEMO DATA. Contractor work on the VN Partner API v3 migration, delivered by Lumen Integrations."
+visible_to: [owner, A, B]
+issues:
+  - number: 1
+    summary: "Map v3 payout status codes"
+    issue_type: Task
+    status: Done
+    priority: High
+    labels: [vn-rail, v3]
+    assignee_persona: marco
+    description: |
+      Map VN Partner API v3 payout status codes to Northstar payout statuses in vn-rail-adapter.
+
+      Mapping agreed:
+      - PENDING -> Processing (non-terminal)
+      - PENDING_REVIEW -> Processing (non-terminal, partner compliance hold)
+      - SETTLED -> Paid (terminal)
+      - REJECTED -> Failed (terminal, do not retry)
+      - RETURNED -> Returned (terminal)
+
+      v2 numeric codes (00, 05, 12, 21) stay supported until cutover.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Marco Rossi, 29 Sep] Mapping implemented with unit tests for every v2 and v3 code."
+      - "[Arjun Mehta, 30 Sep] Reviewed and merged."
+  - number: 2
+    summary: "Implement v3 OAuth client-credentials auth in vn-rail-adapter"
+    issue_type: Task
+    status: Done
+    priority: High
+    labels: [vn-rail, v3]
+    assignee_persona: marco
+    description: |
+      Implement the OAuth2 client-credentials flow for VN Partner API v3 in vn-rail-adapter.
+
+      - Token endpoint: https://api.vnpartner.example/v3/oauth/token (sandbox: https://sandbox.vnpartner.example/v3/oauth/token).
+      - Cache tokens, refresh at 80% of lifetime.
+      - Client secret read from the secrets manager; never logged.
+      - Mutual TLS still required.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Marco Rossi, 2 Oct] Token caching and refresh done; secrets manager integration tested in sandbox."
+      - "[Arjun Mehta, 5 Oct] Merged behind a config switch; v2 remains the production default."
+  - number: 3
+    summary: "Sandbox end-to-end payout tests on v3"
+    issue_type: Task
+    status: In Progress
+    priority: High
+    labels: [vn-rail, v3, sandbox]
+    assignee_persona: marco
+    description: |
+      Run the end-to-end payout suite against the VN Partner v3 sandbox (https://sandbox.vnpartner.example/v3): create payout, poll status, receive webhook, reconcile.
+
+      Current state: payout creation passes, but the status endpoint returns HTTP 502 for every sandbox payout, so status polling and reconciliation tests fail. Raised with the partner by Payout Rails on Thu 8 Oct; waiting for the partner sandbox fix.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Marco Rossi, 8 Oct] Create payout OK, status calls all 502. Suite at 9/21 passing."
+      - "[Marco Rossi, 14 Oct] Will rerun the full suite once the partner confirms the sandbox fix is deployed."
+  - number: 4
+    summary: "Update VN rail integration guide for v3"
+    issue_type: Task
+    status: To Do
+    priority: Medium
+    labels: [vn-rail, v3, docs]
+    assignee_persona: marco
+    description: |
+      Update the "VN rail integration guide" page in the Vietnam Rail Integration space for v3: base URLs, OAuth client credentials, full status code table, webhook signature checks and sandbox steps.
+
+      SYNTHETIC DEMO DATA.
+  - number: 5
+    summary: "Partner UAT sign-off for v3"
+    issue_type: Task
+    status: Blocked
+    priority: High
+    labels: [vn-rail, v3, uat]
+    assignee_persona: arjun
+    description: |
+      Obtain written UAT sign-off from VN Partner for our v3 integration before production cutover.
+
+      Blocked on partner UAT sign-off: the partner's UAT team will not start until the sandbox end-to-end suite (VNR-3) is green.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Arjun Mehta, 9 Oct] Partner UAT team confirms they will schedule UAT once our e2e run is green. Blocked on partner UAT sign-off."
+  - number: 6
+    summary: "Draft v3 cutover plan"
+    issue_type: Task
+    status: Done
+    priority: Medium
+    labels: [vn-rail, v3]
+    assignee_persona: marco
+    description: |
+      Cutover plan for switching vn-rail-adapter from v2 to v3 in production.
+
+      - Switch base URL and auth mode by config, behind payouts.vn.enabled.
+      - Pause VN payouts for under 10 minutes during the switch; payout-orchestrator queues retries.
+      - Rollback: switch config back to v2 (only possible while the partner still serves v2).
+      - Cutover window must be outside the month-end and payroll change freezes.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Marco Rossi, 7 Oct] Draft cutover plan attached to the launch checklist."
+      - "[Arjun Mehta, 9 Oct] Approved."

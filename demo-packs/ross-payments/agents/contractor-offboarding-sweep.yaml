@@ -1,0 +1,12 @@
+# SYNTHETIC DEMO. Beat 6: IT-77 "Offboard contractor Marco Rossi" (with Marco's email in the description) starts this as
+# Wei Ling. Read-only inventory; the IT checklist ticket waits for approval. Revocation itself is done by people.
+name: Contractor Offboarding Sweep
+description: When an offboarding ticket lands, inventories the contractor's Slack, Drive and Jira access and app activity, and drafts an IT revocation checklist for approval.
+owner: weiling
+status: published
+audience: {kind: group, groups: [payments-leads]}
+template: contractor_offboarding
+template_settings:
+  jql: project = IT AND summary ~ "Offboard"
+  it_project: IT
+  approver_group: payments-leads

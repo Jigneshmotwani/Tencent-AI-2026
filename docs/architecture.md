@@ -1,4 +1,4 @@
-# Architecture (iteration 3)
+# ROSS architecture (iteration 5)
 
 Browser (React/TypeScript, React Flow Studio) → Vite `/api` proxy → local FastAPI (single process) → per-user authorization (`connections.access_context`) → source-native Drive / Confluence / Jira / Slack APIs with the **invoking user's delegated token** → fresh, bounded evidence → workflow engine or the fixed chat runner → guardrails → local LiteLLM gateway → configured inference provider. MCP tools (local synthetic `kyb-registry` over stdio, or registered HTTP servers) are called by the engine through the MCP registry. PostgreSQL holds application records and the hash-chained audit trail; a separate LiteLLM database holds gateway accounting and virtual keys. Traces and metrics flow app/LiteLLM → OTel Collector (allowlist redaction) → Tempo / Prometheus → Grafana, which also reads metadata views through a read-only role.
 
@@ -100,3 +100,71 @@ Retrieval is query-time and federated: no index, no source cache. Freshness is b
 **Demo switcher.** `DEMO_MODE=true` and loopback only: ends the session and creates a real session for a seeded demo user (`session.demo_switch` audited).
 
 **Audit labels.** `platform_policies['audit_labels']` maps container/resource ids to admin-configured labels and named topics (e.g. "STR case files"); the NL audit query may filter by topic. Labels are configuration, not source titles; titles and excerpts are still never stored.
+
+## Iteration 4-5 additions
+
+**Product name.** `APP_NAME` (default `ROSS`) is served by `/api/health` and used by the UI shell, the page title and the
+default chat agent ("ROSS Knowledge assistant").
+
+**Scopes and demo packs.** `backend/app/scopes.py` gives the allowed containers per provider (Confluence spaces, Jira
+projects, Slack channels, Drive folders) from the active demo pack (`platform_policies['demo_pack']`), else `.env`. A pack
+that lists a field owns it, even when the list is empty, so a missing Drive folder never falls back to another demo's
+folder. Scopes only bound which containers are searched; the person's token still decides what is readable. Display names
+are labels for Connections and Audit, never grants. `backend/app/demo_pack.py` loads a pack (users, groups, scopes, agents
+from templates or specs, subscriptions, budgets, policies, suggestion chips) after a `pg_dump` backup and an `audit.reset`
+chain event; `--refresh-sources` undoes what the last demo take wrote to the sources (only items the demo created) using
+the owner's own linked accounts. `${NAME}` / `${drive:Path}` placeholders keep real emails and folder ids out of the repo.
+
+**Triggers, run-as and subscriptions.** One loop in the API process (`workflows/triggers.py`, every `TRIGGER_POLL_S`,
+default 30 s) holds a PostgreSQL advisory lock and polls:
+
+```mermaid
+flowchart LR
+  T[Trigger loop<br/>advisory lock] -->|JQL limited to allowed projects| J[Jira: new issue keys]
+  T -->|allowed folder, newest files| D[Drive: new file ids]
+  T -->|cron + timezone| S[Schedule]
+  J & D -->|one run each, run-as = agent owner| R[Workflow run]
+  S -->|one run per subscriber, run-as = subscriber| R
+  R -->|reads with the run-as user's own tokens| SRC[Sources]
+  R -->|writes only through approval steps| APR[Approval gate]
+```
+
+Processed keys/file ids are remembered per agent (`trigger_states`); the first poll after publishing only records what
+exists. Automatic runs may only write through approval nodes, whatever the policy says. Every triggered run records its
+trigger and run-as user on the run, in the audit log (`workflow.run.triggered`), on the run card and on the approval card.
+A schedule's subscribers each get their own run with their own access, so one agent yields differently scoped results.
+
+**Slack with PKCE.** Per-user user tokens (no bot). Slack only accepts HTTPS redirects, so a self-signed local shim
+(`tls_callback.py`) 303-forwards to the HTTP API callback where state, session and owner checks run. The app has PKCE on:
+authorize sends an S256 challenge; the token exchange and refresh send the verifier without the client secret. Every
+token is bound to `SLACK_TEAM_ID`. Read scopes for everyone; `channels:write`, `groups:write`, `users:read.email` are
+requested only for admins (demo seeding/reset and the access inventory). Retrieval only reads channels the person is a
+member of (member list cached 20 s per token, which bounds revocation latency). Posts are approval-gated, go only to the
+pack's write channels and carry an idempotency marker, so a retry never posts twice.
+
+**Guardrail flow.**
+
+```mermaid
+flowchart TD
+  Q[Chat message] --> C{Intent classifier<br/>rules fast path + few-shot model}
+  C -->|access_change| NA[Not authorized card<br/>no search, no answer model]
+  C -->|malicious| BL[Request blocked card<br/>no search, no answer model]
+  C -->|knowledge question| R[Retrieve with the user's own tokens]
+  BL & NA --> AUD[(guardrail.blocked audit event)]
+  R --> GI[Guardrail IN: PII masking,<br/>injection quarantine]
+  GI --> M[Answer model]
+  M --> GO[Guardrail OUT: citations grounded in this run's evidence,<br/>schema, PII leak]
+  GO -->|nothing the user can read| NF[One fixed not-found sentence<br/>same for restricted and nonexistent]
+  GO --> A[Cited answer]
+```
+
+Agent runs use the same input/output guardrails as steps (`guardrail.input`, `guardrail.output`).
+
+**Copilot reliability.** Proposed operations are applied to a copy and validated in code; every
+`{{nodes.X.output.F}}` must name a field X declares (write tools, reads, structured LLM steps, routers, output guardrails
+via their target) and is repaired once to the matching field or reported as `unknown_output_field`. An empty create reply
+is retried once with the original request before the user sees anything.
+
+**Access-review tools.** `access.inventory` (Slack channel membership, Drive folder permissions, Jira project roles, with
+the run-as admin's own access; each source CHECKED or NOT CHECKED) and `audit.user_activity` (that person's audit events).
+Email matching ignores Gmail dots. Nothing grants, revokes or changes access; revocation is done by people.

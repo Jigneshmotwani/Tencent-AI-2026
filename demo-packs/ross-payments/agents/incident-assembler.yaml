@@ -1,0 +1,17 @@
+# SYNTHETIC DEMO. Beat 4: Priya creates a P1 in INC; this runs automatically as Wei Ling (the owner) with her own access.
+name: Incident Assembler
+description: Assembles a cited incident brief from past incidents, the runbook, partner notices and recent alert and deploy chatter, then posts it to #payments-oncall after approval.
+owner: weiling
+status: published
+audience: {kind: group, groups: [payments-eng]}
+template: incident_assembler
+template_settings:
+  jql: project = INC AND priority in (Highest, High)
+  alert_channel: infra-alerts
+  deploy_channel: deployments
+  incident_channel: payments-oncall
+  approver_group: payments-leads
+  window: 2h            # alerts: re-posted by --refresh-sources just before the take
+  deploy_window: 7d
+  context_channels:
+    - {channel: ext-vn-rail-partner, since: 7d}   # partner notices (TLS certificate rotation)

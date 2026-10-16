@@ -12,6 +12,9 @@ BRIEF_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['s
                                'runbook_steps': {'type': 'array', 'items': {'type': 'string'}},
                                'recent_deploys': {'type': 'array', 'items': {'type': 'string'}},
                                'likely_owners': {'type': 'array', 'items': {'type': 'string'}}}}
+# Rendered under the incident brief's summary and cause; a list of strings renders as "- item" lines.
+BRIEF_LISTS = ('**Runbook steps:**\n{{nodes.check.output.result.runbook_steps}}\n\n'
+               '**Recent deploys and changes:**\n{{nodes.check.output.result.recent_deploys}}')
 CHANGE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['partner', 'change', 'affected_services', 'search_phrase'],
                  'properties': {'partner': {'type': 'string'}, 'change': {'type': 'string'}, 'effective_date': {'type': 'string'},
                                 'affected_services': {'type': 'array', 'items': {'type': 'string'}},
@@ -19,7 +22,9 @@ CHANGE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['
 EXISTS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['ticket_exists'],
                  'properties': {'ticket_exists': {'enum': ['yes', 'no']}, 'existing_key': {'type': 'string'}, 'reason': {'type': 'string'}}}
 TICKET_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'description'],
-                 'properties': {'summary': {'type': 'string', 'maxLength': 200}, 'description': {'type': 'string'}}}
+                 'properties': {'summary': {'type': 'string', 'maxLength': 120,
+                                            'description': 'A short ticket title, for example "Migrate <service> off <partner> API v2 before <date>"'},
+                                'description': {'type': 'string'}}}
 PERSON_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['email'],
                  'properties': {'email': {'type': 'string'}, 'name': {'type': 'string'}, 'last_day': {'type': 'string'}}}
 CHECKLIST_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'checklist'],
@@ -52,9 +57,13 @@ def _spec(name, description, icon, trigger, inputs, nodes, edges, tools, sources
 
 # ------------------------------------------------------------------------------------------------ 1. Incident Assembler
 def incident_assembler(jql: str | None = None, alert_channel: str | None = None, deploy_channel: str | None = None,
-                       incident_channel: str | None = None, approver_group: str = '', window: str = '2h') -> dict:
+                       incident_channel: str | None = None, approver_group: str = '', window: str = '2h', deploy_window: str = '',
+                       context_channels: list | None = None) -> dict:
+    """context_channels: extra channels read for context, e.g. [{channel: partner-updates, since: 7d}] (partner notices)."""
     d = _defaults()
     jql, alert, deploy, incident = jql or d['jql'], alert_channel or d['alert_channel'], deploy_channel or d['deploy_channel'], incident_channel or d['incident_channel']
+    deploy_window = deploy_window or window
+    extra = [c if isinstance(c, dict) else {'channel': str(c)} for c in (context_channels or [])][:3]
     summary = '{{nodes.get_issue.output.fields.summary}}'
     nodes = [
         node('trigger', 'trigger.jira_issue_created', 'New incident', {'jql': jql, 'input': 'issue_key'}),
@@ -62,8 +71,10 @@ def incident_assembler(jql: str | None = None, alert_channel: str | None = None,
         node('past', 'knowledge.retrieve', 'Similar incidents & postmortems', {'query': f'postmortem incident {summary}', 'sources': ['confluence', 'jira'],
                                                                               'max_documents': 5}),
         node('runbook', 'knowledge.retrieve', 'Current runbook', {'query': f'runbook {summary}', 'sources': ['confluence'], 'max_documents': 3}),
-        node('alerts', 'tool.builtin', 'Alert channel (last 2 h)', {'tool': 'slack.read_channel', 'params': {'channel': alert, 'since': window}}),
-        node('deploys', 'tool.builtin', 'Deploy channel (last 2 h)', {'tool': 'slack.read_channel', 'params': {'channel': deploy, 'since': window}}),
+        node('alerts', 'tool.builtin', f'Alert channel (last {window})', {'tool': 'slack.read_channel', 'params': {'channel': alert, 'since': window}}),
+        node('deploys', 'tool.builtin', f'Deploy channel (last {deploy_window})', {'tool': 'slack.read_channel', 'params': {'channel': deploy, 'since': deploy_window}}),
+        *[node(f'context_{i + 1}', 'tool.builtin', f"#{c['channel']} (last {c.get('since', '7d')})",
+               {'tool': 'slack.read_channel', 'params': {'channel': c['channel'], 'since': c.get('since', '7d')}}) for i, c in enumerate(extra)],
         node('guard_in', 'guardrail.input', 'Mask PII', {'pii': ['nric', 'iban', 'card', 'phone', 'email'], 'injection': True}),
         node('brief', 'llm.generate', 'Incident brief', {'prompt': (
             'Write an incident brief for {{inputs.issue_key}} using ONLY the evidence. Cite [E#] after every factual sentence. '
@@ -77,17 +88,20 @@ def incident_assembler(jql: str | None = None, alert_channel: str | None = None,
             'allow_requester': True, 'respond_within': '15 minutes', 'message': 'Check the brief before it goes to #' + incident + ' and the Jira issue.'}),
         node('post', 'tool.builtin', 'Post to the incident channel', {'tool': 'slack.post_message', 'params': {
             'channel': incident, 'text': '*Incident brief {{inputs.issue_key}}*\n{{nodes.check.output.result.summary}}\n'
-                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}'}}),
+                                         '*Suspected cause:* {{nodes.check.output.result.suspected_cause}}\n' + BRIEF_LISTS.replace('**', '*')}}),
         node('comment', 'tool.builtin', 'Comment on the incident', {'tool': 'jira.comment', 'params': {
             'issue_key': '{{inputs.issue_key}}', 'body': 'Incident brief (assembled by agent, approved):\n{{nodes.check.output.result.summary}}\n'
-                                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}'}}),
+                                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}\n'
+                                                         + BRIEF_LISTS.replace('**', '')}}),
         node('output', 'output', 'Brief', {'template': '## Incident brief: {{inputs.issue_key}}\n{{nodes.check.output.result.summary}}\n\n'
-                                                       '**Suspected cause:** {{nodes.check.output.result.suspected_cause}}', 'include_nodes': ['check']}),
+                                                       '**Suspected cause:** {{nodes.check.output.result.suspected_cause}}\n\n'
+                                                       + BRIEF_LISTS.replace(':**\n', ':**\n\n'), 'include_nodes': ['check']}),
     ]
-    order = ['trigger', 'get_issue', 'past', 'runbook', 'alerts', 'deploys', 'guard_in', 'brief', 'check', 'approval', 'post', 'comment', 'output']
+    order = ['trigger', 'get_issue', 'past', 'runbook', 'alerts', 'deploys', *[f'context_{i + 1}' for i in range(len(extra))], 'guard_in', 'brief',
+             'check', 'approval', 'post', 'comment', 'output']
     edges = [edge(a, b) for a, b in zip(order, order[1:])]
     if not approver_group:
-        nodes[9]['config'].pop('approver_group')
+        next(n for n in nodes if n['id'] == 'approval')['config'].pop('approver_group')
     _vertical(nodes, order, [], [])
     return _spec('Incident Assembler', 'Assembles a cited incident brief from past incidents, the runbook and recent alert and deploy chatter, then posts it after approval.',
                  'siren', {'type': 'jira_issue_created', 'config': {'jql': jql, 'input': 'issue_key'}},
@@ -118,12 +132,15 @@ def partner_change_radar(folder_id: str | None = None, partner_channels: list | 
             'jql': f'project = {project} AND text ~ "{{{{nodes.analyze.output.search_phrase}}}}"', 'max_results': 5}}),
         node('decide', 'llm.generate', 'Decide: ticket exists?', {'prompt': (
             'Does one of the Jira issues in the evidence already track this partner change: {{nodes.analyze.output.change}}? '
-            'Answer ticket_exists "yes" with existing_key only if an issue clearly covers it; otherwise "no".'), 'include_evidence': True,
+            'Answer ticket_exists "yes" with existing_key only if an issue is specifically about this change (the same change and '
+            'deadline). A broader project or migration ticket that the change merely relates to does not count: answer "no" and name '
+            'it in reason so the new ticket can link to it.'), 'include_evidence': True,
             'output_schema': EXISTS_SCHEMA, 'max_tokens': 300}),
         node('router', 'logic.router', 'Ticket exists?', {'value': '{{nodes.decide.output.ticket_exists}}', 'cases': ['yes', 'no'], 'default': 'no'}),
         node('draft', 'llm.generate', 'Draft the ticket', {'prompt': (
             'Draft a Jira ticket for the partner change {{nodes.analyze.output.change}} (partner {{nodes.analyze.output.partner}}). Description: '
-            'what changes and when, affected services and their owners from the service catalog, and the next steps. Cite [E#].'),
+            'what changes and when, affected services and their owners from the service catalog, any broader ticket it relates to '
+            '({{nodes.decide.output.reason}}), and the next steps. Cite [E#].'),
             'include_evidence': True, 'output_schema': TICKET_SCHEMA, 'max_tokens': 1500}),
         node('approval', 'human.approval', 'Approve the ticket', {'title': 'Create a ticket for the partner change', 'approver_roles': ['builder', 'admin'],
                                                                   'approver_group': approver_group, 'allow_requester': True,
@@ -150,7 +167,7 @@ def partner_change_radar(folder_id: str | None = None, partner_channels: list | 
 
 # ------------------------------------------------------------------------------------------------ 3. Vulnerability Remediation Tracker
 def vulnerability_remediation_tracker(findings_project: str | None = None, team_projects: list | None = None, cron: str = '0 9 * * 1',
-                                      timezone: str = '') -> dict:
+                                      timezone: str = '', upgrade_label: str = '') -> dict:
     d = _defaults()
     findings = findings_project or d['project']
     teams = list(team_projects or [p for p in d['projects'] if p != findings][:3] or [findings])
@@ -159,12 +176,15 @@ def vulnerability_remediation_tracker(findings_project: str | None = None, team_
         node('findings', 'tool.builtin', 'Open security findings', {'tool': 'jira.search', 'params': {
             'jql': f'project = {findings} AND statusCategory != Done ORDER BY priority DESC', 'max_results': 5}}),
         node('upgrades', 'tool.builtin', 'Team upgrade tickets', {'tool': 'jira.search', 'params': {
-            'jql': 'project in (' + ', '.join(teams) + ') AND statusCategory != Done ORDER BY duedate ASC', 'max_results': 5}}),
+            'jql': 'project in (' + ', '.join(teams) + ')' + (f' AND labels = "{upgrade_label}"' if upgrade_label else '')
+                   + ' AND statusCategory != Done ORDER BY duedate ASC', 'max_results': 5}}),
         node('summary', 'llm.generate', 'Summary for you', {'prompt': (
             'Write this week\'s remediation summary for the reader using ONLY the Jira issues in the evidence, which are exactly what this reader '
-            'can see. Cite [E#] after every factual sentence. Group by what needs action first (due soonest, highest priority). '
+            'can see. Write one bullet per Jira issue in the evidence, most urgent first (due soonest, highest priority): the issue key and '
+            'title, its status, its due date if the evidence gives one, and the action needed, ending with that issue\'s [E#] label. '
             'Never mention findings, counts, reports or projects that are not in the evidence, and never say that other items may exist. '
-            'If the evidence is empty, say only: "Nothing needs your attention this week."'), 'include_evidence': True, 'max_tokens': 1800}),
+            'Only when the evidence contains no Jira issue at all, say: "Nothing needs your attention this week."'),
+            'include_evidence': True, 'max_tokens': 1800}),
         node('check', 'guardrail.output', 'Check citations', {'target': 'summary', 'grounding': True, 'schema': False, 'pii_leak': True, 'on_fail': 'strip'}),
         node('output', 'output', 'Weekly summary', {'template': '## Remediation this week\n{{nodes.check.output.result.text}}', 'include_nodes': ['check']}),
     ]

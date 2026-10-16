@@ -103,7 +103,10 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
     usage = {'calls': 0, 'total_tokens': 0, 'cost_usd': 0.0}
     best = None
     attempts = 3 if mode == 'create' else 2
-    for attempt in range(attempts):
+    first_messages, empty_retry = messages, True
+    attempt = -1
+    while attempt < attempts - 1:
+        attempt += 1
         completion = await _model(user, wf_id, wf_name, messages)
         usage['calls'] += 1
         usage['total_tokens'] += int((completion.usage or {}).get('total_tokens') or 0)
@@ -114,8 +117,16 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
         except ValueError:
             data, parse_error = {}, 'The reply was not a single valid JSON object.'
         ops, preview, warnings, unsupported = core.apply_sanitized(ctx, base, data.get('operations'), mode)
+        if not ops and empty_retry:
+            # An empty reply is intermittent (usually a cut-off reply): retry once with the original request, unseen by the user.
+            empty_retry, attempts, messages = False, attempts + 1, first_messages
+            usage['empty_retries'] = usage.get('empty_retries', 0) + 1
+            continue
         from ..workflows.triggers import sync_trigger
         preview = sync_trigger(preview)
+        # Template references to another node's output must name a field that node declares; repair once (key -> issue_key).
+        preview, repairs, _ = core.repair_output_refs(preview)
+        warnings = warnings + [f"Fixed a reference in {r['node_id']}: {r['from']} -> {r['to']}" for r in repairs]
         unsupported = [str(u)[:300] for u in (data.get('unsupported') or []) if isinstance(u, (str, dict))][:10] + unsupported
         unsupported = list(dict.fromkeys(unsupported))
         validation = core.validate(preview, db, ctx)
@@ -136,7 +147,8 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
     result = best[1]
     result['usage'] = usage
     if not result['explanation']:
-        result['explanation'] = 'No changes proposed.' if not result['operations'] else 'Proposed changes are listed below.'
+        result['explanation'] = ('Proposed changes are listed below.' if result['operations'] else
+                                 'I could not build this agent this time. Send the same description again.' if mode == 'create' else 'No changes proposed.')
     return result
 
 
@@ -158,6 +170,9 @@ async def copilot_create(body: CreateIn, request: Request, user: User = Depends(
     base['nodes'] = [{'id': 'trigger', 'type': 'trigger.manual', 'label': 'Start', 'config': {}, 'position': {'x': 40, 'y': 40}}]
     started = time.monotonic()
     result = await _propose(db, user, '', 'New workflow', base, body.description, [], 'create')
+    if not result['operations']:  # never leave an empty "New workflow" behind: the person simply asks again
+        audit(db, user.id, 'copilot.create', 'error', 'copilot_empty', details={'attempts': result['attempts']})
+        raise HTTPException(422, 'copilot_empty')
     spec = result['preview_spec']
     try:
         clean = WorkflowSpec.model_validate({**spec, 'status': 'draft', 'version': 1}).model_dump()
@@ -205,7 +220,10 @@ async def copilot_message(id: str, body: CopilotIn, request: Request, user: User
     base = copy.deepcopy(draft.spec)
     history = _history_for_model(_history(db, wf.id, user.id, 8))
     started = time.monotonic()
-    result = await _propose(db, user, wf.id, wf.name, base, body.message, history, 'edit')
+    # A draft that is still blank (only its trigger) is a build, not an edit: the create instructions, worked example and
+    # empty-reply retry apply (edit mode on a blank agent intermittently returned no operations).
+    mode = 'create' if len(base.get('nodes') or []) <= 1 else 'edit'
+    result = await _propose(db, user, wf.id, wf.name, base, body.message, history, mode)
     diff = diff_specs(base, result['preview_spec'])
     db.add(CopilotMessage(workflow_id=wf.id, owner_id=user.id, role='user', text=body.message.strip(), status='info'))
     db.flush()

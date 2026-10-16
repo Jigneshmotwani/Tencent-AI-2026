@@ -301,6 +301,17 @@ def workflow_blocked(db, workflow_id) -> bool:
     return row is not None and (row.limit_usd <= 0 or workflow_month_spent(db, workflow_id) >= row.limit_usd)
 
 
+def synthetic_usage(db) -> dict:
+    """Demo mode only: the loaded demo pack's SYNTHETIC month-to-date spend ({'users': {id: usd}, 'agents': {name: usd}}), added
+    to real usage on the Budgets page. Display only: budget enforcement (precheck, limit_checks) never counts it."""
+    from ..db import PlatformPolicy
+    if not settings().demo_mode:
+        return {'users': {}, 'agents': {}}
+    row = db.get(PlatformPolicy, 'demo_budget_usage')
+    value = dict(row.value or {}) if row is not None else {}
+    return {'users': dict(value.get('users') or {}), 'agents': dict(value.get('agents') or {})}
+
+
 def overview(db) -> dict:
     from ..db import Run, WorkflowRun
     org = limit_row(db, 'org', '')
@@ -329,11 +340,26 @@ def overview(db) -> dict:
         else:
             tests += float(usd)
     chat = float(db.execute(text("SELECT COALESCE(SUM(NULLIF(usage->>'cost','')::numeric),0) FROM runs WHERE created_at>=:s"), {'s': start}).scalar() or 0)
+    demo = synthetic_usage(db)
+    demo_total = sum(demo['users'].values())
+    if demo_total:
+        # Spread the synthetic month-to-date total over this month's days (weekdays busier, a fixed per-day wobble); days of the
+        # previous month in the 30-day chart get the same daily rate so the line does not start at the 1st.
+        def weight(d):
+            return (1.0 if d.weekday() < 5 else 0.35) * (0.65 + int(hashlib.sha256(d.isoformat().encode()).hexdigest()[:4], 16) % 70 / 100)
+        rate = demo_total / sum(weight(d) for d in daily if d >= start.date())
+        for d in daily:
+            daily[d] += rate * weight(d)
+        for wf in db.scalars(select(Workflow).where(Workflow.name.in_(list(demo['agents'])), Workflow.status != 'archived')):
+            if wf.published_version:
+                agents[wf.id] = agents.get(wf.id, 0.0) + demo['agents'][wf.name]; names[wf.id] = wf.name
+        chat += max(demo_total - sum(demo['agents'].values()), 0.0)
     top = [{'name': names[w], 'kind': 'Agent', 'usd': round(v, 4)} for w, v in agents.items()]
     if tests: top.append({'name': 'Studio test runs', 'kind': 'Builders', 'usd': round(tests, 4)})
     if chat: top.append({'name': 'Workspace chat', 'kind': 'Chat', 'usd': round(chat, 4)})
     top = sorted([t for t in top if t['usd'] > 0], key=lambda t: -t['usd'])[:5]
-    return {'org': {'used_usd': round(org_month_spent(db), 4), 'limit_usd': float(org.limit_usd) if org is not None else None,
+    return {'synthetic_usage': bool(demo_total),
+            'org': {'used_usd': round(org_month_spent(db) + demo_total, 4), 'limit_usd': float(org.limit_usd) if org is not None else None,
                     'threshold_pct': (org.threshold_pct if org is not None and org.threshold_pct else int(WARN_AT * 100)),
                     'resets_at': next_month_start().isoformat()},
             'daily': [{'date': d.isoformat(), 'usd': round(v, 4)} for d, v in daily.items()], 'top': top}
@@ -345,20 +371,23 @@ def _row(id, name, spend, limit, extra=None):
 
 
 def scope_rows(db, kind: str) -> list[dict]:
+    from ..admin.directory import member_ids
     from ..db import Group, User as U
+    demo = synthetic_usage(db)
     if kind == 'groups':
         out = []
         for g in db.scalars(select(Group).order_by(Group.name)):
             row = limit_row(db, 'group', g.id)
-            out.append(_row(g.id, g.name, group_month_spent(db, g.id), float(row.limit_usd) if row is not None else None))
+            extra = sum(demo['users'].get(uid, 0.0) for uid in member_ids(db, g.id))
+            out.append(_row(g.id, g.name, group_month_spent(db, g.id) + extra, float(row.limit_usd) if row is not None else None))
         return out
     if kind == 'users':
-        return [_row(u.id, u.name or u.username, user_month_spent(db, u.id), user_limit(db, u.id))
+        return [_row(u.id, u.name or u.username, user_month_spent(db, u.id) + demo['users'].get(u.id, 0.0), user_limit(db, u.id))
                 for u in db.scalars(select(U).order_by(U.name)) if u.status != 'disabled']
     if kind == 'agents':
         out = []
         for wf in db.scalars(select(Workflow).where(Workflow.status != 'archived').order_by(Workflow.name)):
-            spend = workflow_month_spent(db, wf.id)
+            spend = workflow_month_spent(db, wf.id) + (demo['agents'].get(wf.name, 0.0) if wf.published_version else 0.0)
             if not wf.published_version and not spend:
                 continue  # drafts appear once they have spend
             row = limit_row(db, 'workflow', wf.id)

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from ..config import settings
 from ..db import ActionExecution, Approval, NodeState, SessionLocal, SlackDraft, SourceConnection, WorkflowRun
 from ..telemetry import record_approval, record_guardrail
+from ..admin.directory import org_guardrails
 from . import guardrails as G
 from .engine import NodeFailure, NodeResult, RunCtx, emit, model_call, step, _audit, ensure_evidence_text, idempotency_key
 from .registry import AGENT_READ_TOOLS, WRITE_TOOLS, canonical_action
@@ -424,7 +425,7 @@ async def _jira_search(ctx: RunCtx, node, jql: str, limit: int) -> dict:
             continue  # unreadable hits leave no trace for the user
         f = got['fields']
         issues.append({'key': f.get('key') or got['issue_key'], 'summary': f.get('summary', ''), 'status': f.get('status', ''),
-                       'evidence_label': got['evidence_label']})
+                       'due': f.get('due', ''), 'evidence_label': got['evidence_label']})
     return {'issues': issues}
 
 
@@ -651,8 +652,9 @@ async def logic_router(ctx: RunCtx, node):
 async def guardrail_input(ctx: RunCtx, node):
     from .engine import _activate_guard
     cfg = node.get('config') or {}
-    kinds = cfg.get('pii', ['nric', 'iban', 'card', 'phone', 'email'])
-    injection = cfg.get('injection', True)
+    org = org_guardrails()  # org minimums: a step can add PII types or checks, never drop the org's
+    kinds = [k for k in G.PII_KINDS if k in set(cfg.get('pii', org['pii'])) | set(org['pii'])]
+    injection = cfg.get('injection', True) or org['injection']
     await ensure_evidence_text(ctx)
     for e in ctx.evidence:  # re-screen with this node's configuration
         e['screened'] = False
@@ -708,6 +710,25 @@ async def guardrail_input(ctx: RunCtx, node):
 
 
 # ------------------------------------------------------------------ guardrail.output
+def _has_text(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_text(v) for v in value)
+    if isinstance(value, dict):
+        return any(_has_text(v) for v in value.values())
+    return False
+
+
+def _jira_list(ctx: RunCtx) -> str:
+    """'- KEY: title (due YYYY-MM-DD) [E#]' for each readable Jira issue in this run's evidence (the invoker's own access)."""
+    rows = []
+    for e in ctx.evidence:
+        if e.get('kind') != 'jira_issue' or not e.get('text'):
+            continue
+        due = re.search(r'\| Due: (\d{4}-\d{2}-\d{2})', e['text'])
+        rows.append(f"- {e.get('title') or e['document_id']}" + (f' (due {due.group(1)})' if due else '') + f" [{e['label']}]")
+    return '\n'.join(rows)
 async def guardrail_output(ctx: RunCtx, node):
     cfg = node.get('config') or {}
     target = cfg.get('target')
@@ -722,7 +743,8 @@ async def guardrail_output(ctx: RunCtx, node):
     usage = {}
     result, removed, verified, invalid = original, [], [], []
     repaired = False
-    if cfg.get('grounding', True):
+    org = org_guardrails()
+    if cfg.get('grounding', True) or org['grounding']:
         g = G.ground(original, labels, strip=on_fail in ('strip', 'repair', 'block'))
         if on_fail == 'repair' and (g['removed'] or g['invalid_ids']):
             await ensure_evidence_text(ctx)
@@ -769,6 +791,14 @@ async def guardrail_output(ctx: RunCtx, node):
         _guard_event(ctx, node, 'grounding', outcome, f'{n_ok} claims verified, {n_bad} removed' + (f', {len(invalid)} invalid citation(s) dropped' if invalid else ''))
         if outcome == 'blocked':
             raise NodeFailure('grounding_failed')
+        if isinstance(result, dict) and result and not any(_has_text(v) for v in result.values()):
+            # Everything was stripped: never return an empty result. List the Jira issues in the evidence instead (each one is
+            # grounded by construction: key and title from the issue, its due date, its own label).
+            await ensure_evidence_text(ctx)
+            key = next((k for k, v in result.items() if isinstance(v, str)), None)
+            if key is not None:
+                result = {**result, key: _jira_list(ctx) or 'Nothing in the evidence supports a summary.'}
+                ctx.log(node['id'], 'Every sentence was removed; the output lists the Jira issues from the evidence instead.')
     schema_ok = True
     if cfg.get('schema', True) and schema:
         problems = _schema_problems(schema, result)
@@ -778,7 +808,7 @@ async def guardrail_output(ctx: RunCtx, node):
         if not schema_ok and on_fail == 'block':
             raise NodeFailure('output_schema_invalid')
     pii_leaks = 0
-    if cfg.get('pii_leak', True):
+    if cfg.get('pii_leak', True) or org['pii_leak_check']:
         result, counts = G.pii_scan(result, ctx.masker)
         pii_leaks = sum(counts.values())
         _guard_event(ctx, node, 'pii_leak', 'masked' if pii_leaks else 'pass',

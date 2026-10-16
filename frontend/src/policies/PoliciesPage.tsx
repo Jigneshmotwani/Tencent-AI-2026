@@ -1,7 +1,7 @@
-// Policies: Models, Tools (org enable + per-tool groups + approve pending), Page access matrix, Guardrails (read-only), Approval rules.
+// Policies: Models, Tools (org enable + per-tool groups + approve pending), Page access matrix, Guardrails (org defaults), Approval rules.
 import { useRef, useState } from 'react'
 import { api, safeError } from '../api'
-import { accessChanged } from '../shell/session'
+import { accessChanged, hasCap, useMe } from '../shell/session'
 import { Icon } from '../ui/icons'
 import { Button, Checkbox, Field, Input, Menu, IconButton, Pill, Radio, Select, Sheet, Switch, toast, useApi } from '../ui/kit'
 import { AdminScreen, Group, Loading, LoadError, MultiSelect, PageTabs, fail, saved, useGroups } from '../tools/shared'
@@ -158,32 +158,40 @@ function AccessPane() {
   </>
 }
 
-// ---------------------------------------------------------------- guardrails (read-only)
+// ---------------------------------------------------------------- guardrails (org defaults; admins edit)
 interface Rule { action: string; write: boolean; requires_approval: boolean; locked?: boolean; approver_group: { id: string; name: string } | string | null }
 interface PolicyPayload {
-  guardrails?: { pii?: string[]; pii_default?: string[]; injection?: boolean; grounding?: boolean; pii_leak_check?: boolean; note?: string }
+  guardrails?: { pii?: string[]; pii_kinds?: string[]; injection?: boolean; grounding?: boolean; pii_leak_check?: boolean; note?: string }
   approval_rules?: Rule[]; publish_reviewer_group?: { id: string; name: string } | string | null
 }
 const ACTION_NAME: Record<string, string> = { 'jira.comment': 'Comment on Jira issue', 'jira.transition': 'Transition Jira issue', 'jira.create_issue': 'Create Jira issue', 'slack.post': 'Post to Slack', 'slack.draft': 'Draft Slack message' }
 const PII_NAME: Record<string, string> = { nric: 'NRIC/FIN', uen: 'UEN', iban: 'Account numbers', card: 'Cards', phone: 'Phone', email: 'Email' }
+type GuardKey = 'injection' | 'grounding' | 'pii_leak_check'
 function GuardPane() {
   const { data, error, reload } = useApi<PolicyPayload>('/policies')
+  const canEdit = hasCap(useMe(), 'admin')
   if (error && !data) return <LoadError error={error} onRetry={() => void reload()} />
   if (!data) return <Loading what="guardrails" />
   const g = data.guardrails ?? {}
-  const on = new Set(g.pii_default ?? g.pii ?? [])
-  const rows: [string, string, boolean | undefined][] = [
-    ['Prompt-injection screening', 'Sources that contain instructions aimed at the agent are screened.', g.injection],
-    ['Require citations', 'Every claim in an answer must cite a source.', g.grounding],
-    ['Check answers for PII leaks', 'Answers are scanned before they are shown.', g.pii_leak_check],
+  const on = new Set(g.pii ?? [])
+  const save = async (body: Record<string, unknown>) => {
+    try { await api('/policies/extras', 'PUT', { guardrails: body }); saved(); await reload(true) } catch (e) { fail(e); await reload(true) }
+  }
+  const togglePii = (kind: string) => void save({ pii: on.has(kind) ? [...on].filter(k => k !== kind) : [...on, kind] })
+  const rows: [GuardKey, string, string][] = [
+    ['injection', 'Prompt-injection screening', 'Sources that contain instructions aimed at the agent are screened.'],
+    ['grounding', 'Require citations', 'Every claim in an answer must cite a source.'],
+    ['pii_leak_check', 'Check answers for PII leaks', 'Answers are scanned before they are shown.'],
   ]
   return <>
     <div className="crd">
       <div className="setrow col"><div><b style={{ fontWeight: 500 }}>PII masking types</b><div className="d">Masked before any model sees the text.</div></div>
-        <div className="fl2">{(g.pii ?? []).map(p => <button type="button" key={p} className="tg" aria-pressed={on.has(p)} disabled>{PII_NAME[p] ?? p}</button>)}</div></div>
-      {rows.filter(r => r[2] !== undefined).map(([t, d, v]) => <div className="setrow" key={t}><div><b style={{ fontWeight: 500 }}>{t}</b><div className="d">{d}</div></div><Switch checked={!!v} label={t} disabled /></div>)}
+        <div className="fl2">{(g.pii_kinds ?? []).map(p => <button type="button" key={p} className="tg" aria-pressed={on.has(p)} disabled={!canEdit}
+          onClick={() => togglePii(p)}>{PII_NAME[p] ?? p}</button>)}</div></div>
+      {rows.map(([k, t, d]) => <div className="setrow" key={k}><div><b style={{ fontWeight: 500 }}>{t}</b><div className="d">{d}</div></div>
+        <Switch checked={!!g[k]} label={t} disabled={!canEdit} onChange={v => void save({ [k]: v })} /></div>)}
     </div>
-    <p className="muted">{g.note ?? 'These are org defaults. Builders can only make a step stricter.'} Shown read-only.</p>
+    <p className="muted">{g.note ?? 'These are org defaults. Builders can only make a step stricter.'}{canEdit ? ' Changes apply at once and are audited.' : ' Only admins can change them.'}</p>
   </>
 }
 

@@ -96,6 +96,8 @@ async def run_debug(run_id: str, user: User = Depends(identity.current_user), db
 
 class RetryBody(BaseModel):
     node_id: str = Field(min_length=1, max_length=48)
+    # Optional corrected run inputs (e.g. a mistyped issue key or file id); validated against the version's inputs.
+    inputs: dict | None = None
 
 
 @router.post('/workflow-runs/{run_id}/retry')
@@ -112,7 +114,7 @@ async def run_retry(run_id: str, body: RetryBody, request: Request, user: User =
     if engine.active_count() >= settings().workflow_max_active:
         raise HTTPException(429, 'run_capacity_reached')
     try:
-        engine.retry_from(run.id, body.node_id)
+        engine.retry_from(run.id, body.node_id, body.inputs)
     except ValueError as exc:
         code = str(exc)
         audit(db, user.id, 'workflow.run.retry', 'denied', code, run_id=run.id, workflow_id=run.workflow_id, node_id=body.node_id)

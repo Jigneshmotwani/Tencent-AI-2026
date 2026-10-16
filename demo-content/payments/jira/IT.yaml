@@ -1,0 +1,8 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+project_key: IT
+name: IT requests
+description: "SYNTHETIC DEMO DATA. Internal IT requests: access, onboarding and offboarding."
+visible_to: [owner]
+next_number: 77   # the live offboarding ticket becomes IT-77
+# IT-77 "Offboard contractor Marco Rossi" is created live in beat 6 of the demo and must NOT be seeded here.
+issues: []

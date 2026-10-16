@@ -1,284 +1,266 @@
-# Internal Brain: permission-aware Agent Studio (Tencent AI 2026), iteration 4
+# ROSS: permission-aware enterprise knowledge with governed AI agents
 
-Product name: **Internal Brain** (from the approved design, `docs/design/prototype.html`).
+**Your AI only knows what you're allowed to know.**
 
-Local React/TypeScript + FastAPI + PostgreSQL app. It does two things:
+Tencent Hackathon 2026, FinTech Track, Aspire "Internal Brain" challenge. A company's knowledge is spread across Google
+Drive, Confluence, Jira and Slack, each with its own permissions, and an AI assistant that pools it all leaks whatever
+anyone can ask about. ROSS answers questions and runs agents over those four sources while enforcing, on every read,
+exactly what the asking person can open themselves, with fresh data, cited answers and a tamper-evident audit trail.
 
-- **Workspace Q&A** across Google Drive, Confluence, Jira and Slack, using each user's own delegated access.
-- **Agent Studio**, a visual workflow builder. It has a React Flow canvas, typed nodes, a chat Copilot that edits the graph, live run overlay, human approvals, guardrails and budgets.
+**Demo video:** [VIDEO LINK]
 
-Iteration 3 rebuilt the UI to the approved prototype (dark sidebar, Workspace, Studio, Approvals, Tools, Audit, Budgets, Policies, Users & groups, Connections, Settings) and added the governance it needs: a publish review workflow (draft → in review → published / changes requested), version diffs, run debug detail with retry-from-step, users and groups, a server-enforced page-access matrix, a model registry, budgets per org/group/agent/user, and a local demo-user switcher.
+![ROSS: Your AI only knows what you're allowed to know](docs/media/cover.png)
 
-The video scenario is **Transaction Investigator** on synthetic alert ALR-2291 (Harbourline Trading): a local `txn-monitoring` MCP server, AML Policy v4 in Confluence, restricted FinCrime case files in Drive, an STR draft behind a Compliance-leads approval, and one FINCRIME Jira issue created as the invoker.
+## What it does
 
-The iteration 2 flagship, **KYB Case Reviewer**, still runs on synthetic Northstar Pay / Acme Trading data:
+The five challenge scenarios, as shown in the demo (Northstar Pay, a fictional Aspire-like fintech):
 
-- reviews a Jira KYB case against SG KYB Policy v3;
-- calls a local synthetic `kyb-registry` MCP server;
-- drafts the RFI;
-- routes escalation behind a human approval;
-- writes the Jira comment and transition once, as the invoker.
+1. **Permission-aware answers across four platforms**: one question gets a cited answer from Jira, Slack, Confluence and
+   Drive, using only what the asker can read; every claim links to its source passage.
+2. **Freshness**: an edit to the incident runbook appears in the next answer or agent run, with no index to rebuild,
+   because ROSS reads the sources at question time.
+3. **Negative cases**: a restricted document and a nonexistent one get the same "not found" sentence, so ROSS never
+   confirms that something exists. Requests for more access are refused before any search.
+4. **Live revocation**: removing someone from a Drive folder or Slack channel takes effect in ROSS within seconds.
+5. **Queryable, tamper-evident audit**: "everything marco accessed in VNRAIL in the last 30 days" in plain English, and
+   Verify integrity reports the exact `seq` where a row was altered.
 
-The rest of the stack:
+On top of the chat, **Agent Studio** builds governed agents (a visual workflow canvas plus a chat Copilot). Agents start
+on a new Jira issue, a new Drive file or a schedule, run with the run-as person's own access, and wait for human approval
+before writing to Jira or Slack.
 
-- **Audit:** tamper-evident (HMAC hash chain, append-only for the app role) and queryable by filters or natural language.
-- **Observability:** OTel Collector → Tempo/Prometheus → Grafana dashboards.
+## Architecture
 
-No simulated connectors, canned answers, or Tencent inference claims. All business data is synthetic.
+React/TypeScript (Vite) UI → FastAPI API (one process, with a trigger loop) → PostgreSQL. Model calls go through a local
+LiteLLM gateway. Connectors call Google Drive, Confluence, Jira and Slack with each user's own token. Traces go to an OTel
+Collector, then Tempo, Prometheus and Grafana. Details: [docs/architecture.md](docs/architecture.md).
 
-## Run it
-
-The same launcher works on macOS and Windows. The recommended **Compose profile** runs PostgreSQL and the observability stack (OTel Collector, Tempo, Prometheus, Grafana) in Docker, and runs LiteLLM, the API, the HTTPS OAuth callback shim and the Vite UI as local processes. Everything binds to loopback only.
-
-### Prerequisites (both platforms)
-
-- **Docker Desktop**, running.
-- **uv** (https://docs.astral.sh/uv/getting-started/installation/). It installs the pinned Python 3.11–3.13 environment from `uv.lock`.
-- **Node.js** 20.19+ or 22.12+ (includes npm).
-- The first run downloads Python, npm and Prisma packages and Docker images, so it needs network access.
-
-### macOS
-
-```sh
-cd tencent-ai-2026
-./scripts/start.sh --services compose
+```mermaid
+flowchart LR
+  subgraph B[Browser - untrusted]
+    UI[Workspace / Studio canvas / Copilot / Approvals / Audit]
+  end
+  subgraph API[Local FastAPI - trusted, loopback]
+    AUTH{{"AuthZ: session + CSRF/Origin,<br/>capabilities, owner checks (404)"}}
+    ENG[Workflow engine<br/>DAG, budgets, step/token caps]
+    GIN{{"Guardrail IN: PII mask,<br/>injection quarantine"}}
+    GOUT{{"Guardrail OUT: grounding,<br/>schema, PII leak"}}
+    APR{{"Human approval gate +<br/>re-authorization, idempotent execution"}}
+    SRC{{"Source authorization:<br/>invoker's delegated token, collection checks,<br/>denied = not found"}}
+    COP[Studio Copilot<br/>LLM proposes ops, code validates]
+    MCPR[MCP registry<br/>allowlisted stdio / HTTP, schema-checked args]
+    AUD[(Audit store<br/>HMAC hash chain, append-only)]
+  end
+  subgraph SaaS[Source SaaS - delegated per-user OAuth]
+    GD[Google Drive]
+    CF[Confluence]
+    JR[Jira]
+    SL[Slack user tokens]
+  end
+  subgraph GW[LiteLLM gateway - loopback]
+    LL[Virtual keys + budgets<br/>spend accounting]
+  end
+  PROV[Inference provider]
+  subgraph MCP[MCP servers]
+    KYB[kyb-registry synthetic stdio]
+  end
+  subgraph OBS[Observability - loopback]
+    COL[OTel Collector<br/>allowlist redaction]
+    TMP[Tempo]
+    PRM[Prometheus]
+    GRF[Grafana anon viewer<br/>grafana_ro: views only]
+  end
+  UI -->|cookie session| AUTH --> ENG
+  AUTH --> COP
+  ENG --> SRC --> GD & CF & JR & SL
+  SRC -->|authorized evidence only| GIN --> ENG
+  ENG -->|attributed calls + pre-check| LL --> PROV
+  COP --> LL
+  ENG --> MCPR --> KYB
+  ENG --> GOUT --> ENG
+  ENG --> APR -->|approved preview, invoker token, once| JR & SL
+  ENG & SRC & APR & AUTH --> AUD
+  API -->|spans + metrics, safe attrs| COL --> TMP & PRM
+  LL -->|OTel spans| COL
+  GRF --> TMP & PRM
+  GRF -->|read-only views| AUD
 ```
 
-- Open the app at the printed URL (default **http://localhost:5173**). Always use `localhost`, not `127.0.0.1`.
-- **Without Docker:** `./scripts/start.sh` (native profile) uses a locally installed PostgreSQL (Homebrew `postgresql@14`/`@16`, or set `PG_BIN=/path/to/bin`). It keeps the iteration 1 local trace file and has **no Grafana/Tempo/Prometheus**.
+## Measured results
 
-### Windows 11
+Measured on the local build against the real Atlassian site, Slack workspace and Google Drive with the `ross-payments`
+demo pack (synthetic data). From [docs/results.md](docs/results.md), which has every run behind these numbers.
 
-Use **Git Bash** (installed with Git for Windows), not PowerShell or cmd, because the launcher is a POSIX shell script:
-
-```sh
-cd /c/path/to/tencent-ai-2026
-./scripts/start.sh --services compose
-```
-
-- Windows has no native PostgreSQL profile, so `--services compose` is required.
-- `.gitattributes` keeps `scripts/start.sh` LF-only. If you see `bad interpreter`, re-checkout the file.
-- The launcher handles the `Scripts/` venv layout, `npm.cmd`, UTF-8 child output and process-tree shutdown.
-
-### Stop, restart, ports
-
-- **Ctrl-C** stops the local processes.
-- `docker compose stop` stops the containers and keeps their data. `docker compose down -v` deletes all local data (DB, traces, metrics, dashboards state).
-- Restart with the same command. Migrations are versioned and idempotent; they run as the DB owner, while the API connects as the non-owner `app_runtime` role.
-- If a port is taken, set the `LOCAL_PORT_*` keys in `.env`; OAuth redirect URIs follow `LOCAL_PORT_API` / `LOCAL_PORT_API_TLS`.
-
-| Service | Default | This dev host |
+| Measure | Result | Sample |
 |---|---|---|
-| App (UI) | http://localhost:5173 | 5273 |
-| API health | http://localhost:8000/api/health | 8100 |
-| HTTPS OAuth callback shim (self-signed; open it once and accept the warning) | https://localhost:8443 | 8543 |
-| Grafana (anonymous viewer) | http://localhost:3000 | 3100 |
-| Tempo / Prometheus | 3200 / 9090 | 3300 / 9190 |
-| LiteLLM / OTLP collector / PostgreSQL | 4000 / 4318 / 55432 | 4100 / 4418 / 55433 |
+| Copilot builds the Partner Change Radar (strict 8-point check) | **3/3** | 3 builds |
+| Copilot edit "post a summary to the partner channel after approval" | **3/3 valid** | 3 edits |
+| Access-change requests refused before any search | **6/6** Not authorized, 0 searches | 6 phrasings |
+| Malicious requests blocked by rule (no model call) | **3/3** | 3 phrasings |
+| Audit tamper detected at the exact seq | **1/1** (seq 3449, `hash_mismatch`), restored to `ok` | 1 |
+| Access-matrix leaks | **0 / 60** answers (2 automated flags, both false positives, explained in results.md) | 12 questions × 5 personas |
+| Citation correctness | **20/20** citation labels resolve to a retrieved source; 32/38 sentences cited, the other 6 are "not in the evidence" statements; facts spot-checked in 3 answers | 10 questions |
+| Drive revocation: share removed → Marco's own token refused (median of 3) | **0.9 s** (0.8, 0.9, 0.9) | 3 removals |
+| Slack revocation: removed from channel → Marco's token no longer a member (median of 3) | **2.1 s** (2.18, 2.11, 2.06); ROSS adds at most 20 s (member-channel cache) | 3 removals |
+| Jira trigger latency (P1 created → Incident Assembler run starts) | **6 s** and **32 s** (30 s poll) | 2 live P1s |
+| Freshness: runbook edited → brief cites the new Step 4a | **2/2**; edit 8 s before the P1, brief ready 46 s and 72 s after the P1 | 2 runs |
+| Cost per chat answer (access matrix) | p50 $0.00108, p90 $0.00174; $0.063 for all 60 | 60 answers |
 
-### First run
+## Quickstart
 
-The launcher creates ignored `.env` (mode 600) from `.env.example` and generates these local secrets:
-
-- encryption key and LiteLLM master key;
-- DB, runtime-role and Grafana-role passwords;
-- Grafana admin password;
-- `AUDIT_HMAC_KEY`.
-
-It also creates four local accounts. Their passwords go to `.local/demo-accounts.txt`; read it privately and never paste it into chat. Iteration 3 gives them the demo identities below (linked source identities are unchanged: Compliance users use the owner identities, Operations the `…0055` identities).
-
-| Account | Demo user | Title | Role | Groups |
-|---|---|---|---|---|
-| `compliance` | Priya Raman | Compliance | Builder | Compliance, Onboarding |
-| `operations` | Daniel Koh | Operations | User | Operations, Onboarding |
-| `admin` | Wei Ming Tan | Compliance lead | Admin | Compliance, Compliance leads |
-| `auditor` | Aisha Rahman | Auditor | Auditor (+ User: Workspace with her own access) | Audit |
-
-Roles and groups decide which pages and agents a person can use, who reviews and approves, tool allowlists and budget scopes. **They never grant document access**: every source read still uses that person's own delegated identity.
-
-**Demo mode** (`DEMO_MODE=true` in your local `.env`; `.env.example` ships it off): the user menu offers *Switch demo user*, which ends the current session and signs in as another demo user through a real server session. It answers only on loopback and is audited (`session.demo_switch`); with `DEMO_MODE=false` the endpoints return 404.
-
-Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser profiles to act as two users at once.
-
-`npm --prefix frontend run build` typechecks and builds the UI. No test files or persistent verification scripts are supplied.
-
-## OAuth setup (per user, delegated)
-
-**Google Drive** (unchanged from iteration 1):
-
-- Callback: `http://localhost:8100/api/connections/drive/callback`.
-- Scope: `drive.readonly` + `openid email`.
-- `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_FOLDER_ID`.
-
-**Atlassian (Confluence + Jira)**, one OAuth 2.0 (3LO) app:
-
-- Callbacks:
-  - `http://localhost:8100/api/connections/confluence/callback`
-  - `http://localhost:8100/api/connections/jira/callback`
-- Scopes:
-  - Confluence: `search:confluence read:page:confluence read:space:confluence read:confluence-user`
-  - Jira (classic): `read:jira-work write:jira-work read:jira-user`
-  - Plus `read:me offline_access`
-- `.env`: `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `CONFLUENCE_SPACE_KEY`, `CONFLUENCE_CLOUD_ID`, `JIRA_PROJECT_KEYS=KYB`.
-- Jira must be installed on the **same Atlassian site** as Confluence (`CONFLUENCE_CLOUD_ID`). Project key `KYB` (a team-managed Kanban project; rename the default key in Project settings if needed) needs these statuses, each reachable from any status: `Open`, `In Review`, `Awaiting Customer`, `Escalated`, `Ready for Approval`.
-- Each user connects Confluence and Jira separately in Connections.
-
-**Slack** (optional; per-user **user tokens**, not a bot). Slack stays **hidden** everywhere (Connections, Studio sources/tools, templates) until `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_TEAM_ID` are set:
-
-- App redirect URL: `https://localhost:8543/api/connections/slack/callback`. Slack requires HTTPS; the local shim 303-redirects to the HTTP API callback, where state, session and owner checks run.
-- User Token Scopes: `search:read channels:history channels:read groups:history groups:read users:read chat:write`.
-- `.env`: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_TEAM_ID`, `SLACK_CHANNELS=kyb-ops,compliance-escalations`, `SLACK_WRITE_CHANNELS` (approved posts only go there).
-- A private channel is readable only by its members.
-
-**Model**:
-
-- `MODEL_ID`, `MODEL_API_KEY`, optional `MODEL_API_BASE`, `MODEL_EXTRA_BODY`, `MODEL_INPUT_PER_1M` / `MODEL_OUTPUT_PER_1M`.
-- Additional verified aliases via `EXTRA_MODELS`.
-- No Tencent model is configured or claimed.
-
-Restart after editing `.env`.
-
-## Synthetic demo content and seeding
-
-`demo-content/` holds the synthetic material:
-
-- Confluence pages: SG KYB Policy v3, RFI Templates, Payment-service Incident Runbook, and a **restricted** Compliance EDD Playbook.
-- Drive: Acme's KYB submission (with a planted prompt-injection line and synthetic NRICs/phone/email for the PII guardrail) and a **restricted** EDD memo.
-- Jira cases KYB-101..103 plus incident follow-ups.
-- Slack threads (optional): `#kyb-ops` public, including outdated advice that conflicts with policy v3; `#compliance-escalations` private.
-- The `kyb-registry` MCP data is in `mcp_servers/kyb_registry/data.json`.
-- STR scenario (iteration 3): Confluence *AML Policy v4 (approved)*, *Red-flag typologies*, *STR Drafting Guide* and a **restricted** *FINCRIME case notes* page; Drive case files for ALR-2291 and a prior case (restricted *FinCrime cases* folder); Jira project `FINCRIME` (no cases are seeded; cases are created only by approved runs).
-- The `txn-monitoring` MCP server (`mcp_servers/txn_monitoring`, stdio, synthetic, read-only: `get_alert`, `list_transactions`, `get_counterparty`) is registered and admin-approved by default.
-
-Seed with the authorizing user's own delegated credentials. It is idempotent and labels everything synthetic. `uv run` works the same on macOS and Windows:
+Prerequisites: Docker Desktop (running), [uv](https://docs.astral.sh/uv/getting-started/installation/), Node.js 20.19+ or
+22.12+, and Git. On Windows, use **Git Bash**. You also need a model API key (any LiteLLM-supported provider) and, to read
+real sources, the OAuth apps below.
 
 ```sh
-uv run --frozen python -m backend.app.seed --as compliance --dry-run
-uv run --frozen python -m backend.app.seed --as compliance [--only jira,slack,confluence] [--atlassian-basic .local/atlassian-setup.env]
+cp .env.example .env                          # then fill in the model and OAuth values (see below)
+./scripts/start.sh --services compose         # Postgres + observability in Docker; LiteLLM, API, HTTPS shim and UI locally
 ```
 
-- `--atlassian-basic` uses an Atlassian API token file (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`) only for Confluence pages, because the OAuth app is read-only for Confluence.
-- The Drive scope is read-only, so upload these by hand:
-  - `drive-acme-kyb-submission.txt` into the shared root folder;
-  - `drive-restricted-kyb-edd-memo.txt` into the limited-access child folder (compliance identity only).
-- `confluence-restricted-kyb-edd-playbook.md` needs a Confluence page restriction (Standard plan or trial) so that only the compliance identity can view it.
-- Freshness demo (append to a page, then re-ask): `--update-page "Payment-service Incident Runbook" --append "<text>"`.
+- The first run installs the Python and Node dependencies and generates the local secrets into `.env`: encryption key,
+  LiteLLM master key, DB role passwords, Grafana admin password and `AUDIT_HMAC_KEY`.
+- URLs (defaults from `.env.example`):
+  - app: http://localhost:5273 (always `localhost`, not `127.0.0.1`);
+  - API: http://localhost:8100 (`/api/health`);
+  - OAuth HTTPS shim: https://localhost:8543. Open `https://localhost:8543/health` once and accept the self-signed
+    certificate (Slack OAuth needs it).
+- If a port is taken, change the `LOCAL_PORT_*` keys. The OAuth redirect URIs follow `LOCAL_PORT_API` and
+  `LOCAL_PORT_API_TLS`.
+- **Ctrl-C** stops the local processes. `docker compose stop` keeps data; `docker compose down -v` deletes it.
 
-STR scenario (iteration 3):
+Load the demo pack (users, groups, scopes, agents, budgets, policies):
 
 ```sh
-uv run --frozen python -m backend.app.seed --as compliance --str-only --atlassian-basic .local/atlassian-setup.env [--review-log-issue]
-uv run --frozen python -m backend.app.seed --as compliance --reset-demo   # local DB only: back to the video's starting state
+uv run --frozen python -m backend.app.demo_pack load ross-payments --reset
 ```
 
-- Creates the four Confluence pages (case notes restricted to the seeding identity), the team-managed project `FINCRIME`, and records Drive/Confluence ids in the audit labels (topic "STR case files"). `--review-log-issue` adds one non-case "Alert review log" issue that low-risk closures comment on.
-- `JIRA_PROJECT_KEYS="KYB,FINCRIME"`; after changing it each user reconnects Jira in Connections.
-- Drive (read-only scope): create a child folder **FinCrime cases** in the demo folder shared only with the compliance identity and upload `drive-fincrime-alr-2291-case-file.txt` and `drive-fincrime-prior-case-fc-2026-014.txt`; then rerun the seed to record their ids.
-- Seeded agents: *Policy Expert* (v4, everyone), *KYB Case Reviewer* (Onboarding), *Transaction Investigator* (v1 live for Compliance, v2 draft adds "Close with note"), *Audit Explorer* (v1 in review).
+- New users get generated passwords in `.local/demo-accounts.txt` (git-ignored; keep it private).
+- Each person signs in and links their own accounts in **Connections**.
+- `uv run --frozen python -m backend.app.demo_pack load ross-payments --reset --refresh-sources` resets the demo before each
+  take. The recording steps are in [docs/demo-runbook.md](docs/demo-runbook.md).
+- `npm --prefix frontend run build` typechecks and builds the UI. The repository has no test files; measured results are in
+  [docs/results.md](docs/results.md).
 
-## Demo packs (iteration 4)
+## Connecting Google, Atlassian and Slack
 
-Everything demo-specific (people, groups, the containers the app searches, agents, subscriptions, budgets, policies,
-suggestion chips) lives in one folder: `demo-packs/<name>/pack.yaml` plus optional agent files next to it. Nothing in the
-code or UI names a demo user, space, project, channel or folder.
+Every person links their **own** accounts in **Connections**; ROSS never uses a shared service account to read. Set the
+values in `.env` and restart. `<API>` below is `http://localhost:<LOCAL_PORT_API>` (default 8100).
+
+### Google Drive
+
+1. Google Cloud Console → APIs & Services: enable the **Google Drive API**, configure the OAuth consent screen (add your
+   demo accounts as test users), and create an **OAuth client ID** of type *Web application*.
+2. Authorized redirect URI: `<API>/api/connections/drive/callback`.
+3. Scopes (requested by ROSS): `https://www.googleapis.com/auth/drive.readonly`, `openid`,
+   `https://www.googleapis.com/auth/userinfo.email`. Drive is read-only by design.
+4. `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
+
+### Atlassian (Confluence and Jira)
+
+1. developer.atlassian.com → **Create an OAuth 2.0 (3LO) integration**, one app for both products on the same site.
+2. **Permissions**: add the Confluence API and the Jira API with these scopes:
+   - Confluence: `search:confluence`, `read:page:confluence`, `read:space:confluence`, `read:confluence-user`;
+   - Jira: `read:jira-work`, `write:jira-work`, `read:jira-user`;
+   - plus `read:me` and `offline_access` (User identity API).
+3. **Authorization** callback URLs: `<API>/api/connections/confluence/callback` and `<API>/api/connections/jira/callback`.
+4. `.env`: `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `CONFLUENCE_CLOUD_ID` (your site's cloud id).
+
+### Slack
+
+ROSS uses per-user **user tokens**, not a bot. Slack stays hidden everywhere until `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`
+and `SLACK_TEAM_ID` are set.
+
+1. Create an app at https://api.slack.com/apps, **From scratch**, in your workspace.
+2. **OAuth & Permissions → Redirect URLs**: add `https://localhost:<LOCAL_PORT_API_TLS>/api/connections/slack/callback`
+   (default `https://localhost:8543/api/connections/slack/callback`).
+   - Slack only accepts HTTPS redirects. The local shim (`backend/app/tls_callback.py`, self-signed certificate) answers
+     with a 303 to the HTTP API callback, where the state, session and owner checks run.
+   - Open `https://localhost:<port>/health` once in the browser and accept the certificate.
+3. **PKCE**: turn PKCE on for the app (OAuth & Permissions). Slack treats a `localhost` redirect of a PKCE app as a
+   desktop redirect. ROSS sends an S256 `code_challenge` on authorize, and sends the `code_verifier` without the
+   `client_secret` on the token exchange and on refresh (`backend/app/connections.py`).
+4. **User Token Scopes**: add all of these:
+   - every user: `search:read`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read`,
+     `chat:write`;
+   - admins only: `channels:write`, `groups:write`, `users:read.email`. ROSS asks for these only when an admin
+     connects. The demo seeder and reset use them to create channels and invite members, and the access-inventory tool
+     uses them to look people up by email. Do not use `channels:manage`; it is a bot scope.
+5. **`.env`**:
+   - `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`: **Basic Information → App Credentials**.
+   - `SLACK_TEAM_ID`: the workspace ID, the `T…` part of `https://app.slack.com/client/T…/…` in Slack in the browser. A
+     token for any other workspace is refused.
+6. Each person: **Connections → Slack → Connect**. Search only returns channels the person is a member of. The
+   member-channel list is cached for 20 s per token.
+7. **After a scope change** (in the app settings, or a user being made admin): Connections → Slack → **Disconnect**, then
+   **Connect** again. With PKCE, Slack refresh tokens expire after **30 days**; reconnect once a month.
+
+The containers ROSS searches (spaces, projects, channels, folders) come from the loaded demo pack; the `*_SPACE_KEY(S)`,
+`JIRA_PROJECT_KEYS`, `SLACK_*CHANNELS` and `GOOGLE_FOLDER_ID(S)` keys in `.env` are the fallback when no pack is loaded.
+
+## Demo packs and seeding
+
+Everything demo-specific lives in `demo-packs/<name>/pack.yaml` plus agent files: people, groups, the containers ROSS
+searches, agents, subscriptions, budgets, policies and suggestion chips. No code names a demo user, space, project,
+channel or folder.
 
 ```sh
-uv run --frozen python -m backend.app.demo_pack list                         # * marks the active pack
-uv run --frozen python -m backend.app.demo_pack export my-pack [--force]     # current local demo -> demo-packs/my-pack/
-uv run --frozen python -m backend.app.demo_pack load example-payments --reset
-uv run --frozen python -m backend.app.demo_pack load legacy-kyb --reset      # back to the iteration 1-3 demo
+uv run --frozen python -m backend.app.demo_pack list
+uv run --frozen python -m backend.app.demo_pack load ross-payments --reset --refresh-sources   # before each take
 ```
 
-- `--reset` backs the app database up first (`.local/backups/<timestamp>.sql`, pg_dump), then clears conversations, runs,
-  approvals, agents, groups, subscriptions and budgets. Accounts that are not in the pack are **disabled**, not deleted, so
-  their linked source accounts survive a later reload. Audit rows are never deleted: an `audit.reset` event is appended to
-  the hash chain (it records the previous head), and Verify integrity still passes. Without `--reset` the pack is merged.
-- New pack users get generated passwords appended to `.local/demo-accounts.txt`. With `DEMO_MODE=true` the user menu's
-  *Switch demo user* lists every active account.
-- Once a pack is loaded, startup no longer re-seeds the iteration 1-3 demo.
-- `demo-packs/legacy-kyb/` is the iteration 1-3 demo (exported); `demo-packs/example-payments/` is a small **example** to copy.
+- `--reset` takes a `pg_dump` backup into `.local/backups/`, then clears runs, chats, approvals, agents, groups,
+  subscriptions and budgets. Audit rows are never deleted; an `audit.reset` event links to the previous head.
+- `--refresh-sources` undoes what the last take wrote to the sources (only items the demo created), re-posts the alerts
+  and prints the Drive steps a person must do.
+- `${NAME}` (from `.local/demo-identities.env`) and `${drive:Folder/Path}` placeholders keep real emails and folder ids
+  out of the repository.
+- The source content (Jira, Confluence, Slack, Drive) is in `demo-content/payments/`; seeding it is described in
+  [docs/demo-content-checklist.md](docs/demo-content-checklist.md).
 
-`pack.yaml` keys:
+## Security model
 
-| Key | Shape |
-|---|---|
-| `app` | `{org_name, timezone}` (timezone is the default for schedules) |
-| `users` | `[{username, display_name, email, title, roles: [user\|builder\|admin\|auditor], groups: [...]}]` (at least one admin) |
-| `groups` | `[{name, description}]` |
-| `scopes` | `{confluence_spaces, jira_projects, slack_channels, slack_write_channels, drive_folders}`; each entry a key/id string or `{key\|id, name}` (the name is a display label in Connections and Audit, never a grant) |
-| `agents` | agent files: `{name, description, icon, owner, status: draft\|published\|in_review, audience: {kind: only_me\|group\|everyone, groups: [names]}, spec: <WorkflowSpec> \| template: <key> + template_settings: {...}, draft_spec?}` |
-| `subscriptions` | `[{agent, username}]` (scheduled agents) |
-| `audit_suggestions`, `workspace_suggestions` | chips on the Audit page / starter prompts in a new Workspace chat |
-| `budgets` | `{org: {limit_usd, threshold_pct}, groups: {name: usd}, agents: {name: {limit_usd, max_steps, max_tokens}}, users: {username: usd}}` |
-| `policies` | `{publish_reviewer_group, approval_rules: {action: group}, allowed_models: [...]}` |
-| `audit_labels` | optional `{containers, resources, topics}` for audit display names and NL topics |
+- **Delegated per-user OAuth**: every source read uses the asking person's own linked account; automatic runs use the
+  run-as person's (the agent owner, or each subscriber). Roles and groups decide pages, audiences and approvers, and never
+  grant document access.
+- **Authorization before the model**: permission checks run in code on fresh source data before any text reaches the
+  model.
+- **Identical not-found denials**: a restricted document and a nonexistent one get the same sentence; denials never reveal
+  titles, counts or existence.
+- **Intent guardrail, PII masking and injection quarantine**: requests for more access are refused before any search;
+  PII (NRIC/FIN, UEN, IBAN, card, phone, email) is masked and retrieved text that looks like a prompt injection is
+  quarantined; answers keep only cited claims.
+- **Human approval for writes**: every Jira or Slack write waits for an approver, re-authorizes at execution and runs
+  exactly once (idempotency keys and markers in the target system).
+- **HMAC hash-chained audit**: the audit trail is append-only for the app's database role and HMAC hash-chained; Verify
+  integrity reports tampering at the exact `seq`.
 
-Source scopes: the active pack's lists, else `.env` (`CONFLUENCE_SPACE_KEYS` or `CONFLUENCE_SPACE_KEY`, `JIRA_PROJECT_KEYS`,
-`SLACK_CHANNELS`, `GOOGLE_FOLDER_IDS` or `GOOGLE_FOLDER_ID`). Retrieval searches every allowed scope with the person's own
-token; the provider still decides what that person can read. Users do not need to reconnect when the lists change.
+## Built with
 
-## Triggers, run-as and subscriptions (iteration 4)
+CodeBuddy and AI coding agents, FastAPI, React/Vite (React Flow), PostgreSQL, LiteLLM, OpenTelemetry with Tempo,
+Prometheus and Grafana, and MCP.
 
-The trigger step of an agent decides how it starts:
+## Synthetic demo data
 
-| Type | How it works | Runs as |
-|---|---|---|
-| `manual` / `chat` | A person runs it (Test run, Workspace, @mention) | That person |
-| `jira_issue_created` | Every 60 s, the JQL in the step (always limited to the allowed projects) is checked; each **new** issue starts one run with its key as the input. Processed keys are remembered; the first check after publishing only records existing issues. | The agent owner |
-| `drive_file_added` | Every 60 s, one Drive folder (allowed, or inside an allowed one) is listed; each new file starts one run with its file id. | The agent owner |
-| `schedule` | Cron + timezone in the step. **Run now** in the step settings fires it immediately. | Each subscriber, one run each |
+All demo content is **synthetic**: Northstar Pay and every person in the demo (Wei Ling, Daniel, Priya, Arjun, Marco and
+the rest) are fictional, and the content is labelled SYNTHETIC DEMO DATA. No real customer or company data is used.
 
-- Automatic runs use only the run-as user's own linked accounts and may only write through approval steps.
-- Every triggered run records its trigger ("Triggered by Jira INC-12", "Scheduled, subscriber priya") on the run, in the audit
-  log (`workflow.run.triggered`), on the run card and run panel ("Runs as …") and on its approval card.
-- **Subscriptions:** a published scheduled agent shows **Subscribe** in Workspace. Each subscriber gets their own run with their
-  own access, so the same agent produces differently scoped results per person; the result lands in that person's Workspace
-  as a run card labelled *Scheduled*.
-- One background loop in the API process does the polling (`TRIGGER_POLL_S`, default 60; 0 turns it off). It holds a
-  PostgreSQL advisory lock, so it never runs twice. Studio's trigger step shows the type, its settings, Runs as, Last fired and
-  Run now / Check now.
+## More documentation
 
-## Built-in tools added in iteration 4
+- [docs/architecture.md](docs/architecture.md): retrieval and the permission flow, triggers and run-as, Slack with PKCE,
+  demo packs, the guardrail flow and the audit chain.
+- [docs/results.md](docs/results.md): every measurement.
+- [docs/demo-runbook.md](docs/demo-runbook.md): the demo, beat by beat.
+- [docs/build-log.md](docs/build-log.md): the final iteration's handoff, human steps and known limits.
+- [docs/demo-content-checklist.md](docs/demo-content-checklist.md): seeding the demo content.
 
-| Tool | Kind | Notes |
-|---|---|---|
-| `slack.read_channel {channel, since}` | read | Messages and threads of one allowed channel the person belongs to, since `2h` / `24h` / `7d` / an ISO time; added as evidence. No access means "no evidence", not a failure. |
-| `slack.post_message {channel, text}` | write | Same governed action as `slack.post`: always behind an approval, follows the "Post to Slack" approval rule, only to the pack's write channels. |
-| `drive.get_file {file_id}` | read | One file inside the allowed folders, as evidence. |
-| `access.inventory {user_email}` | read, admins/auditors | Where a person has access among the allowed scopes the calling admin can see: Slack channels, shared Drive folders, Jira project roles; each source says CHECKED or NOT CHECKED with the reason (Confluence is always NOT CHECKED). |
-| `audit.user_activity {username\|user_email, days}` | read, admins/auditors | That person's app activity from the audit log: counts by source and container, last 10 accesses, blocked requests. |
+## Limitations
 
-Studio **Templates** adds four generic agents whose names, projects, channels and folders are settings (defaults come from the
-active scopes): *Incident Assembler* (Jira trigger), *Partner Change Radar* (Drive trigger), *Vulnerability Remediation
-Tracker* (schedule + subscriptions) and *Contractor Offboarding Sweep* (Jira trigger, access tools). Demo packs use them with
-`template:` + `template_settings:` (see `demo-packs/example-payments/agents/`).
+- **Retrieval** is query-time and federated, with no index or cache: at most 8 documents per answer, 6,000 characters per
+  document and 25 s per source.
+- **Triggers** poll every 30 s (no webhooks).
+- **Drive** is read-only by design. Sharing changes and uploads are done by people.
+- **Scope**: a local hackathon build with no production security or compliance claim.
 
-## Using it
+## Licence
 
-- **Workspace**: ask questions (cited answers, source sheet with the cited passage highlighted), or pick an agent with **Answer with ▾** or **@mention**; agents with inputs show an inline form and an inline run card with live steps and the approval status.
-- **Studio** (builder):
-  - Open a template or create from a description. The bin icon on a row deletes an agent (owner or admin; runs and audit are kept).
-  - Edit on the canvas or ask the Copilot (e.g. on *KYB Quick Check (starter)*: "Add a sanctions check before the assessment and require approval for escalations"). It shows a diff (green/amber/red), and Apply creates a new draft version; Undo reverts it.
-  - Test run: the run panel shows each step's input, output and logs from `GET /api/workflow-runs/{id}/debug`, with **Retry from this step** on failures.
-  - **Submit for review** with an audience (Only me publishes immediately; a group or everyone needs a reviewer in *Compliance leads* or an admin). Users keep the live version until the review is approved. Versions shows the diff against live and restores any version as a new draft.
-- **Workspace**: ask questions, pick **Answer with → Workflow: …** to invoke a published one-input workflow from chat, or run any published workflow from the Catalog tab.
-- **Approvals**: agent runs (exact destination and payload; approval re-authorizes, then executes once) and publish requests (diff vs live, test run, sources and tools, audience).
-- **Audit** (auditor/admin): all events by default, Verify integrity, natural-language questions (e.g. "Who opened STR case files this week?") that filter the table, and a **My runs** tab (the former Activity page, with Grafana trace links).
-- **Tools**: MCP servers and built-ins; servers added by builders are *pending admin approval* and usable only by their creator until approved.
-- **Policies** (admin): models, tools, the role × page access matrix (enforced by the API), guardrails (read-only) and approval rules. **Budgets** and **Users & groups** (admin). Every change shows "Saved · logged to audit".
-
-**Tamper demo** (as the DB owner; the app role cannot UPDATE/DELETE audit rows). Pick a seq; Verify integrity then reports that exact broken seq:
-
-```sh
-docker compose exec -T postgres psql -U app -d app -c "ALTER TABLE audit_events DISABLE TRIGGER audit_append_only; UPDATE audit_events SET reason='tampered' WHERE seq=42; ALTER TABLE audit_events ENABLE TRIGGER audit_append_only;"
-```
-
-## Limits
-
-- **Retrieval:** query-time and federated (no index or source cache), bounded to 8 documents/run, 6,000 characters/document and 25 s/source. Drive traverses one child-folder level.
-- **Processes and runs:** one API process. Workflow runs persist; a paused approval survives restart, while running runs fail as `app_restarted`.
-- **Budgets:** in-flight model calls can overshoot a budget by at most one call.
-- **Grounding:** citation-based, with optional LLM entailment.
-- **Scope:** this is a local hackathon build with no production security or compliance claim.
-
-See [architecture](docs/architecture.md), [contracts](docs/contracts.md), [iteration 3 contracts](docs/iteration-3-contracts.md), the [iteration 3 handoff](docs/iteration-3-handoff.md) and the [iteration 4 handoff](docs/iteration-4-handoff.md).
+MIT. See [LICENSE](LICENSE).

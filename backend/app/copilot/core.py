@@ -152,7 +152,9 @@ Rules:
     decision step; never decide "ticket exists" from memory.
     "If there is no existing ticket" / "if X then Y": decide with an llm.generate step whose output_schema has an enum field
     (e.g. {"ticket_exists": {"enum": ["yes","no"]}}), then a logic.router on {{nodes.<that step>.output.ticket_exists}} with cases
-    ["yes","no"] and default "no"; wire the follow-up actions on the matching branch (sourceHandle).
+    ["yes","no"] and default "no"; wire the follow-up actions on the matching branch (sourceHandle). The decision prompt counts
+    a ticket as existing only if it is specifically about this change (same change and deadline), not a broader project or
+    migration ticket it relates to.
 12. explanation: one or two short plain sentences for a business user, no node ids, no JSON, no jargon. When you build a whole
     workflow start with "Done. I added N steps:" (N = nodes you added, the trigger included) and say what it does in one breath.
     For an edit, say what changed, e.g. "Added a 'Close with note' branch for low and medium risk."'''
@@ -729,8 +731,97 @@ def own_validation(spec: dict, ctx: dict) -> dict:
     return {'ok': not errors, 'errors': errors, 'warnings': warnings}
 
 
+# Output fields each node produces (what `{{nodes.<id>.output.<field>}}` may reference). None = not checked.
+TOOL_OUTPUTS = {
+    'jira.create_issue': ['status', 'issue_key', 'issue_id', 'deduplicated'],
+    'jira.comment': ['status', 'issue_key', 'comment_id', 'deduplicated'],
+    'jira.transition': ['status', 'issue_key', 'transition_id', 'deduplicated'],
+    'slack.post': ['status', 'channel', 'ts', 'deduplicated'],
+    'slack.post_message': ['status', 'channel', 'ts', 'deduplicated'],
+    'jira.get_issue': ['issue_key', 'evidence_label', 'fields'],
+    'jira.search': ['issues'],
+    'drive.get_file': ['file_id', 'name', 'evidence_label'],
+    'slack.read_channel': ['channel', 'since', 'messages', 'evidence_label'],
+}
+OUTPUT_REF = re.compile(r'(\{\{\s*nodes\.)([A-Za-z0-9_-]+)\.output\.([A-Za-z0-9_]+)((?:\.[A-Za-z0-9_]+)?)')
+
+
+def output_fields(node: dict | None, nodes: dict) -> list[str] | None:
+    if not node:
+        return None
+    cfg = node.get('config') or {}
+    if node['type'] == 'tool.builtin':
+        return TOOL_OUTPUTS.get(cfg.get('tool'))
+    if node['type'] == 'llm.generate':
+        schema = cfg.get('output_schema')
+        return list((schema or {}).get('properties') or {}) if schema else ['text']
+    if node['type'] == 'logic.router':
+        return ['branch', 'value', 'matched']
+    return None
+
+
+def _closest(field: str, options: list[str]) -> str | None:
+    """issue_key for key, ts for timestamp-ish typos: suffix/prefix match first, then a close spelling."""
+    if not options:
+        return None
+    affix = [o for o in options if o.endswith('_' + field) or o.startswith(field + '_') or field.endswith('_' + o)]
+    if len(affix) == 1:
+        return affix[0]
+    close = difflib.get_close_matches(field, options, n=1, cutoff=0.6)
+    return close[0] if close else None
+
+
+def repair_output_refs(spec: dict) -> tuple[dict, list[dict], list[dict]]:
+    """Check every {{nodes.X.output.F}} against X's declared output fields (and {{nodes.G.output.result.F}} of an output
+    guardrail against its target). A wrong field is repaired once to the matching field (output.key -> output.issue_key);
+    what cannot be repaired is returned as a validation error. Returns (spec, repairs, errors)."""
+    spec = copy.deepcopy(spec)
+    nodes = {n['id']: n for n in spec.get('nodes', [])}
+    repairs, errors = [], []
+
+    def fix(text: str, owner: str) -> str:
+        def sub(m):
+            prefix, nid, field, rest = m.group(1), m.group(2), m.group(3), m.group(4)
+            node = nodes.get(nid)
+            if node and node['type'] == 'guardrail.output' and field == 'result' and rest:
+                target = nodes.get((node.get('config') or {}).get('target'))
+                options, wrong, tail = output_fields(target, nodes), rest[1:], ''
+                if options is None or wrong in options:
+                    return m.group(0)
+                good = _closest(wrong, options)
+                if good:
+                    repairs.append({'node_id': owner, 'from': f'nodes.{nid}.output.result.{wrong}', 'to': f'nodes.{nid}.output.result.{good}'})
+                    return f'{prefix}{nid}.output.result.{good}{tail}'
+                errors.append(_issue('unknown_output_field', f'{nid}.output.result has no field {wrong!r} (fields: {", ".join(options)})', owner))
+                return m.group(0)
+            options = output_fields(node, nodes)
+            if options is None or field in options:
+                return m.group(0)
+            good = _closest(field, options)
+            if good:
+                repairs.append({'node_id': owner, 'from': f'nodes.{nid}.output.{field}', 'to': f'nodes.{nid}.output.{good}'})
+                return f'{prefix}{nid}.output.{good}{rest}'
+            errors.append(_issue('unknown_output_field', f'{nid} has no output field {field!r} (fields: {", ".join(options)})', owner))
+            return m.group(0)
+        return OUTPUT_REF.sub(sub, text)
+
+    def walk(value, owner):
+        if isinstance(value, str):
+            return fix(value, owner)
+        if isinstance(value, list):
+            return [walk(v, owner) for v in value]
+        if isinstance(value, dict):
+            return {k: walk(v, owner) for k, v in value.items()}
+        return value
+    for node in spec.get('nodes', []):
+        node['config'] = walk(node.get('config') or {}, node['id'])
+    return spec, repairs, errors
+
+
 def validate(spec: dict, db, ctx: dict) -> dict:
     own = own_validation(spec, ctx)
+    own['errors'] += repair_output_refs(spec)[2]
+    own['ok'] = not own['errors']
     try:
         from ..workflows.validate import validate_spec
     except ImportError:

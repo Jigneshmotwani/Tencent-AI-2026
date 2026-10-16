@@ -1,0 +1,46 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay and all people, partners and figures are fictional.
+project_key: SEC
+name: Security findings
+description: "SYNTHETIC DEMO DATA. Restricted security findings from penetration tests and advisories."
+visible_to: [owner]
+issues:
+  - number: 101
+    summary: "High: outdated OpenSSL in payout-orchestrator (pentest P-07)"
+    issue_type: Bug
+    status: To Do
+    priority: High
+    labels: [pentest-2026-09, payments]
+    due: 2026-10-24
+    assignee_persona: daniel
+    description: |
+      Source: September 2026 external penetration test (Harbourline Assurance, fictional), finding P-07, severity High.
+
+      The payout-orchestrator container image ships an outdated OpenSSL build missing known memory-safety fixes. payout-orchestrator terminates TLS for the payout API and calls both rail adapters.
+
+      Engineering remediation: PAYRAIL-420 (worded as "security remediation, upgrade due"; do not add finding details to the PAYRAIL ticket).
+
+      Remediation deadline: 24 Oct 2026. Retest booked for the week of 9 Nov 2026.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Daniel Ong, 28 Sep] Remediation ticket PAYRAIL-420 raised with Payout Rails. Deadline set before the October freeze."
+  - number: 102
+    summary: "Medium: TLS library CVE in vn-rail-adapter"
+    issue_type: Bug
+    status: To Do
+    priority: Medium
+    labels: [pentest-2026-09, payments]
+    due: 2026-10-28
+    assignee_persona: daniel
+    description: |
+      Source: September 2026 external penetration test (Harbourline Assurance, fictional), finding P-08, severity Medium.
+
+      vn-rail-adapter uses a TLS client library version covered by vendor advisory TLSLIB-2026-03 (synthetic). A malicious or impersonated partner server could cause excessive CPU use during the handshake.
+
+      Engineering remediation: PAYRAIL-421 (worded as "security remediation, upgrade due").
+
+      Remediation deadline: 28 Oct 2026, which falls inside the October payroll freeze; deploy before 25 Oct or request a freeze exception.
+
+      SYNTHETIC DEMO DATA.
+    comments:
+      - "[Daniel Ong, 28 Sep] Remediation ticket PAYRAIL-421 raised. Advisory details stay in this project only."

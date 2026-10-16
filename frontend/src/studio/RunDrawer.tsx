@@ -9,6 +9,7 @@ import { type DebugStep, type LogLine, type RunDebug, isMissing, runDebug } from
 import { SOURCE_LABEL, humanCase, topoOrder } from './model'
 import { Markdown, safeLocalUrl } from './ui'
 import { TERMINAL_RUN, type RunStream } from './useRunStream'
+import { RunApproval } from './RunApproval'
 
 type RowState = 'done' | 'run' | 'wait' | 'pend' | 'fail' | 'skip'
 const ROW: Record<string, RowState> = { succeeded: 'done', completed: 'done', running: 'run', awaiting_approval: 'wait', paused: 'wait', failed: 'fail', skipped: 'skip' }
@@ -38,7 +39,7 @@ function eventLine(e: WfEvent): string | null {
 
 export interface DrawerProps {
   spec: WorkflowSpec; stream: RunStream; selected: string | null; onSelect: (id: string) => void
-  collapsed: boolean; onCollapse: () => void; onClose: () => void; onResize: (h: number) => void; onRetry: (nodeId: string) => void
+  collapsed: boolean; onCollapse: () => void; onClose: () => void; onResize: (h: number) => void; onRetry: (nodeId: string, inputs?: Record<string, unknown>) => void
   canvasRef: React.RefObject<HTMLElement | null>; groupName: (id: string) => string | undefined
 }
 
@@ -162,7 +163,21 @@ export function RunDrawer({ spec, stream, selected, onSelect, collapsed, onColla
 
 interface Row { id: string; name: string; type: string; state: RowState; dur: number | null; usage: DebugStep['usage']; d?: DebugStep; p?: { output: Record<string, unknown>; error_code: string | null } }
 
-function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: Row; tab: string; spec: WorkflowSpec; groupName: (id: string) => string | undefined; stream: RunStream; debug: RunDebug | null; onRetry: (id: string) => void }) {
+/** Retry from a failed step; the run's inputs can be corrected first (e.g. a mistyped key), then only this step and later ones run again. */
+function RetryBox({ nodeId, spec, runInputs, onRetry }: { nodeId: string; spec: WorkflowSpec; runInputs: Record<string, unknown>; onRetry: (id: string, inputs?: Record<string, unknown>) => void }) {
+  const fields = (spec.inputs ?? []).filter(i => i.type === 'string' || i.type === 'number')
+  const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(fields.map(i => [i.name, runInputs[i.name] == null ? '' : String(runInputs[i.name])])))
+  const changed = fields.filter(i => vals[i.name] !== (runInputs[i.name] == null ? '' : String(runInputs[i.name])))
+  const submit = () => onRetry(nodeId, changed.length ? Object.fromEntries(changed.map(i => [i.name, i.type === 'number' ? Number(vals[i.name]) : vals[i.name]])) : undefined)
+  return <div className="retrybox">
+    {fields.length > 0 && <p className="dd-m">Run inputs (fix a typo before retrying):</p>}
+    {fields.map(i => <label key={i.name} className="dd-p" style={{ display: 'block', marginBottom: 6 }}><span className="muted" style={{ display: 'block', fontSize: 12 }}>{i.name}</span>
+      <input className="input mono" value={vals[i.name] ?? ''} aria-label={`Input ${i.name}`} onChange={e => setVals(v => ({ ...v, [i.name]: e.target.value }))} /></label>)}
+    <button type="button" className="btn primary sm" onClick={submit}><Icon name="retry" small />Retry from this step</button>
+  </div>
+}
+
+function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: Row; tab: string; spec: WorkflowSpec; groupName: (id: string) => string | undefined; stream: RunStream; debug: RunDebug | null; onRetry: (id: string, inputs?: Record<string, unknown>) => void }) {
   const node = spec.nodes.find(n => n.id === row.id)
   const cfg = obj(node?.config)
   const out = obj(row.d?.output ?? row.p?.output)
@@ -183,7 +198,7 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
     return <>
       <div className="errbox">{err?.code ?? 'step_failed'}</div>
       {err?.message && <p className="dd-p">{err.message}</p>}
-      {(stream.status === 'failed' || stream.status === 'blocked_by_budget') && <button type="button" className="btn primary sm" onClick={() => onRetry(row.id)}><Icon name="retry" small />Retry from this step</button>}
+      {(stream.status === 'failed' || stream.status === 'blocked_by_budget') && <RetryBox nodeId={row.id} spec={spec} runInputs={obj(debug?.run?.inputs)} onRetry={onRetry} />}
     </>
   }
 
@@ -193,6 +208,10 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
     <span>Prompt tokens <b>{fmtInt(usage.prompt_tokens ?? 0)}</b></span><span>Completion tokens <b>{fmtInt(usage.completion_tokens ?? 0)}</b></span>
     <span>Cost <b>{usdSmall(usage.cost_usd ?? 0)}</b></span></div> : null
 
+  if (out.dry_run === true) return <>
+    <p className="dd-p"><b style={{ fontWeight: 500 }}>Test run · not sent</b></p>
+    <p className="dd-m">Approved, but test runs never write to Jira or Slack. After publishing, this step runs for real.</p>
+  </>
   switch (row.type) {
     case 'knowledge.retrieve': {
       const ev = row.d?.evidence?.length ? row.d.evidence : (Array.isArray(out.evidence) ? out.evidence as { label: string; provider: string; title?: string }[] : [])
@@ -243,6 +262,7 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
       if (row.state === 'wait') return <>
         <p className="dd-p"><b style={{ fontWeight: 500 }}>Waiting · request sent to {names}</b></p>
         <p className="dd-m">{within ? `${names} ${ap?.approver_names?.length === 1 || (!ap?.approver_names?.length && grp) ? 'has' : 'have'} ${within} to respond. ` : ''}The run continues once the request is approved.</p>
+        {ap?.status === 'pending' && ap.can_decide && <RunApproval approval={ap} onDone={() => void stream.refresh()} />}
       </>
       const by = ap?.decided_by ?? (typeof out.decided_by === 'string' ? out.decided_by : null)
       return <p className="dd-p"><b style={{ fontWeight: 500 }}>{ap?.status === 'rejected' || out.decision === 'rejected' ? 'Rejected' : 'Approved'}{by ? ` by ${by}` : ''}</b></p>

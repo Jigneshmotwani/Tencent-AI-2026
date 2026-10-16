@@ -197,7 +197,7 @@ export default function WorkspacePage() {
   // ---------------------------------------------------------------- title row
   const histBtn = useRef<HTMLButtonElement>(null)
   const [histOpen, setHistOpen] = useState(false)
-  const current = lastConversation && chats.some(c => c.id === lastConversation) ? lastConversation : chats[0]?.id ?? null
+  const current = lastConversation && chats.some(c => c.id === lastConversation) ? lastConversation : null
   const titleRow = <div className="trow cw gut"><div className="wrap"><h1>Workspace</h1>
     <div className="tr-r" style={{ position: 'relative' }}>
       <span className="chipx qc">Asking as {firstName}{me.title ? ` · ${me.title}` : ''}</span>
@@ -208,7 +208,7 @@ export default function WorkspacePage() {
         {chats.slice(0, 5).map(c => <button key={c.id} type="button" onClick={() => { setHistOpen(false); navigate('/workspace/c/' + c.id) }}><span className="hp-t">{c.title}</span></button>)}
         {chats.length > 0 && <button type="button" style={{ color: 'var(--link)' }} onClick={() => { setHistOpen(false); navigate('/workspace/history') }}>All chats</button>}
       </Popover>
-      {isNew ? (current && <Button size="sm" className="new-chat" onClick={() => navigate('/workspace/c/' + current)}><Icon name="back" small /><span className="nl">Current chat</span></Button>)
+      {isNew ? (current && <Button size="sm" className="new-chat" onClick={() => navigate('/workspace/c/' + current)}><Icon name="back" small /><span className="nl">Back to chat</span></Button>)
         : <Button size="sm" className="new-chat" onClick={() => navigate('/workspace')}><Icon name="plus" small /><span className="nl">New chat</span></Button>}
     </div></div></div>
 

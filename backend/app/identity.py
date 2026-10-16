@@ -234,9 +234,11 @@ class DemoSwitch(BaseModel):
 def demo_switch(body: DemoSwitch, request: Request, response: Response, _gate: None = Depends(_demo_gate),
                 user: User = Depends(current_user), db: DBSession = Depends(get_db)):
     require_mutation(request, user, db)
-    # Legacy keys (priya, daniel, wei, aisha) still map to the iteration 3 accounts; otherwise the key is the username.
-    username = dict(DEMO_USERS).get(body.key) or body.key
-    target = db.scalar(select(User).where(User.username == username))
+    # The key is the username. Legacy keys (priya, daniel, wei, aisha) map to the iteration 3 accounts only when no account
+    # has that username (a demo pack may define its own "priya" or "daniel").
+    target = db.scalar(select(User).where(User.username == body.key))
+    if target is None and body.key in dict(DEMO_USERS):
+        target = db.scalar(select(User).where(User.username == dict(DEMO_USERS)[body.key]))
     if target is None or target.status == 'disabled':
         raise HTTPException(404, 'not_found')
     token = _new_session(db, request, response, target)

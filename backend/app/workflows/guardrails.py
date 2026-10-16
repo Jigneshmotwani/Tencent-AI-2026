@@ -243,7 +243,16 @@ def ground(obj, valid_labels, *, strip: bool = True) -> dict:
             if not line.strip():
                 out_lines.append(line); continue
             kept = []
-            for sentence in _SENT.split(line):
+            sentences = _SENT.split(line)
+            # A citation covers the sentences before it in the same paragraph line ("... deploy. [E1]"): an uncited
+            # sentence takes the next valid citation that follows it on its line. Lines without one are still stripped.
+            following, trailing = [], []
+            for sentence in reversed(sentences):
+                found = [l for l in _labels_in(sentence) if l in valid]
+                trailing = found or trailing
+                following.append(trailing)
+            following.reverse()
+            for sentence, after in zip(sentences, following):
                 labels = _labels_in(sentence)
                 bad = [l for l in labels if l not in valid]
                 if bad:
@@ -253,8 +262,8 @@ def ground(obj, valid_labels, *, strip: bool = True) -> dict:
                 good = [l for l in labels if l in valid]
                 if not _is_claim(sentence):
                     kept.append(sentence); continue
-                if good or inherited:
-                    verified.append({'claim': sentence.strip()[:300], 'labels': good or inherited}); kept.append(sentence)
+                if good or after or inherited:
+                    verified.append({'claim': sentence.strip()[:300], 'labels': good or after or inherited}); kept.append(sentence)
                 else:
                     removed.append(sentence.strip()[:300])
                     if not strip: kept.append(sentence)

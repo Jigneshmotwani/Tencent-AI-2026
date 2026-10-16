@@ -1,7 +1,8 @@
 """Demo packs: load a whole demo (users, groups, scopes, agents, subscriptions, budgets, policies, suggestion chips) from
 one folder, or export the current demo into one.
 
-    uv run python -m backend.app.demo_pack load <pack-name> --reset
+    uv run python -m backend.app.demo_pack load <pack-name> --reset [--refresh-sources]
+    uv run python -m backend.app.demo_pack import-agent <pack-name> backup/<agent>.yaml [--status published]
     uv run python -m backend.app.demo_pack export <pack-name>
     uv run python -m backend.app.demo_pack list
 
@@ -74,11 +75,41 @@ def _load_file(path: Path):
     return json.loads(raw) if path.suffix == '.json' else yaml.safe_load(raw)
 
 
+PLACEHOLDER = re.compile(r'\$\{(drive:)?([^}:]+?)(?::-([^}]*))?\}')
+
+
+def _resolve(value, unresolved: list):
+    """`${NAME}` / `${NAME:-default}` from .local/demo-identities.env (then the environment); `${drive:Folder/Path}` from the
+    folder ids the payments seeder resolved (.local/ross-drive-folders.json). Real identities and ids never live in the pack."""
+    if isinstance(value, dict):
+        return {k: _resolve(v, unresolved) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve(v, unresolved) for v in value]
+    if not isinstance(value, str) or '${' not in value:
+        return value
+    from .seed_payments import IDENTITIES, drive_folder_ids, read_env
+    env, folders = read_env(IDENTITIES), drive_folder_ids()
+
+    def sub(match):
+        drive, key, default = match.group(1), match.group(2).strip(), match.group(3)
+        found = folders.get(key) if drive else (env.get(key) or os.environ.get(key))
+        if found:
+            return found
+        if default is not None:
+            return default
+        unresolved.append(match.group(0))
+        return match.group(0)
+    return PLACEHOLDER.sub(sub, value)
+
+
 def read_pack(name: str) -> dict:
     folder = pack_dir(name)
     pack = _load_file(folder / 'pack.yaml')
     if not isinstance(pack, dict):
         raise PackError('pack.yaml must be a mapping.')
+    unresolved: list = []
+    pack = _resolve(pack, unresolved)
+    pack['_unresolved'] = unresolved
     errors = []
     users = pack.get('users') or []
     groups = pack.get('groups') or []
@@ -104,7 +135,7 @@ def read_pack(name: str) -> dict:
     agents = []
     for index, entry in enumerate(pack.get('agents') or []):
         try:
-            agent = _load_file(folder / entry) if isinstance(entry, str) else dict(entry)
+            agent = _resolve(_load_file(folder / entry) if isinstance(entry, str) else dict(entry), unresolved)
         except PackError as exc:
             errors.append(str(exc))
             continue
@@ -124,6 +155,9 @@ def read_pack(name: str) -> dict:
             errors.append(f'subscriptions: unknown agent or user in {s!r}')
     if errors:
         raise PackError('Pack is not valid:\n  - ' + '\n  - '.join(errors))
+    for field, items in (pack.get('scopes') or {}).items():
+        if isinstance(items, list):
+            pack['scopes'][field] = [i for i in items if '${' not in str((i.get('key') or i.get('id')) if isinstance(i, dict) else i)]
     pack['_agents'] = agents
     pack['_name'] = name
     return pack
@@ -342,6 +376,11 @@ def _seed_budgets(db, pack: dict, users: dict, groups: dict) -> int:
             row = BudgetLimit(scope_type=scope_type, scope_id=scope_id, limit_usd=float(limit))
             db.add(row)
         row.limit_usd, row.threshold_pct, row.max_steps, row.max_tokens = float(limit), threshold, steps, tokens
+    # Synthetic month-to-date spend for the Budgets page (demo mode only, display only; see governance/budgets.py).
+    usage = pack.get('budget_usage') or {}
+    _set_policy(db, 'demo_budget_usage', {
+        'users': {users[n].id: float(v) for n, v in (usage.get('users') or {}).items() if n in users},
+        'agents': {str(n): float(v) for n, v in (usage.get('agents') or {}).items()}})
     db.flush()
     return len(rows)
 
@@ -399,7 +438,7 @@ def _seed_subscriptions(db, pack: dict, users: dict) -> int:
     return count
 
 
-def load(name: str, reset: bool) -> int:
+def load(name: str, reset: bool, refresh_sources: bool = False, basic_file: str | None = None) -> int:
     pack = read_pack(name)
     from .audit.chain import GENESIS
     from .db import AuditEvent
@@ -448,8 +487,62 @@ def load(name: str, reset: bool) -> int:
     out(f'  budgets: {budget_count} limits, subscriptions: {subs}')
     scopes = pack.get('scopes') or {}
     for field, items in scopes.items():
-        out(f"  scope {field}: {', '.join(str(i.get('key') or i.get('id')) if isinstance(i, dict) else str(i) for i in items or []) or '(.env)'}")
+        out(f"  scope {field}: {', '.join(str(i.get('key') or i.get('id')) if isinstance(i, dict) else str(i) for i in items or []) or ('(none)' if field in scopes else '(.env)')}")
+    for placeholder in dict.fromkeys(pack.get('_unresolved') or []):
+        hint = "run the seeder's Drive step once the folders exist" if 'drive:' in placeholder else 'add it to .local/demo-identities.env'
+        out(f'  ! unresolved {placeholder}: {hint} (scopes using it were skipped)')
     out('  The API picks up the new scopes within 5 seconds; users reconnect a source only if its provider account changes.')
+    if refresh_sources:
+        return _refresh_sources(pack, basic_file)
+    return 0
+
+
+def _refresh_sources(pack: dict, basic_file: str | None) -> int:
+    """Undo the last take in the demo sources (pack `reset:` block). Never touches anything the demo did not create."""
+    import asyncio
+    from .seed_payments import refresh_sources
+    reset = pack.get('reset') or {}
+    if not reset:
+        out('  ! --refresh-sources: this pack has no `reset:` block; nothing to refresh.')
+        return 0
+    default_basic = LOCAL / 'atlassian-setup.env'
+    basic_file = basic_file or (str(default_basic) if default_basic.is_file() else None)
+    out('')
+    out('Refreshing the demo sources (demo projects, channels and pages only):')
+    manual = asyncio.run(refresh_sources(reset, basic_file))
+    out('')
+    if manual:
+        out('Still to do by hand before the take:')
+        for index, step in enumerate(manual, 1):
+            out(f'  {index}. {step}')
+    else:
+        out('Sources ready.')
+    for note in reset.get('notes') or []:
+        out(f'  note: {note}')
+    return 0
+
+
+def import_agent(name: str, file: str, status: str | None) -> int:
+    """Add one agent file (e.g. a backup of an agent built live) to the loaded demo without resetting anything."""
+    pack = read_pack(name)
+    agent = _resolve(_load_file(pack_dir(name) / file), [])
+    if status:
+        agent['status'] = status
+    usernames = [u['username'] for u in pack.get('users') or []]
+    if agent.get('owner') not in usernames:
+        raise PackError(f'agent owner {agent.get("owner")!r} is not a pack user')
+    engine, Session = owner_session()
+    with Session() as db:
+        from .db import Group, User
+        from .telemetry import audit
+        users = {u.username: u for u in db.scalars(select(User).where(User.username.in_(usernames)))}
+        groups = {g.name: g for g in db.scalars(select(Group))}
+        lines = _seed_agents(db, {**pack, '_agents': [agent]}, users, groups, reset=False)
+        audit(db, 'system', 'demo_pack.import_agent', 'allowed', 'imported',
+              details={'pack': name, 'file': file, 'agent': agent.get('name')}, commit=False)
+        db.commit()
+    for line in lines:
+        out(line)
     return 0
 
 
@@ -573,13 +666,22 @@ def main(argv=None) -> int:
     p_load = sub.add_parser('load', help='load demo-packs/<name>/pack.yaml')
     p_load.add_argument('name')
     p_load.add_argument('--reset', action='store_true', help='back up, clear demo data and start a new audit segment first')
+    p_load.add_argument('--refresh-sources', action='store_true',
+                        help='also undo the last take in Jira/Slack/Confluence (pack `reset:` block) and re-post the alerts')
+    p_load.add_argument('--atlassian-basic', default=None, help='owner API token file (default .local/atlassian-setup.env if present)')
+    p_import = sub.add_parser('import-agent', help='add one agent file from a pack (e.g. backup/<agent>.yaml) without a reset')
+    p_import.add_argument('name')
+    p_import.add_argument('file')
+    p_import.add_argument('--status', choices=STATUSES, default=None)
     p_export = sub.add_parser('export', help='write the current demo into demo-packs/<name>/')
     p_export.add_argument('name')
     p_export.add_argument('--force', action='store_true')
     sub.add_parser('list', help='list packs (* = active)')
     args = parser.parse_args(argv)
     if args.command == 'load':
-        return load(args.name, args.reset)
+        return load(args.name, args.reset, args.refresh_sources, args.atlassian_basic)
+    if args.command == 'import-agent':
+        return import_agent(args.name, args.file, args.status)
     if args.command == 'export':
         return export(args.name, args.force)
     return list_packs()

@@ -6,7 +6,7 @@ from .contracts import SourceError, PROVIDERS
 from .telemetry import tracer, audit, record_access
 
 SEARCH_WIDTH = 25  # candidates fetched per source before title ranking; only PER_SOURCE_READS are read
-PER_SOURCE_READS = 6  # top hits read per source (in parallel); ranking then keeps the best 8 overall
+PER_SOURCE_READS = 4  # top hits read per source (in parallel); ranking then keeps the best 8 overall
 
 def search_topic(text, prior):
     # Preserve customer/company terms from the recent user turns without trusting them as evidence.

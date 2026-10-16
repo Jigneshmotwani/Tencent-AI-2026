@@ -32,7 +32,7 @@ export function useRecentChats(enabled: boolean) {
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
-  const { user, pages } = useSession() as { user: SessionUser; pages: PageKey[] }
+  const { user, pages, appName } = useSession() as { user: SessionUser; pages: PageKey[]; appName: string }
   const route = useRoute()
   const [stored, setStored] = useState(readStored)
   const [small, setSmall] = useState(smallMq.matches)
@@ -60,7 +60,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     <aside className={cx('side', menuOpen && 'open')} aria-label="Primary">
       <div className="side-head">
         <div className="brand-mark" aria-hidden="true"><Icon name="spark" /></div>
-        <div className="brand-name">Internal Brain</div>
+        <div className="brand-name">{appName}</div>
         <button type="button" className="ibtn menu-btn" aria-label="Menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}><Icon name="menu" /></button>
       </div>
       <div className="side-panel">
@@ -141,7 +141,7 @@ function UserMenu({ user }: { user: SessionUser }) {
   return <div className="uwrap">
     <button ref={btn} type="button" className="user" aria-haspopup="menu" aria-expanded={open} data-tip="Account" onClick={() => setOpen(o => !o)}>
       <Avatar name={user.name} />
-      <span className="user-text"><span className="user-name" style={{ display: 'block' }}>{user.name}</span><span className="user-role" style={{ display: 'block' }}>{title}</span></span>
+      <span className="user-text"><span className="user-name" style={{ display: 'block' }}>{user.name}</span><span className="user-role" style={{ display: 'block' }} title={title}>{title}</span></span>
     </button>
     {open && <div ref={menu} className="umenu" role="menu">
       <button type="button" className="um" role="menuitem" onClick={() => { setOpen(false); navigate('/settings') }}>Profile</button>

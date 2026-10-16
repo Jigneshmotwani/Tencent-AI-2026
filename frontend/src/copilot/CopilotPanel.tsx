@@ -18,6 +18,8 @@ export interface CopilotProps {
   onUndo: () => Promise<boolean>
   onTestRun: () => void
   onMinimise: () => void
+  /** A test run waiting for approval, decided right here in the chat. */
+  runApproval?: React.ReactNode
 }
 
 interface Msg { id: string; role: 'user' | 'assistant'; text: string; status: string; proposal?: CopilotProposal; note?: string }
@@ -31,7 +33,7 @@ function noteFor(p: CopilotProposal | undefined) {
   return parts.join(' ') || undefined
 }
 
-export default function CopilotPanel({ workflowId, draftVersion, autoFocus, beforeSend, onPreview, onApplied, onUndo, onTestRun, onMinimise }: CopilotProps) {
+export default function CopilotPanel({ workflowId, draftVersion, autoFocus, beforeSend, onPreview, onApplied, onUndo, onTestRun, onMinimise, runApproval }: CopilotProps) {
   const [items, setItems] = useState<Msg[]>([])
   const [active, setActive] = useState<CopilotProposal | null>(null)
   const [appliedId, setAppliedId] = useState<string | null>(null)
@@ -54,7 +56,7 @@ export default function CopilotPanel({ workflowId, draftVersion, autoFocus, befo
     return () => { off = true; preview.current(null) }
   }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (autoFocus) input.current?.focus() }, [autoFocus])
-  useEffect(() => { body.current?.scrollTo({ top: body.current.scrollHeight }) }, [items, busy, active, error])
+  useEffect(() => { body.current?.scrollTo({ top: body.current.scrollHeight }) }, [items, busy, active, error, runApproval])
 
   const send = async (e: FormEvent) => {
     e.preventDefault()
@@ -115,6 +117,7 @@ export default function CopilotPanel({ workflowId, draftVersion, autoFocus, befo
       {stale && <div className="m a muted">The draft changed since this proposal. Ask again for a fresh one.</div>}
       {busy === 'send' && <div className="m a" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Spinner />Drafting…</div>}
       {error && <div className="m a" role="alert" style={{ color: 'var(--danger)' }}>{error}</div>}
+      {runApproval}
     </div>
     <form className="cop-f" onSubmit={send}>
       <input ref={input} className="input" placeholder="Describe a change…" aria-label="Describe a change" autoComplete="off" value={text} maxLength={4000} onChange={e => setText(e.target.value)} disabled={busy === 'send'} />

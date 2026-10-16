@@ -1,0 +1,5 @@
+note: SYNTHETIC DEMO DATA. Northstar Pay is a fictional company.
+key: VNRAIL
+name: Vietnam Rail Integration
+description: "SYNTHETIC DEMO DATA. Shared space for the Vietnam payout rail integration with VN Partner, used by Payout Rails and the Lumen Integrations contractor team."
+visible_to: [owner, A, B]
