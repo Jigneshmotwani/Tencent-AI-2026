@@ -147,7 +147,8 @@ async def _propose(db, user: User, wf_id: str, wf_name: str, base: dict, message
     result = best[1]
     result['usage'] = usage
     if not result['explanation']:
-        result['explanation'] = 'No changes proposed.' if not result['operations'] else 'Proposed changes are listed below.'
+        result['explanation'] = ('Proposed changes are listed below.' if result['operations'] else
+                                 'I could not build this agent this time. Send the same description again.' if mode == 'create' else 'No changes proposed.')
     return result
 
 
@@ -169,6 +170,9 @@ async def copilot_create(body: CreateIn, request: Request, user: User = Depends(
     base['nodes'] = [{'id': 'trigger', 'type': 'trigger.manual', 'label': 'Start', 'config': {}, 'position': {'x': 40, 'y': 40}}]
     started = time.monotonic()
     result = await _propose(db, user, '', 'New workflow', base, body.description, [], 'create')
+    if not result['operations']:  # never leave an empty "New workflow" behind: the person simply asks again
+        audit(db, user.id, 'copilot.create', 'error', 'copilot_empty', details={'attempts': result['attempts']})
+        raise HTTPException(422, 'copilot_empty')
     spec = result['preview_spec']
     try:
         clean = WorkflowSpec.model_validate({**spec, 'status': 'draft', 'version': 1}).model_dump()

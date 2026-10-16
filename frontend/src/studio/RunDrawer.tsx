@@ -9,6 +9,7 @@ import { type DebugStep, type LogLine, type RunDebug, isMissing, runDebug } from
 import { SOURCE_LABEL, humanCase, topoOrder } from './model'
 import { Markdown, safeLocalUrl } from './ui'
 import { TERMINAL_RUN, type RunStream } from './useRunStream'
+import { RunApproval } from './RunApproval'
 
 type RowState = 'done' | 'run' | 'wait' | 'pend' | 'fail' | 'skip'
 const ROW: Record<string, RowState> = { succeeded: 'done', completed: 'done', running: 'run', awaiting_approval: 'wait', paused: 'wait', failed: 'fail', skipped: 'skip' }
@@ -257,6 +258,7 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
       if (row.state === 'wait') return <>
         <p className="dd-p"><b style={{ fontWeight: 500 }}>Waiting · request sent to {names}</b></p>
         <p className="dd-m">{within ? `${names} ${ap?.approver_names?.length === 1 || (!ap?.approver_names?.length && grp) ? 'has' : 'have'} ${within} to respond. ` : ''}The run continues once the request is approved.</p>
+        {ap?.status === 'pending' && ap.can_decide && <RunApproval approval={ap} onDone={() => void stream.refresh()} />}
       </>
       const by = ap?.decided_by ?? (typeof out.decided_by === 'string' ? out.decided_by : null)
       return <p className="dd-p"><b style={{ fontWeight: 500 }}>{ap?.status === 'rejected' || out.decision === 'rejected' ? 'Rejected' : 'Approved'}{by ? ` by ${by}` : ''}</b></p>

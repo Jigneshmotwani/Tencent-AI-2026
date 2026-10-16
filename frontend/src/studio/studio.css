@@ -62,3 +62,6 @@
 .ss-adv>summary::after{content:'›';display:inline-block;transition:transform .12s}
 .ss-adv[open]>summary::after{transform:rotate(90deg)}
 .ss-adv>summary:hover{color:var(--ink)}
+/* Pending approval decided in place (Copilot panel and run drawer). */
+.run-ap{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--amber,#d9a400);border-radius:12px;background:#fff;font-size:13.5px;line-height:1.5}
+.run-ap-a{display:flex;flex-direction:column;gap:2px}
