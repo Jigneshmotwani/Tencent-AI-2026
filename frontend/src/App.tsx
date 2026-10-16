@@ -35,6 +35,12 @@ function Gate() {
   return <Shell><Suspense fallback={null}><Page key={route.page} /></Suspense></Shell>
 }
 
+// Optional one-click demo sign-in for a hosted demo: VITE_DEMO_LOGINS in the git-ignored frontend/.env.local, a JSON list
+// of {username, password, label}. Unset (the default), the page shows only the form.
+const DEMO_LOGINS: { username: string; password: string; label?: string }[] = (() => {
+  try { const v = JSON.parse((import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_DEMO_LOGINS || '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
+})()
+
 function Login() {
   const { setUser, appName } = useSession()
   const [username, setUsername] = useState('')
@@ -42,12 +48,13 @@ function Login() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const expired = new URLSearchParams(location.search).has('expired')
-  const submit = async (e: FormEvent) => {
-    e.preventDefault(); setBusy(true); setError('')
-    try { setUser(await api<SessionUser>('/auth/login', 'POST', { username: username.trim(), password })) }
+  const signIn = async (name: string, secret: string) => {
+    setBusy(true); setError('')
+    try { setUser(await api<SessionUser>('/auth/login', 'POST', { username: name.trim(), password: secret })) }
     catch (err) { setError(safeError(err)) }
     finally { setBusy(false) }
   }
+  const submit = (e: FormEvent) => { e.preventDefault(); void signIn(username, password) }
   return <div className="page-center">
     <form className="login" onSubmit={submit}>
       <div className="brand"><span className="brand-mark" aria-hidden="true"><Icon name="spark" /></span><b>{appName}</b></div>
@@ -57,6 +64,12 @@ function Login() {
       <Field label="Username" htmlFor="lu"><Input id="lu" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" autoFocus /></Field>
       <Field label="Password" htmlFor="lp"><Input id="lp" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" /></Field>
       <Button variant="primary" type="submit" disabled={busy || !username || !password}>{busy ? 'Signing in…' : 'Sign in'}</Button>
+      {DEMO_LOGINS.length > 0 && <div className="demo-logins">
+        <p className="muted">Demo personas (synthetic data). One click signs in with that person's linked accounts.</p>
+        {DEMO_LOGINS.map(d => <Button key={d.username} type="button" disabled={busy} onClick={() => void signIn(d.username, d.password)}>
+          {d.label || d.username}
+        </Button>)}
+      </div>}
     </form>
   </div>
 }
