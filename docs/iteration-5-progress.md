@@ -198,3 +198,17 @@ label "Marco Rossi · Source access · Vietnam Rail Integration · last 30 days"
   4 instead of 6 reads per source. Third try: answered in 52.1 s, $0.0019, citing the VN rail integration guide and
   launch checklist (Confluence VNRAIL), PAYRAIL-415 and VNR-3/5 (Jira). Slack part pending (no Slack link yet).
   **Before recording: close ChatGPT, extra VS Code windows and Firefox tabs; aim for 4+ GB free.**
+
+## 16 Oct 10:40 SGT: stack stability, Slack seeded, fixes
+
+- **Stack kept dying ~40 s after start (in any console window, also for the human).** The launcher stopped silently (no
+  "<child> exited" line), so it had received a console Ctrl-C: a console control event raised inside a child reaches every
+  process on that console, the launcher included, which then tears the stack down. Fix: Windows children now also get
+  `CREATE_NO_WINDOW` (own hidden console). Verified: a Git Bash window run stayed up 3+ minutes (was ~40 s).
+- Slack seeded as weiling: 6 channels (#payments-leads private), A invited to all but leads, B to #ext-vn-rail-partner, 18 messages.
+- Marco's Jira connected in Chrome after the human granted B Jira access; Chrome's Atlassian login restored to the owner.
+- Drive: folders stay inside "Demo Knowledge" (shared only with a non-persona teammate). The seeder now accepts owner
+  folders anywhere and flags only demo personas (A/B) that should not have access; check passes.
+- Demo switcher: "daniel"/"priya" mapped to the disabled iteration 3 accounts; exact username now wins. Verified in Chrome.
+- Sidebar: long titles ellipsize (footer grid item min-width 0). Verified in Chrome.
+- Still open (human): Slack connect for daniel (owner), priya and arjun (…001), marco (…0055); slack.com is blocked in the agent's Chrome.
