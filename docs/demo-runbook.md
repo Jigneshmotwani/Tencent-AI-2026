@@ -77,6 +77,9 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 4. **Test run** with a mistyped file id: `1R2EDoaTxfWaMPTWfPR_ZWrS_POiHWni` (the v3 spec's id without its last character). The correct id is `1R2EDoaTxfWaMPTWfPR_ZWrS_POiHWni8`. The "Read the new
    file" step fails. In the run panel, correct the id in the **file_id** box, then **Retry from this step**. The run
    continues from that step.
+   When it reaches the approval, the request appears in the **Copilot chat** (and in the run panel): "Test run: approving
+   shows what would happen; nothing is written to Jira or Slack". Arjun clicks **Approve** there; the ticket step shows
+   "Test run · not sent". Test runs never write; only the published agent creates real tickets (beat 3, approved by Wei Ling).
 5. **Versions**: show v1 → v2 diff. **Submit for review**: audience *payments-eng* and *payments-leads*, note "Watches the
    VN Rail folder".
 6. Profile Owner, `weiling` → **Approvals** → the publish request (diff, test run, sources and tools, audience) →
