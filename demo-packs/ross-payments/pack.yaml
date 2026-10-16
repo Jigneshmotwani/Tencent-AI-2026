@@ -141,4 +141,4 @@ reset:
   drive_remove_files:
     - {folder: Partners/VN Rail, title: "VN Partner – API v2 retirement notice", file: vn-partner-api-v2-retirement-notice.docx}
   notes:
-    - Jira never reuses a key, so after a reset the next live incident is INC-2302, then INC-2303 (same for IT-78 ...).
+    - Jira never reuses a key, so after a reset the next live incident takes the next free INC number (likewise IT and PAYRAIL); say "the new P1" on camera.
