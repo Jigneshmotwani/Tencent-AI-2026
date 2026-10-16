@@ -103,8 +103,9 @@ function summaryOf(d: AgentRunDetail): { lead: string; text: string } | null {
     }
   }
   if (typeof outs.markdown === 'string') {
-    const para = outs.markdown.split(/\n{2,}/).map(p => p.trim()).find(p => p && !/^(#|\*\*|---|_|>)/.test(p) && p.length > 40)
-    if (para) return { lead: '', text: firstSentences(para) }
+    // The agent's final output (scheduled, triggered or chat-invoked alike): drop its heading and the run-stats footer.
+    const body = outs.markdown.split(/\n-{3,}\n/)[0].split('\n').filter(l => !/^#{1,6}\s/.test(l)).join('\n').trim()
+    if (body) return { lead: '', text: body }
   }
   return null
 }

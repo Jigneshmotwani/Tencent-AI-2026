@@ -167,7 +167,7 @@ def partner_change_radar(folder_id: str | None = None, partner_channels: list | 
 
 # ------------------------------------------------------------------------------------------------ 3. Vulnerability Remediation Tracker
 def vulnerability_remediation_tracker(findings_project: str | None = None, team_projects: list | None = None, cron: str = '0 9 * * 1',
-                                      timezone: str = '') -> dict:
+                                      timezone: str = '', upgrade_label: str = '') -> dict:
     d = _defaults()
     findings = findings_project or d['project']
     teams = list(team_projects or [p for p in d['projects'] if p != findings][:3] or [findings])
@@ -176,12 +176,15 @@ def vulnerability_remediation_tracker(findings_project: str | None = None, team_
         node('findings', 'tool.builtin', 'Open security findings', {'tool': 'jira.search', 'params': {
             'jql': f'project = {findings} AND statusCategory != Done ORDER BY priority DESC', 'max_results': 5}}),
         node('upgrades', 'tool.builtin', 'Team upgrade tickets', {'tool': 'jira.search', 'params': {
-            'jql': 'project in (' + ', '.join(teams) + ') AND statusCategory != Done ORDER BY duedate ASC', 'max_results': 5}}),
+            'jql': 'project in (' + ', '.join(teams) + ')' + (f' AND labels = "{upgrade_label}"' if upgrade_label else '')
+                   + ' AND statusCategory != Done ORDER BY duedate ASC', 'max_results': 5}}),
         node('summary', 'llm.generate', 'Summary for you', {'prompt': (
             'Write this week\'s remediation summary for the reader using ONLY the Jira issues in the evidence, which are exactly what this reader '
-            'can see. Cite [E#] after every factual sentence. Group by what needs action first (due soonest, highest priority). '
+            'can see. Write one bullet per Jira issue in the evidence, most urgent first (due soonest, highest priority): the issue key and '
+            'title, its status, its due date if the evidence gives one, and the action needed, ending with that issue\'s [E#] label. '
             'Never mention findings, counts, reports or projects that are not in the evidence, and never say that other items may exist. '
-            'If the evidence is empty, say only: "Nothing needs your attention this week."'), 'include_evidence': True, 'max_tokens': 1800}),
+            'Only when the evidence contains no Jira issue at all, say: "Nothing needs your attention this week."'),
+            'include_evidence': True, 'max_tokens': 1800}),
         node('check', 'guardrail.output', 'Check citations', {'target': 'summary', 'grounding': True, 'schema': False, 'pii_leak': True, 'on_fail': 'strip'}),
         node('output', 'output', 'Weekly summary', {'template': '## Remediation this week\n{{nodes.check.output.result.text}}', 'include_nodes': ['check']}),
     ]
