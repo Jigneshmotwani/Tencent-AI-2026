@@ -27,6 +27,7 @@ DENIED = {'invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'accou
           'restricted_action', 'not_allowed_token_type', 'ekm_access_denied', 'user_not_found', 'cant_post_message'}
 COLLECTION_TTL = 20.0   # seconds; bounds conversations.list (Tier 2) while keeping revocation visible quickly
 MAX_PAGES = 5
+POST_MAX_CHARS = 12000  # Slack truncates text over 40,000 characters; an incident brief with its steps runs to about 5,000
 _collections: dict[str, tuple[float, dict[str, str]]] = {}
 _names: dict[str, str] = {}
 
@@ -277,7 +278,7 @@ class SlackConnector:
         if not isinstance(idempotency_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,128}', idempotency_key):
             raise SourceError('unsupported')
         text = params.get('text')
-        if not isinstance(text, str) or not text.strip() or len(text) > 3800:
+        if not isinstance(text, str) or not text.strip() or len(text) > POST_MAX_CHARS:
             raise SourceError('unsupported')
         thread_ts = params.get('thread_ts')
         if thread_ts is not None and not (isinstance(thread_ts, str) and TS_RE.fullmatch(thread_ts)):
