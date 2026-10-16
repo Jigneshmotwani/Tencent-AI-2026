@@ -12,6 +12,9 @@ BRIEF_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['s
                                'runbook_steps': {'type': 'array', 'items': {'type': 'string'}},
                                'recent_deploys': {'type': 'array', 'items': {'type': 'string'}},
                                'likely_owners': {'type': 'array', 'items': {'type': 'string'}}}}
+# Rendered under the incident brief's summary and cause; a list of strings renders as "- item" lines.
+BRIEF_LISTS = ('**Runbook steps:**\n{{nodes.check.output.result.runbook_steps}}\n\n'
+               '**Recent deploys and changes:**\n{{nodes.check.output.result.recent_deploys}}')
 CHANGE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['partner', 'change', 'affected_services', 'search_phrase'],
                  'properties': {'partner': {'type': 'string'}, 'change': {'type': 'string'}, 'effective_date': {'type': 'string'},
                                 'affected_services': {'type': 'array', 'items': {'type': 'string'}},
@@ -83,12 +86,14 @@ def incident_assembler(jql: str | None = None, alert_channel: str | None = None,
             'allow_requester': True, 'respond_within': '15 minutes', 'message': 'Check the brief before it goes to #' + incident + ' and the Jira issue.'}),
         node('post', 'tool.builtin', 'Post to the incident channel', {'tool': 'slack.post_message', 'params': {
             'channel': incident, 'text': '*Incident brief {{inputs.issue_key}}*\n{{nodes.check.output.result.summary}}\n'
-                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}'}}),
+                                         '*Suspected cause:* {{nodes.check.output.result.suspected_cause}}\n' + BRIEF_LISTS.replace('**', '*')}}),
         node('comment', 'tool.builtin', 'Comment on the incident', {'tool': 'jira.comment', 'params': {
             'issue_key': '{{inputs.issue_key}}', 'body': 'Incident brief (assembled by agent, approved):\n{{nodes.check.output.result.summary}}\n'
-                                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}'}}),
+                                                         'Suspected cause: {{nodes.check.output.result.suspected_cause}}\n'
+                                                         + BRIEF_LISTS.replace('**', '')}}),
         node('output', 'output', 'Brief', {'template': '## Incident brief: {{inputs.issue_key}}\n{{nodes.check.output.result.summary}}\n\n'
-                                                       '**Suspected cause:** {{nodes.check.output.result.suspected_cause}}', 'include_nodes': ['check']}),
+                                                       '**Suspected cause:** {{nodes.check.output.result.suspected_cause}}\n\n'
+                                                       + BRIEF_LISTS.replace(':**\n', ':**\n\n'), 'include_nodes': ['check']}),
     ]
     order = ['trigger', 'get_issue', 'past', 'runbook', 'alerts', 'deploys', *[f'context_{i + 1}' for i in range(len(extra))], 'guard_in', 'brief',
              'check', 'approval', 'post', 'comment', 'output']
