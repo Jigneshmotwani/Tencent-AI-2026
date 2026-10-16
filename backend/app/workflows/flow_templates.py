@@ -22,7 +22,9 @@ CHANGE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['
 EXISTS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['ticket_exists'],
                  'properties': {'ticket_exists': {'enum': ['yes', 'no']}, 'existing_key': {'type': 'string'}, 'reason': {'type': 'string'}}}
 TICKET_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'description'],
-                 'properties': {'summary': {'type': 'string', 'maxLength': 200}, 'description': {'type': 'string'}}}
+                 'properties': {'summary': {'type': 'string', 'maxLength': 120,
+                                            'description': 'A short ticket title, for example "Migrate <service> off <partner> API v2 before <date>"'},
+                                'description': {'type': 'string'}}}
 PERSON_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['email'],
                  'properties': {'email': {'type': 'string'}, 'name': {'type': 'string'}, 'last_day': {'type': 'string'}}}
 CHECKLIST_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'checklist'],
