@@ -12,7 +12,7 @@ messages:
   - date: 2026-10-13
     speaker: VN Partner
     post_as: owner
-    text: "We will rotate our TLS certificate on 20 Oct 02:00 ICT."
+    text: "We will rotate our TLS certificate on 16 Oct 02:00 ICT. The new certificate is issued by a new intermediate CA."
   - date: 2026-10-14
     speaker: VN Partner
     post_as: owner
