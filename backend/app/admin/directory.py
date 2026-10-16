@@ -7,6 +7,7 @@ import time
 from sqlalchemy import select
 
 from ..db import Group, GroupMember, PlatformPolicy, SessionLocal, User
+from ..workflows.guardrails import PII_KINDS
 
 ROLES = ['user', 'builder', 'admin', 'auditor']
 ROLE_LABEL = {'user': 'User', 'builder': 'Builder', 'admin': 'Admin', 'auditor': 'Auditor'}
@@ -74,6 +75,28 @@ def member_ids(db, group_id: str) -> list[str]:
 def _policy_value(db, key: str):
     row = db.get(PlatformPolicy, key)
     return dict(row.value or {}) if row is not None else None
+
+
+# ---------------------------------------------------------------- org guardrails
+# Org minimums: chat follows them; an agent's guardrail step can be stricter, never weaker (an org check that is on is
+# forced on in every step, and the org's PII types are always masked).
+GUARDRAILS_KEY = 'guardrails'
+DEFAULT_GUARDRAILS = {'pii': ['nric', 'iban', 'card', 'phone', 'email'], 'injection': True, 'grounding': True, 'pii_leak_check': True}
+_guard_cache: dict = {'at': 0.0, 'value': None}
+
+
+def guardrails(db) -> dict:
+    value = {**DEFAULT_GUARDRAILS, **(_policy_value(db, GUARDRAILS_KEY) or {})}
+    value['pii'] = [k for k in PII_KINDS if k in (value.get('pii') or [])]
+    return value
+
+
+def org_guardrails() -> dict:
+    """Cached for 5 s: read on every chat retrieval and guardrail step."""
+    if _guard_cache['value'] is None or time.monotonic() - _guard_cache['at'] > 5:
+        with SessionLocal() as db:
+            _guard_cache.update(value=guardrails(db), at=time.monotonic())
+    return dict(_guard_cache['value'])
 
 
 def reviewer_group(db) -> Group | None:

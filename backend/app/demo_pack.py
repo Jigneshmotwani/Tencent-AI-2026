@@ -376,6 +376,11 @@ def _seed_budgets(db, pack: dict, users: dict, groups: dict) -> int:
             row = BudgetLimit(scope_type=scope_type, scope_id=scope_id, limit_usd=float(limit))
             db.add(row)
         row.limit_usd, row.threshold_pct, row.max_steps, row.max_tokens = float(limit), threshold, steps, tokens
+    # Synthetic month-to-date spend for the Budgets page (demo mode only, display only; see governance/budgets.py).
+    usage = pack.get('budget_usage') or {}
+    _set_policy(db, 'demo_budget_usage', {
+        'users': {users[n].id: float(v) for n, v in (usage.get('users') or {}).items() if n in users},
+        'agents': {str(n): float(v) for n, v in (usage.get('agents') or {}).items()}})
     db.flush()
     return len(rows)
 

@@ -98,6 +98,8 @@ async def execute(run_id,user):
                 with SessionLocal() as db: audit(db,user.id,'guardrail.relevance',run_id=run_id,details={'dropped':irrelevant,'kept':len(docs)})
             evidence = []
             masker = content_guards.Masker(); pii_counts: dict[str,int] = {}; quarantined = 0
+            from .admin.directory import org_guardrails
+            guard = org_guardrails()  # Policies → Guardrails (admin-set org defaults)
             with SessionLocal() as db:
                 run = db.get(Run,run_id)
                 run.providers=sorted({d[1] for d in docs}); run.limitations=limitations
@@ -106,8 +108,10 @@ async def execute(run_id,user):
                         content_hash=doc.content_hash,version=doc.version)
                     db.add(rec); db.flush()
                     # What the model sees is screened: instruction-like spans quarantined, PII replaced by placeholders (memory only).
-                    safe, hits = content_guards.quarantine(doc.text[:settings().max_excerpt_chars]); quarantined += hits
-                    safe, found = masker.mask(safe,('nric','iban','card','phone','email'))
+                    safe = doc.text[:settings().max_excerpt_chars]
+                    if guard['injection']:
+                        safe, hits = content_guards.quarantine(safe); quarantined += hits
+                    safe, found = masker.mask(safe,tuple(guard['pii']))
                     for kind,n in found.items(): pii_counts[kind]=pii_counts.get(kind,0)+n
                     evidence.append({'id':rec.id,'label':f'E{i}','provider':provider,'title':doc.title,
                         'text':safe,'modified_at':doc.modified_at,'fetched_at':doc.fetched_at.isoformat()})
@@ -173,6 +177,7 @@ async def execute(run_id,user):
             from .answer_guard import check_answer
             from .prompt import NO_EVIDENCE_ANSWER, ADMIN_HINT
             verdict = check_answer(answer,evidence); final = answer
+            if not guard['grounding']: verdict = {**verdict,'removed':[]}  # not-found answers still get the generic sentence
             if verdict['not_found']:
                 final = NO_EVIDENCE_ANSWER  # the same sentence for every not-found answer (never names the subject)
             elif verdict['removed']:

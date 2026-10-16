@@ -600,9 +600,8 @@ def policy_extras(db) -> dict:
         g = D.resolve_group(db, gid)
         return {'id': g.id, 'name': g.name} if g else None
     return {
-        'guardrails': {'read_only': True, 'pii': ['nric', 'uen', 'iban', 'card', 'phone', 'email'], 'pii_default': ['nric', 'iban', 'card', 'phone', 'email'],
-                       'injection': True, 'grounding': True, 'pii_leak_check': True,
-                       'note': 'Configured per agent in Studio guardrail steps.'},
+        'guardrails': {**D.guardrails(db), 'pii_kinds': list(D.PII_KINDS),
+                       'note': 'Org defaults: chat follows them; agent guardrail steps can be stricter, never weaker.'},
         'approval_rules': [{'action': a, 'write': a in WRITE_ACTIONS, 'requires_approval': a in (policy.get('approval_required_for') or []),
                             'locked': a in WRITE_ACTIONS, 'approver_group': group_ref(rules.get(a))} for a in APPROVAL_CHOICES],
         'publish_reviewer_group': {'id': reviewer.id, 'name': reviewer.name} if reviewer else None,
@@ -623,9 +622,17 @@ class RuleBody(BaseModel):
     approver_group: str | None = Field(default=None, max_length=100)
 
 
+class GuardrailsBody(BaseModel):
+    pii: list[str] | None = Field(default=None, max_length=10)
+    injection: bool | None = None
+    grounding: bool | None = None
+    pii_leak_check: bool | None = None
+
+
 class PolicyExtrasBody(BaseModel):
     publish_reviewer_group: str | None = Field(default=None, max_length=100)
     approval_rules: list[RuleBody] | None = Field(default=None, max_length=10)
+    guardrails: GuardrailsBody | None = None
 
 
 @router.put('/policies/extras')
@@ -655,6 +662,17 @@ def policies_extras_put(body: PolicyExtrasBody, request: Request, user: User = D
         row = db.get(PlatformPolicy, D.APPROVAL_RULES_KEY) or PlatformPolicy(key=D.APPROVAL_RULES_KEY, value={})
         db.add(row); row.value = {'groups': groups}; row.updated_by = user.id; row.updated_at = now()
         changed['approval_rules'] = groups
+    if body.guardrails is not None:
+        current = D.guardrails(db)
+        update = body.guardrails.model_dump(exclude_none=True)
+        if 'pii' in update and any(k not in D.PII_KINDS for k in update['pii']):
+            raise HTTPException(422, 'unknown_pii_type')
+        after = {**current, **update}
+        after['pii'] = [k for k in D.PII_KINDS if k in after['pii']]
+        row = db.get(PlatformPolicy, D.GUARDRAILS_KEY) or PlatformPolicy(key=D.GUARDRAILS_KEY, value={})
+        db.add(row); row.value = after; row.updated_by = user.id; row.updated_at = now()
+        changed['guardrails'] = {'before': current, 'after': after}
     audit(db, user.id, 'policy.update', 'allowed', 'changed' if changed else 'unchanged', details={'policy': 'extras', 'changed': changed}, commit=False)
     db.commit()
+    D._guard_cache['value'] = None  # chat and agents pick up the change at once
     return policy_extras(db)

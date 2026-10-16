@@ -116,6 +116,12 @@ budgets:
     Contractor Offboarding Sweep: {limit_usd: 10, max_steps: 15, max_tokens: 40000}
   users: {priya: 10, arjun: 15, marco: 5}
 
+# SYNTHETIC DEMO DATA: illustrative month-to-date spend shown on the Budgets page in demo mode, added to real usage.
+# Display only (never counted by budget enforcement). Real cost per answer is about $0.001 (docs/results.md).
+budget_usage:
+  users: {weiling: 4.82, daniel: 2.37, priya: 3.15, arjun: 5.64, marco: 0.86}
+  agents: {Incident Assembler: 3.42, Vulnerability Remediation Tracker: 1.18, Contractor Offboarding Sweep: 0.64, Partner Change Radar: 2.05}
+
 policies:
   publish_reviewer_group: payments-leads
   approval_rules:

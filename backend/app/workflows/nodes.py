@@ -16,6 +16,7 @@ from sqlalchemy import select
 from ..config import settings
 from ..db import ActionExecution, Approval, NodeState, SessionLocal, SlackDraft, SourceConnection, WorkflowRun
 from ..telemetry import record_approval, record_guardrail
+from ..admin.directory import org_guardrails
 from . import guardrails as G
 from .engine import NodeFailure, NodeResult, RunCtx, emit, model_call, step, _audit, ensure_evidence_text, idempotency_key
 from .registry import AGENT_READ_TOOLS, WRITE_TOOLS, canonical_action
@@ -651,8 +652,9 @@ async def logic_router(ctx: RunCtx, node):
 async def guardrail_input(ctx: RunCtx, node):
     from .engine import _activate_guard
     cfg = node.get('config') or {}
-    kinds = cfg.get('pii', ['nric', 'iban', 'card', 'phone', 'email'])
-    injection = cfg.get('injection', True)
+    org = org_guardrails()  # org minimums: a step can add PII types or checks, never drop the org's
+    kinds = [k for k in G.PII_KINDS if k in set(cfg.get('pii', org['pii'])) | set(org['pii'])]
+    injection = cfg.get('injection', True) or org['injection']
     await ensure_evidence_text(ctx)
     for e in ctx.evidence:  # re-screen with this node's configuration
         e['screened'] = False
@@ -722,7 +724,8 @@ async def guardrail_output(ctx: RunCtx, node):
     usage = {}
     result, removed, verified, invalid = original, [], [], []
     repaired = False
-    if cfg.get('grounding', True):
+    org = org_guardrails()
+    if cfg.get('grounding', True) or org['grounding']:
         g = G.ground(original, labels, strip=on_fail in ('strip', 'repair', 'block'))
         if on_fail == 'repair' and (g['removed'] or g['invalid_ids']):
             await ensure_evidence_text(ctx)
@@ -778,7 +781,7 @@ async def guardrail_output(ctx: RunCtx, node):
         if not schema_ok and on_fail == 'block':
             raise NodeFailure('output_schema_invalid')
     pii_leaks = 0
-    if cfg.get('pii_leak', True):
+    if cfg.get('pii_leak', True) or org['pii_leak_check']:
         result, counts = G.pii_scan(result, ctx.masker)
         pii_leaks = sum(counts.values())
         _guard_event(ctx, node, 'pii_leak', 'masked' if pii_leaks else 'pass',
