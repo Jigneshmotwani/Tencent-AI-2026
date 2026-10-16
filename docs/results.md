@@ -156,5 +156,6 @@ member).
 ## Access matrix rerun for Marco (corrected Slack membership)
 
 Marco's 12 questions rerun at 11:40 after account B was removed from the five channels it had joined by mistake: 0 leak
-markers; 9 of 10 no-access questions return the exact not-found sentence. The tenth ("payout-orchestrator degradation
-runbook") cites only the VNRAIL launch checklist (which names the runbook) and says the runbook itself is not available to him.
+markers; 8 of 10 no-access questions return the exact not-found sentence. The other two cite only VNRAIL pages he may read:
+"payout-orchestrator degradation runbook" cites the launch checklist (which names the runbook) and says the runbook itself is
+not available to him; the service-catalog question is answered from the VN rail integration guide.
