@@ -182,7 +182,9 @@ def main():
                 childenv.update({'OTEL_EXPORTER':'otlp_http','OTEL_SERVICE_NAME':'litellm','STORE_MODEL_IN_DB':'True'})
             children.append((name,subprocess.Popen(command,env=childenv,cwd=ROOT/'frontend' if name=='frontend' else ROOT,stdout=log,stderr=log,
                 # Own process group + private stdin: a console Ctrl-C/Ctrl-Break or terminal input must not reach children; only this launcher stops them.
-                stdin=subprocess.PIPE,creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0)))
+                # Windows: each child also gets its own hidden console, so a console control event raised inside a child (sent to every process
+                # on its console) cannot reach this launcher and tear the whole stack down.
+                stdin=subprocess.PIPE,creationflags=subprocess.CREATE_NEW_PROCESS_GROUP|subprocess.CREATE_NO_WINDOW if WINDOWS else 0)))
         print(f"Starting at {values['APP_ORIGIN']}. API: {values['API_ORIGIN']}/api/health",flush=True)
         print('Accounts: .local/demo-accounts.txt; safe local logs: .local/*.log. Ctrl-C stops native services.',flush=True)
         def stop(*_): raise KeyboardInterrupt()
