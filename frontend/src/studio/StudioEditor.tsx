@@ -214,7 +214,7 @@ function Editor({ workflowId, registry }: { workflowId: string; registry: Studio
   }
   const retry = async (nodeId: string, inputs?: Record<string, unknown>) => {
     if (!stream.runId) return
-    try { const r = await retryFrom(stream.runId, nodeId, inputs); stream.attach(r.run_id); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
+    try { const r = await retryFrom(stream.runId, nodeId, inputs); stream.attach(r.run_id, true); toast(`Retrying from ${spec?.nodes.find(n => n.id === nodeId)?.label ?? 'this step'}…`) } catch (e) { toast(safeError(e)) }
   }
   const resetRun = () => { stream.attach(null); setDrawer(d => ({ ...d, open: false })); setRunSel(null) }
   const waitingNode = overlay && stream.status === 'paused' ? display?.nodes.find(n => overlay.nodeStates[n.id] === 'awaiting_approval') : undefined
