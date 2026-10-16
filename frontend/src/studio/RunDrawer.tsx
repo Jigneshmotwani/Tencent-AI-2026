@@ -208,6 +208,10 @@ function StepBody({ row, tab, spec, stream, debug, onRetry, groupName }: { row: 
     <span>Prompt tokens <b>{fmtInt(usage.prompt_tokens ?? 0)}</b></span><span>Completion tokens <b>{fmtInt(usage.completion_tokens ?? 0)}</b></span>
     <span>Cost <b>{usdSmall(usage.cost_usd ?? 0)}</b></span></div> : null
 
+  if (out.dry_run === true) return <>
+    <p className="dd-p"><b style={{ fontWeight: 500 }}>Test run · not sent</b></p>
+    <p className="dd-m">Approved, but test runs never write to Jira or Slack. After publishing, this step runs for real.</p>
+  </>
   switch (row.type) {
     case 'knowledge.retrieve': {
       const ev = row.d?.evidence?.length ? row.d.evidence : (Array.isArray(out.evidence) ? out.evidence as { label: string; provider: string; title?: string }[] : [])

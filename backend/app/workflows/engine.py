@@ -90,6 +90,7 @@ class RunCtx:
     persisted: dict = field(default_factory=dict)
     node_models: dict = field(default_factory=dict)
     trigger: str = 'manual'  # what started the run (automatic triggers may only write through approval)
+    test: bool = False  # a run of an unpublished version (a Studio test run): approved writes are dry runs
 
     def log(self, node_id: str, text: str, level: str = 'info'):
         """Safe log line for the run debug panel: counts, labels, codes, tool names. Never source titles/excerpts/secrets."""
@@ -356,7 +357,8 @@ def _load_ctx(run_id: str) -> RunCtx:
         spec = dict(ver.spec)
         ctx = RunCtx(run_id=run_id, workflow_id=wf.id, version=run.workflow_version, workflow_name=wf.name, spec=spec, user=user,
                      inputs=dict(run.inputs or {}), trace_id=run.trace_id or '',
-                     eff=effective_policy(spec['policies'], db, user=user, workflow_id=wf.id), trigger=run.trigger or 'manual')
+                     eff=effective_policy(spec['policies'], db, user=user, workflow_id=wf.id), trigger=run.trigger or 'manual',
+                     test=ver.status != 'published')
         for ns in db.scalars(select(NodeState).where(NodeState.run_id == run_id)):
             ctx.status[ns.node_id] = ns.status
             if ns.output: ctx.mem[ns.node_id] = dict(ns.output); ctx.persisted[ns.node_id] = dict(ns.output)

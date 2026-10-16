@@ -17,7 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
-from ..db import ActionExecution, Approval, NodeState, SessionLocal, User, Workflow, WorkflowRun, now
+from ..db import ActionExecution, Approval, NodeState, SessionLocal, User, Workflow, WorkflowRun, WorkflowVersion, now
 from ..identity import effective_capabilities
 from ..telemetry import audit, record_approval
 
@@ -66,6 +66,8 @@ def _eligible(approval: Approval, user: User, db=None, gids: set[str] | None = N
 def can_decide(approval: Approval, user: User, db=None, gids: set[str] | None = None) -> bool:
     if approval.status != 'pending':
         return False
+    if approval.kind != 'publish_request' and _own_test_run(approval, user, db):
+        return True  # the builder decides their own test run's actions; test runs never write (execute_action dry run)
     if approval.requester_id == user.id:
         # Never for publish requests (even as admin). Runs: only when explicitly allowed; holding an approver role does
         # not override allow_requester=false.
@@ -82,6 +84,21 @@ def can_decide(approval: Approval, user: User, db=None, gids: set[str] | None = 
                 gids = _gids(db, user)
         return approval.approver_group_id in gids
     return _eligible(approval, user, db, gids)
+
+
+def _own_test_run(approval: Approval, user: User, db=None) -> bool:
+    """A run of an unpublished version of the user's own agent (a Studio test run)."""
+    def check(session):
+        wf = session.get(Workflow, approval.workflow_id)
+        if wf is None or wf.owner_id != user.id or approval.requester_id != user.id:
+            return False
+        ver = session.scalar(select(WorkflowVersion).where(WorkflowVersion.workflow_id == wf.id,
+                                                            WorkflowVersion.version == approval.workflow_version))
+        return ver is not None and ver.status != 'published'
+    if db is not None:
+        return check(db)
+    with SessionLocal() as own:
+        return check(own)
 
 
 def approver_names(db, approval: Approval) -> list[str]:
@@ -115,6 +132,12 @@ def serialize(db, approval: Approval, user: User, gids: set[str] | None = None) 
     publish = approval.kind == 'publish_request'
     run = db.get(WorkflowRun, approval.run_id) if approval.run_id else None
     trigger = {'type': run.trigger, **(run.trigger_info or {})} if run is not None else None
+    ver = None if publish else db.scalar(select(WorkflowVersion).where(WorkflowVersion.workflow_id == approval.workflow_id,
+                                                                        WorkflowVersion.version == approval.workflow_version))
+    test_run = ver is not None and ver.status != 'published'
+    names = approver_names(db, approval)
+    if test_run and requester is not None and (requester.name or requester.username) not in names:
+        names = [requester.name or requester.username] + names  # the builder may decide their own test run
     return {'id': approval.id, 'trigger': trigger, 'kind': approval.kind or 'run_action', 'run_id': approval.run_id, 'workflow_id': approval.workflow_id,
             'workflow_name': wf.name if wf else '',
             'workflow_version': approval.workflow_version, 'node_id': approval.node_id, 'title': approval.title,
@@ -124,7 +147,7 @@ def serialize(db, approval: Approval, user: User, gids: set[str] | None = None) 
             'respond_within': (approval.payload or {}).get('respond_within', '') if not publish else '',
             'approver_roles': ['admin'] if publish else sorted(_approver_roles(approval)),
             'approver_group': {'id': group.id, 'name': group.name} if group else None,
-            'approver_names': approver_names(db, approval),
+            'approver_names': names, 'test_run': test_run,
             'allow_requester': (not publish) and 'requester' in (approval.approver_roles or []),
             'decided_by': decider.username if decider else None, 'decided_by_name': (decider.name or decider.username) if decider else None,
             'decided_at': approval.decided_at, 'created_at': approval.created_at,
@@ -284,6 +307,15 @@ async def execute_action(ctx, node_id: str, approval_id: str | None, tool: str, 
     from .engine import NodeFailure, _audit
     from .nodes import _access
     from ..contracts import SourceError
+    if getattr(ctx, 'test', False):
+        # Studio test run: the approval is real, the write is not. Record what would have happened; nothing reaches Jira or Slack.
+        with SessionLocal() as db:
+            if db.get(ActionExecution, key) is None:
+                db.add(ActionExecution(id=key, run_id=ctx.run_id, node_id=node_id, approval_id=approval_id, action_type=tool,
+                                       status='dry_run', result={'dry_run': True}, finished_at=now()))
+                db.commit()
+        _audit(ctx, 'action.' + tool, 'allowed', 'dry_run', node_id=node_id, details={'idempotency_key': key, 'approval_id': approval_id})
+        return {'dry_run': True, 'issue_key': 'not created (test run)', 'channel': str(params.get('channel', '')), 'ts': ''}
     async with _locks.setdefault(key, asyncio.Lock()):
         with SessionLocal() as db:
             row = db.get(ActionExecution, key)
