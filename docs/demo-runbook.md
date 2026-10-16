@@ -117,7 +117,7 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 2. Within about 30–60 s, the Contractor Offboarding Sweep runs as Wei Ling. In **Approvals** the checklist lists Marco's
    Slack channel (#ext-vn-rail-partner), Drive folder (Partners / VN Rail), Jira role (VNR), ROSS activity (audit), and
    asks IT to check Confluence by hand. **Approve** → IT checklist ticket created.
-3. Slack (owner): remove account B from #ext-vn-rail-partner (channel → members → Remove). Drive (owner): remove B's
+3. Slack (owner): remove account B (Slack user `jigneshmotwani0055`, no dot; Marco's linked account) from #ext-vn-rail-partner (channel → members → Remove). Drive (owner): remove B's
    access on `Partners/VN Rail`.
 4. `marco` → **What's the latest from the VN partner about API v3?** → the not-found sentence (Slack: within about 20 s;
    Drive: see results.md).

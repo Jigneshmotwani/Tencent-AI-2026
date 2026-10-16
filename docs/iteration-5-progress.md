@@ -212,3 +212,17 @@ label "Marco Rossi · Source access · Vietnam Rail Integration · last 30 days"
 - Demo switcher: "daniel"/"priya" mapped to the disabled iteration 3 accounts; exact username now wins. Verified in Chrome.
 - Sidebar: long titles ellipsize (footer grid item min-width 0). Verified in Chrome.
 - Still open (human): Slack connect for daniel (owner), priya and arjun (…001), marco (…0055); slack.com is blocked in the agent's Chrome.
+
+## 16 Oct 11:50 SGT: beats 4 and 6 live, matrix, revocation
+
+- Access matrix 60/60 answered, 0 leaks (2 false-positive flags, explained in results.md). Revocation: Drive 0.9 s, Slack 2.1 s
+  (+ ≤20 s cache). Details in results.md.
+- Beat 4 passed 3 times (INC-2301..2303). Fixes on the way: the brief's post/comment/output now include the runbook steps
+  (Step 4a visible) and recent deploys; the Slack post cap went from 3,800 to 12,000 characters (a full brief is ~4,000 and
+  was refused after approval); partner TLS rotation moved to 16 Oct (it was dated after the incident).
+- Beat 6: offboarding sweep triggered 9 s after IT-77, checklist approved → IT-78 created once, IT-77 commented once.
+- **Slack has two users for account B**: `jignesh.motwani0055@` and `jigneshmotwani0055@` (Gmail ignores the dot, Slack
+  does not). Marco is linked to `jigneshmotwani0055` (no dot); that user had been added to all six channels at 10:48–10:49
+  (one invite by the owner to #payments-leads, one "join" of the five public ones). `.local/demo-identities.env` now names
+  the no-dot address, the dotted duplicate was removed from #ext-vn-rail-partner, and the reset now keeps A and B in exactly
+  the channels their content file lists. Marco's matrix row set is being rerun with the corrected membership.
