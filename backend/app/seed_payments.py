@@ -742,6 +742,40 @@ class PaymentsSeeder:
         await slack_mod.call('conversations.invite', context, body={'channel': channel['id'], 'users': user})
         out(f'  + #{channel_name}: account {who} added back')
 
+    async def slack_enforce_members(self):
+        """Accounts A and B are in exactly the demo channels their content file lists: extra memberships (a stray invite or a
+        Slack "join channels" click) would let a persona read a channel the demo says they cannot."""
+        context = await self.context('slack')
+        if context is None:
+            return
+        channels = await self._slack_channels(context)
+        users = {}
+        for who in ('A', 'B'):
+            email = self.ids[who].get('slack_email')
+            if email:
+                users[who] = (await slack_mod.call('users.lookupByEmail', context, {'email': email}))['user']['id']
+        can_write = 'channels:write' in self.scopes('slack')
+        for path in sorted((CONTENT / 'slack').glob('*.yaml')):
+            spec = load_yaml(path)
+            name = str(spec['channel'])
+            channel = channels.get(name)
+            if channel is None:
+                continue
+            members = set((await slack_mod.call('conversations.members', context, {'channel': channel['id'], 'limit': 200})).get('members', []))
+            for who, uid in users.items():
+                wanted = who in (spec.get('members') or [])
+                if wanted == (uid in members):
+                    continue
+                if not can_write:
+                    self.manual.append(f'Slack: {"add" if wanted else "remove"} account {who} {"to" if wanted else "from"} #{name}.')
+                    continue
+                if wanted:
+                    await slack_mod.call('conversations.invite', context, body={'channel': channel['id'], 'users': uid})
+                    out(f'  + #{name}: account {who} added back')
+                else:
+                    await slack_mod.call('conversations.kick', context, body={'channel': channel['id'], 'user': uid})
+                    out(f'  - #{name}: account {who} removed (not a member in the demo)')
+
     # ============================================================================================ Drive (read-only)
     async def drive(self):
         out('\n== Drive (read-only app: upload checklist)')
@@ -914,6 +948,7 @@ async def refresh_sources(reset: dict, basic_file: str | None) -> list[str]:
             await seeder.slack(refresh_only=True)
             for item in reset.get('slack_restore_members') or []:
                 await seeder.slack_restore_member(str(item['channel']).lstrip('#'), str(item['identity']))
+            await seeder.slack_enforce_members()
         except SourceError as exc:
             out(f'  ! Slack refresh stopped ({exc.code})')
         manual += seeder.manual
