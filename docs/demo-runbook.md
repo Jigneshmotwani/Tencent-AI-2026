@@ -74,7 +74,7 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
    catalog, analysis, Jira search, decision router, draft, approval, create PAYRAIL issue). **Apply**.
 3. Copilot edit: **Also post a short summary to the partner channel after the ticket is approved.** Apply. If a reference
    was wrong, a warning says it was fixed (for example `output.key → output.issue_key`).
-4. **Test run** with a mistyped file id (for example drop the last character of the v3 spec's id). The "Read the new
+4. **Test run** with a mistyped file id: `1R2EDoaTxfWaMPTWfPR_ZWrS_POiHWni` (the v3 spec's id without its last character). The correct id is `1R2EDoaTxfWaMPTWfPR_ZWrS_POiHWni8`. The "Read the new
    file" step fails. In the run panel, correct the id in the **file_id** box, then **Retry from this step**. The run
    continues from that step.
 5. **Versions**: show v1 → v2 diff. **Submit for review**: audience *payments-eng* and *payments-leads*, note "Watches the
