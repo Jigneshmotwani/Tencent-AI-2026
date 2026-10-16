@@ -216,7 +216,10 @@ async def copilot_message(id: str, body: CopilotIn, request: Request, user: User
     base = copy.deepcopy(draft.spec)
     history = _history_for_model(_history(db, wf.id, user.id, 8))
     started = time.monotonic()
-    result = await _propose(db, user, wf.id, wf.name, base, body.message, history, 'edit')
+    # A draft that is still blank (only its trigger) is a build, not an edit: the create instructions, worked example and
+    # empty-reply retry apply (edit mode on a blank agent intermittently returned no operations).
+    mode = 'create' if len(base.get('nodes') or []) <= 1 else 'edit'
+    result = await _propose(db, user, wf.id, wf.name, base, body.message, history, mode)
     diff = diff_specs(base, result['preview_spec'])
     db.add(CopilotMessage(workflow_id=wf.id, owner_id=user.id, role='user', text=body.message.strip(), status='info'))
     db.flush()
