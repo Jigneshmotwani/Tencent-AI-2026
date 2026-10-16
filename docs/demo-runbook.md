@@ -5,10 +5,13 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 
 ## Pre-flight (15 minutes before the take)
 
-1. **Machine**: close heavy apps (the stack needs about 3 GB of free RAM). Display 1920×1080, browser zoom 100%, notifications
+1. **Machine**: close heavy apps (the stack needs about 3 GB of free RAM; on 16 Oct the machine had 14.8 GB with only
+   1–2 GB free, and retrieval timed out under that pressure). Display 1920×1080, browser zoom 100%, notifications
    off, Slack and Drive web open in their own windows.
-2. **Stack**: `./scripts/start.sh --services compose` (Git Bash) and wait for "Starting at http://localhost:5273".
+2. **Stack**: `./scripts/start.sh --services compose` in your own Git Bash window and wait for "Starting at
+   http://localhost:5273" (about 1 minute). Leave that window open; Ctrl-C or closing it stops the app.
    `curl http://localhost:8100/api/health` must show `"status":"ready"`, `"gateway":"ready"` and `"app_name":"ROSS"`.
+   (Before 16 Oct the stack stopped by itself about 40 s after starting in a console window; fixed in `localstart.py`.)
 3. **Reset (before every take)**:
 
    ```sh
@@ -20,14 +23,15 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
    - deletes the last take's INC/IT/PAYRAIL issues (demo-created only) and the app's Slack posts;
    - restores the runbook page (removes Step 4a) and re-posts the #infra-alerts messages with fresh timestamps (the
      Incident Assembler reads alerts from the last 2 h);
-   - re-adds account B to #ext-vn-rail-partner.
+   - keeps accounts A and B in exactly the channels the demo content lists (re-adds B to #ext-vn-rail-partner, removes
+     stray memberships).
 
-   Do every line under "Still to do by hand", usually:
+   It takes about 40 s. Do every line under "Still to do by hand", usually:
    - re-share `Partners/VN Rail` with account B;
    - delete "VN Partner – API v2 retirement notice" from `Partners/VN Rail`.
 
-   **Jira never reuses a key**: after a reset the live P1 is the next number (INC-2302, …), and the offboarding ticket
-   too (IT-78, …). Say "the new P1" rather than the number if it differs.
+   **Jira never reuses a key**: after the 16 Oct tests the next live P1 is INC-2304, the offboarding ticket IT-79 and the
+   Radar's ticket PAYRAIL-423. Say "the new P1" rather than a number.
 4. **Browser profiles**: one Chrome profile per real identity, each already signed in to ROSS as the persona below, with
    Connections showing all four sources connected:
 
@@ -52,12 +56,13 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 
 1. Profile A, `arjun`, **Workspace → New chat**.
 2. Type: **What's the status of the Vietnam rail integration and were there any blockers raised in Slack last week?**
-3. Expected: a cited answer. VN rail v3 migration in progress (PAYRAIL-410); blocker PAYRAIL-415, sandbox 502 on payout
-   status, raised Thu 8 Oct in #payments-eng; partner said the fix lands 14 Oct; VNR-5 blocked on partner UAT sign-off.
-   Sources include Jira (VNR, PAYRAIL), Slack (#payments-eng, #ext-vn-rail-partner) and Confluence (VNRAIL). Nothing
-   from #payments-leads (Arjun is not a member).
+3. Expected: a cited answer. Production still on API v2, v3 migration in progress under PAYRAIL-410; launch checklist
+   shows sandbox end-to-end tests (VNR-3) open and partner UAT sign-off (VNR-5) blocked; the Slack partner-channel post
+   about the v3 sandbox returning 502 since 7 Oct. Sources: Confluence (VNRAIL) and Slack (#ext-vn-rail-partner); the
+   model may also cite Jira (PAYRAIL-415, VNR). Nothing from #payments-leads (Arjun is not a member).
 4. Click a citation to show the source sheet with the passage highlighted.
-5. Typical wait: see results.md (chat p50/p90). Recovery: ask again in a new chat.
+5. Measured 16 Oct: 34.5 s, $0.0022 (chat p50 28.7 s, p90 37.1 s). Keep talking over the wait. Recovery: ask again in a
+   new chat.
 
 ### Beat 2: Studio, Copilot, retry, versions, review (Arjun then Wei Ling, about 1:30)
 
@@ -82,9 +87,10 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 
 1. Drive window (owner): upload `demo-content/payments/drive/vn-partner-api-v2-retirement-notice.docx` into
    `Partners/VN Rail`.
-2. Within about 30–60 s, the Radar runs as Arjun (its owner) with Arjun's own access. In ROSS as `weiling`, open
-   **Approvals**. The card shows "Triggered by Drive … · runs as Arjun Mehta" and the drafted PAYRAIL ticket (API v2
-   retirement on 30 Nov; affects vn-rail-adapter and payout-orchestrator; month-end freeze). **Approve**.
+2. The Radar runs as Arjun (its owner) with Arjun's own access: measured 17 s from upload to run start, about 60 s to
+   the approval. In ROSS as `weiling`, open **Approvals**. The card shows "Triggered by Drive … · runs as Arjun Mehta"
+   and the drafted PAYRAIL ticket (API v2 retired 30 Nov 23:59 ICT, HTTP 410 after that; affects vn-rail-adapter;
+   related to the PAYRAIL-410 migration). **Approve**.
 3. Expected: one PAYRAIL ticket is created (open it in Jira), and approving again or retrying never creates a second.
 4. Recovery: Studio → the Radar's trigger step → **Check now**.
 
@@ -94,10 +100,11 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
    **Step 4a: fail over to the secondary VN rail endpoint** (one sentence of detail). Publish.
 2. Profile A, Jira as account A (Priya) → **Create** in INC: type Bug, priority **Highest**, summary exactly
    **P1: VN payouts failing - payout-orchestrator 5xx and TLS handshake errors** (the reset recognises this summary).
-3. Within about 30–60 s, the Incident Assembler runs as Wei Ling. As `weiling` → **Approvals** (or Workspace →
-   "Triggered · Incident Assembler" run card). The brief cites the new Step 4a, INC-2214 (cert rotation postmortem), the
-   partner's TLS rotation message in #ext-vn-rail-partner, the #infra-alerts messages and the vn-rail-adapter 2.14.0
-   deploy. **Approve** → the brief is posted to #payments-oncall and commented on the INC issue.
+3. The Incident Assembler runs as Wei Ling: measured 6–32 s from P1 to run start, 46–72 s to the approval (3 runs). As
+   `weiling` → **Approvals** (or Workspace → "Triggered · Incident Assembler" run card). The brief: suspected cause = the
+   partner's TLS rotation on 16 Oct to a new intermediate CA (#ext-vn-rail-partner), INC-2214 as precedent, #infra-alerts
+   figures; **Runbook steps** include the new Step 4a; **Recent deploys** list vn-rail-adapter 2.14.0. **Approve** → the
+   brief is posted to #payments-oncall and commented on the INC issue (about 20 s).
 4. Recovery: Studio → Incident Assembler → trigger step → **Check now**.
 
 ### Beat 5: one agent, two scopes; guardrails (Daniel, Arjun, Marco, about 1:00)
@@ -114,13 +121,15 @@ SYNTHETIC DEMO DATA: Northstar Pay and all people are fictional. App: http://loc
 
 1. Jira (owner) → **Create** in IT: summary **Offboard contractor Marco Rossi**. Description: "Contract ends 16 Oct.
    Email: <account B email, from `.local/demo-identities.env`>".
-2. Within about 30–60 s, the Contractor Offboarding Sweep runs as Wei Ling. In **Approvals** the checklist lists Marco's
+2. The Contractor Offboarding Sweep runs as Wei Ling (measured 9 s to start, about 40 s to the approval). In
+   **Approvals** the checklist lists Marco's
    Slack channel (#ext-vn-rail-partner), Drive folder (Partners / VN Rail), Jira role (VNR), ROSS activity (audit), and
    asks IT to check Confluence by hand. **Approve** → IT checklist ticket created.
 3. Slack (owner): remove account B (Slack user `jigneshmotwani0055`, no dot; Marco's linked account) from #ext-vn-rail-partner (channel → members → Remove). Drive (owner): remove B's
    access on `Partners/VN Rail`.
-4. `marco` → **What's the latest from the VN partner about API v3?** → the not-found sentence (Slack: within about 20 s;
-   Drive: see results.md).
+4. `marco` → **What's the latest from the VN partner about API v3?** → the not-found sentence. Measured: Drive refuses
+   Marco's token 0.9 s after the share is removed; Slack reports him not a member after 2 s, and ROSS's channel cache
+   adds at most 20 s, so wait about 25 s after the Slack removal before asking.
 
 ### Beat 7: audit, blocked request, integrity (Daniel, about 1:00)
 
