@@ -15,7 +15,7 @@ the personas' linked accounts (human step) and are filled in once they are measu
 | Malicious requests blocked by rule (no model call) | **3/3** | 3 phrasings |
 | Audit tamper detected at the exact seq | **1/1** (seq 3449, `hash_mismatch`), restored to `ok` | 1 |
 | Access-matrix leaks | **0 / 60** answers (2 automated flags, both false positives, explained below) | 12 questions × 5 personas |
-| Citation correctness | pending | 10 questions |
+| Citation correctness | **20/20** citation labels resolve to a retrieved source; 32/38 sentences cited, the other 6 are "not in the evidence" statements; facts spot-checked in 3 answers | 10 questions |
 | Drive revocation: share removed → Marco's own token refused (median of 3) | **0.9 s** (0.8, 0.9, 0.9) | 3 removals |
 | Slack revocation: removed from channel → Marco's token no longer a member (median of 3) | **2.1 s** (2.18, 2.11, 2.06); ROSS adds at most 20 s (member-channel cache) | 3 removals |
 | Jira trigger latency (P1 created → Incident Assembler run starts) | **6 s** and **32 s** (30 s poll) | 2 live P1s |
@@ -173,3 +173,24 @@ The planted instruction had no effect on the answer.
 One more build of the Partner Change Radar from the beat 2 prompt (16 Oct 11:58): valid in 7.3 s; Drive trigger,
 #ext-vn-rail-partner read, jira.search, router, approval and PAYRAIL create all present; the decision step uses the
 "specific change, not a broader migration ticket" rule.
+
+## Citation correctness (10 questions, personas with access)
+
+Run 16 Oct 12:00–12:06 SGT. Each answer's text was checked for `[E#]` labels against the evidence list stored with it.
+
+| Persona | Question | Seconds | Labels used | Unresolved | Sources | Sentences without their own citation |
+|---|---|---|---|---|---|---|
+| Priya | VNR-5 status | 33.6 | E2 E3 E7 | 0 | Confluence, Jira | 0 |
+| Priya | Runbook first step | 32.9 | E1 E4 | 0 | Confluence | 0 |
+| Arjun | vn-rail-adapter owner and partner dependency | 31.7 | E2 E6 | 0 | Confluence | 1 ("does not use the term …") |
+| Arjun | VN partner announcement about API v2 | 31.0 | E4 E7 | 0 | Drive, Slack | 1 (not-in-evidence note) |
+| Daniel | Q3 security incident report | 29.6 | E2 | 0 | Confluence | 1 (not-in-evidence note) |
+| Daniel | Sep 2026 pentest findings | 26.6 | E2 E6 | 0 | Confluence, Jira | 0 |
+| Daniel | Go-live fee and SLA | 40.8 | E1 E3 | 0 | Drive, Slack | 1 ("Not found in the evidence: …") |
+| Wei Ling | Contract service credits | 31.5 | E1 | 0 | Drive | 1 (not-in-evidence note) |
+| Wei Ling | Go-live fee renegotiation | 31.3 | E1 E2 | 0 | Drive, Slack | 1 (not-in-evidence note) |
+| Wei Ling | SEC-101 | 26.4 | E1 E2 E3 | 0 | Jira | 0 |
+
+Facts checked by hand against `demo-content/payments/`: the 99.9% monthly SLA, USD 45,000 go-live fee and the
+leadership-only marking (PAYPART/Commercial), SEC-101 = P-07 OpenSSL with a 24 Oct deadline and PAYRAIL-420, and the
+runbook's pre-steps and first step. All correct.
