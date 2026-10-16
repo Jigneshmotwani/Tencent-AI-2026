@@ -11,3 +11,16 @@ frontend/dist/
 backups/
 *.sql.gz
 *.dump
+# Keys, certificates, token dumps, database dumps and recordings never belong in git.
+*.pem
+*.key
+*.p12
+*.pfx
+*.sql
+*token*.json
+*tokens*.json
+oauth*.json
+*.mp4
+*.mov
+*.webm
+*.mkv

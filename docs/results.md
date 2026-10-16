@@ -2,8 +2,7 @@
 
 Measured on the local build (`iteration-5`) against the real Atlassian site, Slack workspace and Google Drive with the
 `ross-payments` demo pack. SYNTHETIC DEMO DATA. Every number below comes from a run recorded in
-[iteration-5-progress.md](iteration-5-progress.md); nothing is rounded up or estimated. Sections marked **pending** need
-the personas' linked accounts (human step) and are filled in once they are measured.
+[iteration-5-progress.md](iteration-5-progress.md); nothing is rounded up or estimated.
 
 ## Summary
 

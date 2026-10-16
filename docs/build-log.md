@@ -1,6 +1,6 @@
-# Iteration 5 handoff (ROSS)
+# ROSS build log (iteration 5 handoff)
 
-Branch `iteration-5`, not pushed, not deployed. SYNTHETIC DEMO DATA throughout (Northstar Pay, fictional people).
+Iteration 5 is the hackathon submission, merged into `main`. Not deployed (ROSS runs locally). SYNTHETIC DEMO DATA throughout (Northstar Pay, fictional people).
 Measurements: [results.md](results.md). Recording steps: [demo-runbook.md](demo-runbook.md). Running log and every human
 step: [iteration-5-progress.md](iteration-5-progress.md).
 
@@ -38,13 +38,12 @@ planted injection quarantined. Cost per chat answer p50 $0.0011.
 ## Human steps, in order
 
 1. **Now (Drive, owner):** delete "VN Partner – API v2 retirement notice" from `Partners/VN Rail` (left from today's test)
-   and confirm `jigneshmotwani0055@gmail.com` is Viewer on that folder.
+   and confirm account B is Viewer on that folder.
 2. **Before recording:** close heavy apps (keep 3 GB free); start the stack in your own Git Bash
    (`./scripts/start.sh --services compose`) and leave the window open; run the reset; do any "Still to do by hand" lines.
 3. **Browser profiles** per the runbook (owner, A, B), each signed in to ROSS as its persona.
 4. **In beat 6**, remove the Slack user `jigneshmotwani0055` (no dot) from #ext-vn-rail-partner. Slack has a second,
    unused user `jignesh.motwani0055`; Gmail treats the two as one inbox, Slack does not.
-5. After the recording: merge `iteration-5` and push when you are ready (nothing was pushed).
 
 ## Known limits
 
