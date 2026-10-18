@@ -3,8 +3,17 @@ from urllib.parse import urlparse
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LOOPBACK = {'localhost', '127.0.0.1', '::1'}
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
+    # 'local' (default): every endpoint must be loopback. 'remote' (DEPLOYMENT=remote, set by backend/app/remotestart.py on Render):
+    # the app/API origins must be https, the database may be a managed host, and LiteLLM still has to run beside the API.
+    deployment: str = Field(default='local', pattern='^(local|remote)$')
+    # Extra Host header values the API accepts in remote mode (comma-separated). remotestart adds RENDER_EXTERNAL_HOSTNAME.
+    allowed_hosts: str = ''
+    # Grafana Cloud's default Tempo datasource uid differs from the local provisioned `tempo` (used for trace deep links).
+    grafana_tempo_uid: str = 'tempo'
     database_url: str = 'postgresql+psycopg://app@127.0.0.1:55432/app'
     app_origin: str = 'http://localhost:5173'
     api_origin: str = 'http://localhost:8000'
@@ -78,13 +87,27 @@ class Settings(BaseSettings):
         from .scopes import allowed
         return allowed('jira')
 
+    @field_validator('database_url','app_database_url',mode='before')
+    @classmethod
+    def postgres_driver(cls,value):
+        # Managed hosts hand out postgres:// or postgresql:// URLs; SQLAlchemy needs the psycopg 3 driver name.
+        if isinstance(value,str):
+            for prefix in ('postgres://','postgresql://'):
+                if value.startswith(prefix): return 'postgresql+psycopg://'+value[len(prefix):]
+        return value
+
     @field_validator('database_url','app_database_url','litellm_url','otel_endpoint','app_origin','api_origin','api_tls_origin','grafana_url')
     @classmethod
-    def local_endpoint(cls,value):
-        if value and urlparse(value).hostname not in {'localhost','127.0.0.1','::1'}:
-            # Do not echo URL values: database URLs can contain passwords.
-            raise ValueError('This iteration requires local app, database, gateway and telemetry endpoints')
-        return value
+    def local_endpoint(cls,value,info):
+        if not value: return value
+        host=urlparse(value).hostname
+        if host in LOOPBACK: return value
+        # Do not echo URL values: database URLs can contain passwords.
+        if info.data.get('deployment')=='remote':
+            # The gateway and the collector run in the same container as the API, so they stay on loopback in every mode.
+            if info.field_name in {'app_origin','api_origin','api_tls_origin','grafana_url'} and urlparse(value).scheme=='https': return value
+            if info.field_name in {'database_url','app_database_url'}: return value
+        raise ValueError('This iteration requires local app, database, gateway and telemetry endpoints')
 
 @lru_cache
 def settings():

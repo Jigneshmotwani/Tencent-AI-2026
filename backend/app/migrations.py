@@ -4,6 +4,7 @@ Migration 1 is the iteration 1 create_all bootstrap. Migration 2 adds iteration 
 append-only enforcement, the runtime role and Grafana's read-only views. Role grants are re-applied every start.
 """
 from sqlalchemy import text, inspect
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 AUDIT_COLUMNS = [
@@ -123,26 +124,35 @@ def apply(db: Session, engine):
 
 
 def roles(db: Session, runtime_password: str, grafana_password: str):
-    """Idempotent: runtime role (DML except audit UPDATE/DELETE), Grafana read-only role over views only."""
+    """Idempotent: runtime role (DML except audit UPDATE/DELETE), Grafana read-only role over views only.
+    A managed host may not let this user create roles; that is reported (never with the SQL, which holds the password) and
+    the app then runs as the owner role. The audit_events append-only trigger from migration 2 still applies to every role."""
     for name, password in (('app_runtime', runtime_password), ('grafana_ro', grafana_password)):
         if not password:
             continue
         exists = db.execute(text('SELECT 1 FROM pg_roles WHERE rolname=:n'), {'n': name}).first()
         verb = 'ALTER' if exists else 'CREATE'
-        # Passwords are generated locally (url-safe); quote as a literal.
-        db.execute(text(f"{verb} ROLE {name} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{password}'"))
+        try:
+            with db.begin_nested():
+                # Passwords are generated (url-safe); quote as a literal.
+                db.execute(text(f"{verb} ROLE {name} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{password}'"))
+        except DBAPIError as exc:
+            print(f'WARNING: could not {verb.lower()} database role {name} ({getattr(exc.orig, "sqlstate", None) or type(exc.orig).__name__}).', flush=True)
     for name, sql in VIEWS.items():
         db.execute(text(f'DROP VIEW IF EXISTS {name}'))  # column sets may shrink between versions
         db.execute(text(f'CREATE VIEW {name} AS {sql}'))
-    if runtime_password:
-        db.execute(text('GRANT CONNECT ON DATABASE app TO app_runtime'))
+    database = db.execute(text('SELECT quote_ident(current_database())')).scalar_one()  # the managed database is not always called "app"
+    def has_role(name):
+        return bool(db.execute(text('SELECT 1 FROM pg_roles WHERE rolname=:n'), {'n': name}).first())
+    if runtime_password and has_role('app_runtime'):
+        db.execute(text(f'GRANT CONNECT ON DATABASE {database} TO app_runtime'))
         db.execute(text('GRANT USAGE ON SCHEMA public TO app_runtime'))
         db.execute(text('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runtime'))
         db.execute(text('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime'))
         db.execute(text('REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM app_runtime'))
         db.execute(text('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_migrations FROM app_runtime'))
-    if grafana_password:
-        db.execute(text('GRANT CONNECT ON DATABASE app TO grafana_ro'))
+    if grafana_password and has_role('grafana_ro'):
+        db.execute(text(f'GRANT CONNECT ON DATABASE {database} TO grafana_ro'))
         db.execute(text('GRANT USAGE ON SCHEMA public TO grafana_ro'))
         db.execute(text('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM grafana_ro'))
         db.execute(text('GRANT SELECT ON ' + ', '.join(VIEWS) + ' TO grafana_ro'))

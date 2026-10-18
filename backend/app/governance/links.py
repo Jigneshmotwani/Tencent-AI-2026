@@ -1,4 +1,4 @@
-"""Grafana deep links (W5). Tempo datasource uid is provisioned as `tempo`; dashboards by fixed uids."""
+"""Grafana deep links (W5). Tempo datasource uid is provisioned as `tempo` locally (GRAFANA_TEMPO_UID overrides it for Grafana Cloud); dashboards by fixed uids."""
 import json
 import re
 from urllib.parse import quote
@@ -14,7 +14,8 @@ def grafana_trace_url(trace_id: str) -> str:
     trace_id = (trace_id or '').strip().lower()
     if not TRACE_ID.match(trace_id):
         return ''
-    panes = {'t': {'datasource': 'tempo', 'queries': [{'refId': 'A', 'datasource': {'type': 'tempo', 'uid': 'tempo'},
+    uid = settings().grafana_tempo_uid
+    panes = {'t': {'datasource': uid, 'queries': [{'refId': 'A', 'datasource': {'type': 'tempo', 'uid': uid},
                                                         'queryType': 'traceql', 'query': trace_id, 'limit': 20}],
                    'range': {'from': 'now-7d', 'to': 'now'}}}
     return settings().grafana_url.rstrip('/') + '/explore?schemaVersion=1&orgId=1&panes=' + quote(json.dumps(panes, separators=(',', ':')), safe='')

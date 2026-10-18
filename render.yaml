@@ -1,0 +1,92 @@
+# Render Blueprint: one Docker web service (API + LiteLLM + OTel Collector) and one Postgres. Step-by-step: docs/DEPLOY.md.
+# The frontend lives on Vercel and proxies /api/* to this service (frontend/vercel.json).
+#
+# Plans: the web service needs 2 GB RAM (measured: LiteLLM ~490 MB + API ~120 MB + collector ~190 MB at idle), so `standard`.
+# Postgres `basic-256mb` keeps your data. Render's `free` Postgres is deleted 30 days after creation; use it only for a throwaway demo.
+databases:
+  - name: internal-brain-db
+    databaseName: internal_brain
+    user: internal_brain
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: internal-brain-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # ---- asked for when you create the Blueprint ----
+      - key: APP_ORIGIN            # your Vercel URL, e.g. https://internal-brain.vercel.app (no trailing slash)
+        sync: false
+      - key: MODEL_ID              # a verified LiteLLM model string, e.g. openai/<provider model id>
+        sync: false
+      - key: MODEL_API_KEY
+        sync: false
+      # ---- wired automatically ----
+      - key: DATABASE_URL
+        fromDatabase:
+          name: internal-brain-db
+          property: connectionString
+      - key: DEPLOYMENT
+        value: remote
+      - key: COOKIE_SECURE
+        value: "true"
+      # ---- secrets Render generates once and keeps across deploys. Do not delete ENCRYPTION_KEY: it encrypts stored OAuth tokens. ----
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: LITELLM_MASTER_KEY
+        generateValue: true
+      - key: AUDIT_HMAC_KEY
+        generateValue: true
+      - key: APP_RUNTIME_DB_PASSWORD
+        generateValue: true
+      - key: GRAFANA_DB_PASSWORD
+        generateValue: true
+      # Sign-in passwords of the four built-in accounts (admin, compliance, operations, auditor). Read them in this service's Environment tab.
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        generateValue: true
+      - key: BOOTSTRAP_COMPLIANCE_PASSWORD
+        generateValue: true
+      - key: BOOTSTRAP_OPERATIONS_PASSWORD
+        generateValue: true
+      - key: BOOTSTRAP_AUDITOR_PASSWORD
+        generateValue: true
+      # ---- optional: fill in later from the Environment tab (docs/DEPLOY.md steps 5 and 6) ----
+      - key: MODEL_API_BASE
+        value: ""
+      - key: GOOGLE_CLIENT_ID
+        value: ""
+      - key: GOOGLE_CLIENT_SECRET
+        value: ""
+      - key: GOOGLE_FOLDER_ID
+        value: ""
+      - key: ATLASSIAN_CLIENT_ID
+        value: ""
+      - key: ATLASSIAN_CLIENT_SECRET
+        value: ""
+      - key: CONFLUENCE_SPACE_KEY
+        value: ""
+      - key: CONFLUENCE_CLOUD_ID
+        value: ""
+      - key: JIRA_PROJECT_KEYS
+        value: KYB,FINCRIME
+      - key: SLACK_CLIENT_ID
+        value: ""
+      - key: SLACK_CLIENT_SECRET
+        value: ""
+      - key: SLACK_TEAM_ID
+        value: ""
+      - key: GRAFANA_URL           # https://<your-stack>.grafana.net (trace and dashboard links in the UI)
+        value: ""
+      - key: GRAFANA_TEMPO_UID     # printed by deploy/grafana_cloud_setup.py
+        value: ""
+      - key: GRAFANA_OTLP_ENDPOINT # Grafana Cloud > your stack > OpenTelemetry > OTLP endpoint, e.g. https://otlp-gateway-prod-eu-west-0.grafana.net/otlp
+        value: ""
+      - key: GRAFANA_OTLP_USER     # the numeric instance ID shown on that page
+        value: ""
+      - key: GRAFANA_OTLP_TOKEN    # an access policy token with the metrics:write and traces:write scopes
+        value: ""

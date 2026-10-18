@@ -1,0 +1,10 @@
+.git
+.venv
+.local
+.env
+.env.*
+frontend
+docs
+scripts
+**/__pycache__
+**/*.pyc

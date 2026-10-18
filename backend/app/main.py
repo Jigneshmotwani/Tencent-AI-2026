@@ -65,7 +65,16 @@ async def page_access_guard(request, call_next):
             return JSONResponse({'detail': 'page_forbidden'}, status_code=403)
     return await call_next(request)
 app.add_middleware(BaseHTTPMiddleware, dispatch=page_access_guard)
-app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','[::1]'])
+class HealthExemptTrustedHost(TrustedHostMiddleware):
+    """Remote mode only: the platform health probe may not send the public hostname, so /api/health skips the Host check."""
+    async def __call__(self,scope,receive,send):
+        if scope['type']=='http' and scope.get('path')=='/api/health': return await self.app(scope,receive,send)
+        await super().__call__(scope,receive,send)
+if settings().deployment=='remote':
+    # Vercel proxies /api to this service, so the Host header is the service's own hostname (RENDER_EXTERNAL_HOSTNAME / ALLOWED_HOSTS).
+    app.add_middleware(HealthExemptTrustedHost,allowed_hosts=['localhost','127.0.0.1','[::1]',*[h.strip() for h in settings().allowed_hosts.split(',') if h.strip()]])
+else:
+    app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','[::1]'])
 app.add_middleware(CORSMiddleware,allow_origins=[settings().app_origin],allow_credentials=True,
     allow_methods=['GET','POST','PUT','PATCH','DELETE'],allow_headers=['Content-Type','X-CSRF-Token'])
 app.include_router(identity.router,prefix='/api')

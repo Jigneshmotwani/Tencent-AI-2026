@@ -102,6 +102,13 @@ Then fill in `.env` (OAuth apps, model; see below) and restart. Use two browser 
 
 `npm --prefix frontend run build` typechecks and builds the UI. No test files or persistent verification scripts are supplied.
 
+## Deploy it (Vercel + Render + Grafana Cloud)
+
+`docs/DEPLOY.md` is the step-by-step guide. In short: the frontend goes to Vercel (`frontend/`, `frontend/vercel.json` proxies `/api`),
+the API, LiteLLM gateway and OTel collector run in one Render Docker service with Render Postgres (`render.yaml`, `Dockerfile`,
+`backend/app/remotestart.py`), and `deploy/grafana_cloud_setup.py` sets up Grafana Cloud. Local runs are unchanged
+(`DEPLOYMENT` defaults to `local`, which keeps every endpoint on loopback).
+
 ## OAuth setup (per user, delegated)
 
 **Google Drive** (unchanged from iteration 1):

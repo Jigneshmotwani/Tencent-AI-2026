@@ -171,7 +171,8 @@ def run_summary(db, run: WorkflowRun) -> dict:
 
 
 def grafana_trace_url(trace_id: str) -> str:
-    panes = {'a': {'datasource': 'tempo', 'queries': [{'refId': 'A', 'datasource': {'type': 'tempo', 'uid': 'tempo'},
+    uid = settings().grafana_tempo_uid
+    panes = {'a': {'datasource': uid, 'queries': [{'refId': 'A', 'datasource': {'type': 'tempo', 'uid': uid},
                                                        'queryType': 'traceql', 'query': trace_id}], 'range': {'from': 'now-24h', 'to': 'now'}}}
     return settings().grafana_url.rstrip('/') + '/explore?schemaVersion=1&panes=' + quote(json.dumps(panes, separators=(',', ':')))
 
