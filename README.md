@@ -7,7 +7,7 @@ Drive, Confluence, Jira and Slack, each with its own permissions, and an AI assi
 anyone can ask about. ROSS answers questions and runs agents over those four sources while enforcing, on every read,
 exactly what the asking person can open themselves, with fresh data, cited answers and a tamper-evident audit trail.
 
-**Demo video:** [VIDEO LINK]
+**Demo video:** [here](https://youtu.be/gERf1j-F_h0)
 
 ![ROSS: Your AI only knows what you're allowed to know](docs/media/cover.png)
 
